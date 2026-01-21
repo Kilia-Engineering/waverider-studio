@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hypysagas"
+version = "0.15.3"
+authors = [
+  { name="Kieran Mackle", email="kemackle98@gmail.com" },
+]
+description = "Python Sensitivity Approximations for Geometric-Aerodynamic Surfaces"
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    'numpy >= 1.23.5',
+    'pandas >= 1.5.2',
+    'tqdm >= 4.64.1',
+    'art >= 5.8',
+    'meshio >= 5.3.4',
+    'matplotlib',
+    'scipy >= 1.10.1',
+    'hypervehicle >= 0.6.0',
+]
+
+[project.optional-dependencies]
+dev = [
+    'sphinx',
+    'sphinx-rtd-theme == 1.1.1',
+    'sphinx-copybutton >= 0.5.0',
+    'sphinx-inline-tabs >= 2022.1.2b11',
+    'myst-parser >= 0.18.1',
+    'sphinx-autobuild >= 2021.3.14',
+]
+
+[project.urls]
+"Homepage" = "https://github.com/kieran-mackle/pysagas"
+"Bug Tracker" = "https://github.com/kieran-mackle/pysagas/issues"
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.15.3"
+tag_format = "v$version"
+version_provider = "pep621"
+version_files = [
+    "pyproject.toml:^version",
+]
+update_changelog_on_bump = true
