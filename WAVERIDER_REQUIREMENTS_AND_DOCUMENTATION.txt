@@ -1,0 +1,635 @@
+================================================================================
+                    WAVERIDER DESIGN OPTIMIZATION SYSTEM
+                    Complete Requirements and Documentation
+================================================================================
+
+                            TABLE OF CONTENTS
+================================================================================
+
+1. SYSTEM OVERVIEW
+2. HARDWARE REQUIREMENTS
+3. SOFTWARE REQUIREMENTS
+4. PYTHON DEPENDENCIES
+5. INSTALLATION GUIDE
+6. FILE STRUCTURE
+7. SURROGATE MODEL TRAINING
+8. GUI CONFIGURATION
+9. MODULE DESCRIPTIONS
+10. USAGE WORKFLOWS
+11. TROUBLESHOOTING
+12. API REFERENCE
+
+================================================================================
+                           1. SYSTEM OVERVIEW
+================================================================================
+
+The Waverider Design Optimization System is an integrated tool for hypersonic 
+vehicle design that combines:
+
+- Parametric waverider geometry generation
+- Genetic algorithm multi-objective optimization
+- PySAGAS computational fluid dynamics integration
+- Neural network surrogate modeling
+- Off-design performance prediction
+- Multi-Mach optimization
+- Interactive graphical user interface
+
+The system enables rapid exploration of the waverider design space, achieving
+evaluation speeds 10,000x faster than direct CFD through surrogate modeling
+while maintaining prediction accuracy within 2% of high-fidelity simulations.
+
+================================================================================
+                        2. HARDWARE REQUIREMENTS
+================================================================================
+
+Minimum Requirements:
+- CPU: Intel Core i5 or AMD Ryzen 5 (4 cores)
+- RAM: 8 GB
+- Storage: 2 GB available space
+- Display: 1280x720 resolution
+
+Recommended Requirements:
+- CPU: Intel Core i7/i9 or AMD Ryzen 7/9 (8+ cores)
+- RAM: 16 GB or more
+- Storage: 10 GB SSD
+- Display: 1920x1080 resolution or higher
+- GPU: Not required (CPU-based computation)
+
+Notes:
+- More CPU cores accelerate batch CFD evaluation and training
+- Additional RAM helpful for large training datasets
+- SSD recommended for faster model loading
+
+================================================================================
+                        3. SOFTWARE REQUIREMENTS
+================================================================================
+
+Operating System:
+- Windows 10/11 (64-bit) - Primary development platform
+- Linux (Ubuntu 20.04+, tested)
+- macOS (10.15+, untested but should work)
+
+Python Version:
+- Python 3.8, 3.9, 3.10, or 3.11 (recommended: 3.10)
+- 64-bit version required
+
+Required External Software:
+- Gmsh (mesh generation) - https://gmsh.info/
+  Download and install, ensure 'gmsh' command is in PATH
+
+Optional External Software:
+- FreeCAD (CAD export) - https://www.freecad.org/
+- ParaView (flow visualization) - https://www.paraview.org/
+
+================================================================================
+                        4. PYTHON DEPENDENCIES
+================================================================================
+
+Core Dependencies (requirements.txt):
+--------------------------------------------------------------------------------
+# GUI Framework
+PyQt5>=5.15.0
+PyQt5-sip>=12.8.0
+
+# Scientific Computing
+numpy>=1.20.0
+scipy>=1.7.0
+pandas>=1.3.0
+
+# Machine Learning
+scikit-learn>=1.0.0
+
+# Visualization
+matplotlib>=3.4.0
+pyqtgraph>=0.12.0
+PyOpenGL>=3.1.0
+
+# CAD and Geometry
+cadquery>=2.2.0
+gmsh>=4.10.0
+
+# CFD Integration (PySAGAS)
+# Install from source or pip if available
+# pysagas>=0.1.0
+
+# Optional: Claude Assistant
+anthropic>=0.3.0
+
+# Utilities
+tqdm>=4.62.0
+joblib>=1.1.0
+--------------------------------------------------------------------------------
+
+Installation Command:
+    pip install PyQt5 numpy scipy pandas scikit-learn matplotlib pyqtgraph 
+                PyOpenGL cadquery gmsh tqdm joblib anthropic
+
+Note: Some packages may require specific versions for compatibility. If you
+encounter issues, try installing specific versions listed above.
+
+================================================================================
+                        5. INSTALLATION GUIDE
+================================================================================
+
+STEP 1: Install Python
+----------------------
+Download Python 3.10 from https://www.python.org/
+During installation, CHECK "Add Python to PATH"
+
+Verify installation:
+    python --version
+    pip --version
+
+STEP 2: Create Virtual Environment (Recommended)
+-----------------------------------------------
+    python -m venv waverider_env
+
+Activate on Windows:
+    waverider_env\Scripts\activate
+
+Activate on Linux/macOS:
+    source waverider_env/bin/activate
+
+STEP 3: Install Dependencies
+---------------------------
+    pip install --upgrade pip
+    pip install PyQt5 numpy scipy pandas scikit-learn matplotlib pyqtgraph
+    pip install PyOpenGL cadquery gmsh tqdm joblib
+
+For Claude Assistant (optional):
+    pip install anthropic
+
+STEP 4: Install Gmsh
+-------------------
+Windows:
+    Download from https://gmsh.info/
+    Add installation folder to PATH environment variable
+
+Linux:
+    sudo apt-get install gmsh
+
+macOS:
+    brew install gmsh
+
+STEP 5: Verify Installation
+--------------------------
+    python -c "import PyQt5; import numpy; import sklearn; print('OK')"
+
+STEP 6: Download/Copy Project Files
+-----------------------------------
+Ensure the following files are in your project directory:
+    - waverider_gui.py (main application)
+    - generator.py (geometry generation)
+    - flowfield.py (CFD interface)
+    - plotting_tools.py (visualization)
+    - cad_export.py (CAD export)
+    - optimization_engine.py (genetic algorithm)
+    - optimization_tab.py (optimization GUI)
+    - surrogate_tab.py (surrogate GUI)
+    - offdesign_surrogate_tab.py (off-design surrogate)
+    - multimach_hunter_tab.py (multi-Mach optimization)
+    - claude_assistant_tab.py (AI assistant)
+
+STEP 7: Run the Application
+--------------------------
+    python waverider_gui.py
+
+================================================================================
+                           6. FILE STRUCTURE
+================================================================================
+
+project_folder/
+│
+├── waverider_gui.py              # Main GUI application entry point
+├── generator.py                   # Waverider geometry generation
+├── flowfield.py                   # Flow field calculations
+├── plotting_tools.py              # Visualization utilities
+├── cad_export.py                  # CAD file export
+├── reference_area_calculator.py   # Planform area computation
+│
+├── optimization_engine.py         # Genetic algorithm core
+├── optimization_tab.py            # Optimization GUI tab
+├── optimization_utils.py          # Optimization utilities
+│
+├── surrogate_tab.py               # Original surrogate tab
+├── offdesign_surrogate_tab.py     # Off-design neural network tab
+├── multimach_hunter_tab.py        # Multi-Mach optimization tab
+├── claude_assistant_tab.py        # Claude AI assistant tab
+│
+├── train_nn_surrogate.py          # Surrogate model training script
+├── patch_volumes_from_info.py     # Volume data patching utility
+│
+├── surrogate_model/               # Trained model directory
+│   ├── ensemble_CL.pkl           # Lift coefficient model
+│   ├── ensemble_CD.pkl           # Drag coefficient model
+│   ├── ensemble_CL_CD.pkl        # Lift-to-drag ratio model
+│   ├── ensemble_Volume.pkl       # Volume prediction model
+│   └── config.json               # Model configuration
+│
+├── training_data/                 # CFD training data
+│   ├── multi_condition_medium_offdesign.csv
+│   └── Offdesign_training_data/   # Individual CFD results
+│
+└── outputs/                       # Generated outputs
+    ├── waverider_designs/         # Saved geometries
+    └── optimization_results/      # Optimization outputs
+
+================================================================================
+                      7. SURROGATE MODEL TRAINING
+================================================================================
+
+The surrogate model must be trained before using the Off-Design NN and 
+Multi-Mach Hunter tabs. Training requires a CSV file with CFD results.
+
+REQUIRED CSV COLUMNS:
+--------------------
+design_id       - Unique identifier for each design
+X1, X2, X3, X4  - Shape parameters (0-1 range)
+design_Mach     - Design Mach number (3, 4, 5, or 6)
+design_beta     - Design shock angle (degrees)
+width           - Vehicle width (meters)
+height          - Vehicle height (meters)
+flight_Mach     - Flight Mach number
+flight_AoA      - Flight angle of attack (degrees)
+CL              - Lift coefficient
+CD              - Drag coefficient
+CL_CD           - Lift-to-drag ratio
+Volume          - Internal volume (m³) [optional but recommended]
+status          - 'completed' for successful CFD runs
+
+TRAINING PROCEDURE:
+------------------
+1. Prepare training data CSV with CFD results
+
+2. (Optional) Patch volume data if missing:
+   python patch_volumes_from_info.py \
+       --input training_data.csv \
+       --data-folder ./CFD_results
+
+3. Train surrogate models:
+   python train_nn_surrogate.py \
+       --input training_data.csv \
+       --output-dir surrogate_model \
+       --ensemble-size 5 \
+       --epochs 500
+
+TRAINING OUTPUT:
+---------------
+After training, the following files are created:
+- ensemble_CL.pkl: Lift coefficient ensemble
+- ensemble_CD.pkl: Drag coefficient ensemble  
+- ensemble_CL_CD.pkl: Lift-to-drag ratio ensemble
+- ensemble_Volume.pkl: Volume ensemble (if data available)
+- config.json: Model configuration and feature columns
+
+TRAINING TIME:
+-------------
+Typical training time: 5-15 minutes for 10,000 samples
+More samples or larger ensembles increase training time
+
+================================================================================
+                        8. GUI CONFIGURATION
+================================================================================
+
+ADDING NEW TABS TO WAVERIDER_GUI.PY:
+-----------------------------------
+
+1. Add imports at the top of waverider_gui.py (around line 56):
+
+    # Import off-design surrogate tab
+    try:
+        from offdesign_surrogate_tab import OffDesignSurrogateTab
+        OFFDESIGN_SURROGATE_AVAILABLE = True
+    except ImportError as e:
+        print(f"Off-design surrogate tab not available: {e}")
+        OFFDESIGN_SURROGATE_AVAILABLE = False
+
+    # Import multi-mach hunter tab
+    try:
+        from multimach_hunter_tab import MultiMachHunterTab
+        MULTIMACH_HUNTER_AVAILABLE = True
+    except ImportError as e:
+        print(f"Multi-mach hunter tab not available: {e}")
+        MULTIMACH_HUNTER_AVAILABLE = False
+
+    # Import Claude assistant tab
+    try:
+        from claude_assistant_tab import ClaudeAssistantTab
+        CLAUDE_ASSISTANT_AVAILABLE = True
+    except ImportError as e:
+        print(f"Claude assistant tab not available: {e}")
+        CLAUDE_ASSISTANT_AVAILABLE = False
+
+2. Add tabs after existing tabs (around line 893):
+
+    # Off-Design Surrogate tab
+    if OFFDESIGN_SURROGATE_AVAILABLE:
+        self.offdesign_tab = OffDesignSurrogateTab(parent=self)
+        self.tab_widget.addTab(self.offdesign_tab, "🎯 Off-Design NN")
+
+    # Multi-Mach Hunter tab
+    if MULTIMACH_HUNTER_AVAILABLE:
+        self.multimach_tab = MultiMachHunterTab(parent=self)
+        self.tab_widget.addTab(self.multimach_tab, "🌐 Multi-Mach")
+
+    # Claude Assistant tab
+    if CLAUDE_ASSISTANT_AVAILABLE:
+        self.claude_tab = ClaudeAssistantTab(parent=self)
+        self.tab_widget.addTab(self.claude_tab, "🤖 Claude")
+
+================================================================================
+                        9. MODULE DESCRIPTIONS
+================================================================================
+
+generator.py
+-----------
+Purpose: Generate waverider geometry from design parameters
+Key Functions:
+- generate_waverider(): Main geometry generation
+- compute_shockwave_curves(): Shock surface calculation
+- trace_streamlines(): Lower surface generation
+Classes:
+- WaveriderGenerator: Main geometry generator class
+
+flowfield.py
+-----------
+Purpose: Interface with PySAGAS for CFD analysis
+Key Functions:
+- compute_flow_field(): Calculate flow properties
+- extract_coefficients(): Get CL, CD, CM from CFD
+- setup_boundary_conditions(): Configure flow solver
+
+optimization_engine.py
+---------------------
+Purpose: Genetic algorithm optimization core
+Key Functions:
+- run_optimization(): Execute optimization loop
+- evaluate_population(): Batch fitness evaluation
+- genetic_operators(): Selection, crossover, mutation
+Classes:
+- GeneticOptimizer: Main optimizer class
+- Individual: Chromosome representation
+
+offdesign_surrogate_tab.py
+-------------------------
+Purpose: Neural network surrogate prediction and CL/CD Hunter
+Features:
+- Load trained ensemble models
+- Predict CL, CD, CL/CD with uncertainty
+- Automated design optimization (Hunter mode)
+- Physics constraint enforcement
+Classes:
+- OffDesignSurrogateTab: PyQt5 tab widget
+- NNEnsemble: Neural network ensemble wrapper
+
+multimach_hunter_tab.py
+----------------------
+Purpose: Multi-Mach optimization across flight envelope
+Features:
+- Optimize for Mach range (e.g., M4-M7)
+- Four objective modes (robust, mean, consistent, balanced)
+- Performance comparison plots
+- Physics-informed constraints
+Classes:
+- MultiMachHunterTab: PyQt5 tab widget
+
+claude_assistant_tab.py
+----------------------
+Purpose: Natural language interaction with design system
+Features:
+- Chat interface with Claude API
+- Context-aware design recommendations
+- Quick action buttons
+- Integration with surrogate models
+Classes:
+- ClaudeAssistantTab: PyQt5 tab widget
+- ClaudeWorker: Background API thread
+
+train_nn_surrogate.py
+--------------------
+Purpose: Train neural network ensemble surrogates
+Features:
+- Load and preprocess training data
+- Train ensemble of networks
+- Save models and configuration
+- Performance metrics output
+Usage:
+    python train_nn_surrogate.py --input data.csv --output-dir model/
+
+================================================================================
+                          10. USAGE WORKFLOWS
+================================================================================
+
+WORKFLOW 1: Basic Waverider Design
+---------------------------------
+1. Launch GUI: python waverider_gui.py
+2. Adjust design parameters using sliders (X1-X4, Mach, Beta)
+3. Set physical dimensions (width, height)
+4. Click "Generate" to create geometry
+5. View 3D visualization
+6. Export to STL if desired
+
+WORKFLOW 2: Genetic Algorithm Optimization
+-----------------------------------------
+1. Go to Optimization tab
+2. Set objectives (maximize CL/CD, volume, etc.)
+3. Set constraints (dimension ranges, design Mach)
+4. Configure GA parameters (population, generations)
+5. Click "Run Optimization"
+6. Review Pareto front results
+7. Select and apply best design
+
+WORKFLOW 3: Surrogate-Based Performance Prediction
+-------------------------------------------------
+1. Go to Off-Design NN tab
+2. Click "Load Model" and select surrogate_model folder
+3. Enter design parameters in Prediction section
+4. Enter flight conditions (Mach, AoA)
+5. Click "Predict"
+6. Review CL, CD, CL/CD predictions with uncertainty
+
+WORKFLOW 4: CL/CD Hunter Optimization
+------------------------------------
+1. Go to Off-Design NN tab, Hunter section
+2. Set target flight conditions (Mach, AoA)
+3. Set geometry constraints (width, height ranges)
+4. Set design constraints (Mach range, beta range)
+5. (Optional) Enable volume constraint
+6. Click "Hunt Optimal Design"
+7. Review top 10 designs
+8. Click "Apply Best" to use in main GUI
+
+WORKFLOW 5: Multi-Mach Optimization
+----------------------------------
+1. Go to Multi-Mach Hunter tab
+2. Load surrogate model
+3. Set target Mach range (e.g., M4 to M7)
+4. Select optimization objective:
+   - Robust: Maximize worst-case performance
+   - Mean: Maximize average performance
+   - Consistent: Minimize variation
+   - Balanced: Combine mean and consistency
+5. Set geometry and design constraints
+6. Click "Run Multi-Mach Hunter"
+7. Review performance across Mach numbers
+8. Compare top designs on plot
+9. Apply best design
+
+WORKFLOW 6: Training New Surrogate Model
+---------------------------------------
+1. Collect CFD data in CSV format
+2. Ensure all required columns present
+3. Run training script:
+   python train_nn_surrogate.py --input data.csv --output-dir new_model
+4. Review training metrics (R², MAE)
+5. Load new model in GUI
+
+================================================================================
+                          11. TROUBLESHOOTING
+================================================================================
+
+PROBLEM: GUI won't start
+------------------------
+Solutions:
+1. Verify Python version: python --version (need 3.8+)
+2. Check PyQt5 installed: pip show PyQt5
+3. Try reinstalling: pip uninstall PyQt5 && pip install PyQt5
+4. Check for import errors in terminal output
+
+PROBLEM: "Index 0 is out of bounds" error when applying design
+-------------------------------------------------------------
+Cause: Physics constraint violation (β < Mach angle)
+Solutions:
+1. Increase shock angle (beta) constraint
+2. Use higher design Mach (M4+ has lower β requirements)
+3. Check physics constraints in output
+
+PROBLEM: High uncertainty (σ > 0.05) in predictions
+-------------------------------------------------
+Cause: Extrapolation beyond training domain
+Solutions:
+1. Use design Mach range that matches training data
+2. Check that flight Mach is within training domain
+3. Verify all parameters within training ranges
+4. Consider expanding training dataset
+
+PROBLEM: Model loading fails
+---------------------------
+Cause: Missing or corrupted model files
+Solutions:
+1. Verify all .pkl files present in model folder
+2. Verify config.json present
+3. Re-train models if necessary
+4. Check scikit-learn version compatibility
+
+PROBLEM: Slow CFD analysis
+-------------------------
+Cause: Fine mesh or complex geometry
+Solutions:
+1. Reduce mesh density
+2. Simplify geometry
+3. Use surrogate model for exploration
+4. Run batch analysis on multiple cores
+
+PROBLEM: Windows multiprocessing errors
+--------------------------------------
+Cause: Windows doesn't support fork()
+Solutions:
+1. Use spawn method (set in code)
+2. Wrap main code in if __name__ == '__main__':
+3. Use subprocess instead of multiprocessing
+4. Run on Linux if possible
+
+PROBLEM: Gmsh not found
+----------------------
+Cause: Gmsh not in PATH
+Solutions:
+1. Verify Gmsh installed: gmsh --version
+2. Add Gmsh directory to PATH
+3. Reinstall Gmsh, checking PATH option
+4. Set GMSH_PATH environment variable
+
+================================================================================
+                          12. API REFERENCE
+================================================================================
+
+NNEnsemble Class
+---------------
+    class NNEnsemble:
+        """Neural network ensemble for prediction with uncertainty."""
+        
+        def __init__(self, n_models=5, hidden_layers=(128, 64, 32)):
+            """Initialize ensemble configuration."""
+            
+        def fit(self, X, y):
+            """Train ensemble on data."""
+            
+        def predict(self, X, return_std=False):
+            """Make predictions with optional uncertainty.
+            
+            Args:
+                X: Input features array (n_samples, n_features)
+                return_std: If True, return (mean, std) tuple
+                
+            Returns:
+                predictions: Array of predictions
+                std (optional): Array of uncertainties
+            """
+            
+        @classmethod
+        def load(cls, filepath):
+            """Load ensemble from pickle file."""
+            
+        def save(self, filepath):
+            """Save ensemble to pickle file."""
+
+Key Functions in offdesign_surrogate_tab.py
+------------------------------------------
+    def get_min_beta(design_mach):
+        """Get minimum valid beta for design Mach.
+        
+        Args:
+            design_mach: Design Mach number
+            
+        Returns:
+            Minimum shock angle (degrees)
+        """
+        
+    def run_clcd_hunter():
+        """Execute CL/CD optimization search.
+        
+        Samples 5000 designs from constrained space,
+        evaluates with surrogate, returns top designs.
+        """
+
+Key Functions in multimach_hunter_tab.py
+---------------------------------------
+    def predict_multi_mach(params, mach_range, aoa):
+        """Predict CL/CD across Mach range.
+        
+        Args:
+            params: Design parameter dictionary
+            mach_range: List of Mach numbers
+            aoa: Angle of attack
+            
+        Returns:
+            Dictionary with per-Mach results and aggregates
+        """
+        
+    def run_hunter():
+        """Execute multi-Mach optimization.
+        
+        Samples designs, evaluates across Mach range,
+        ranks by selected objective (robust/mean/etc).
+        """
+
+================================================================================
+                              END OF DOCUMENT
+================================================================================
+
+Version: 1.0
+Date: December 2024
+Author: Waverider Design System Documentation
+
+For questions or issues, refer to the scientific report for theoretical
+background and methodology details.

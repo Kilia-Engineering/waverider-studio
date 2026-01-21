@@ -1,0 +1,60 @@
+{
+  "feature_cols": [
+    "X1",
+    "X2",
+    "X3",
+    "X4",
+    "design_Mach",
+    "design_beta",
+    "flight_Mach",
+    "flight_AoA",
+    "width",
+    "height"
+  ],
+  "volume_feature_cols": [
+    "X1",
+    "X2",
+    "X3",
+    "X4",
+    "design_Mach",
+    "design_beta",
+    "width",
+    "height"
+  ],
+  "has_volume_model": true,
+  "hidden_layers": [
+    128,
+    64,
+    32
+  ],
+  "ensemble_size": 5,
+  "training_date": "2025-12-19T00:24:31.526225",
+  "input_file": "multi_condition_medium_offdesign.csv",
+  "n_samples": 11835,
+  "metrics": {
+    "CL": {
+      "R2": 0.9994451011060653,
+      "RMSE": 0.01672854077036362,
+      "MAE": 0.009649296399328017,
+      "MAPE": 3.5222495183354505
+    },
+    "CD": {
+      "R2": 0.999358414923997,
+      "RMSE": 0.004739297544934454,
+      "MAE": 0.002472857868183368,
+      "MAPE": 3.3331356460591057
+    },
+    "CL_CD": {
+      "R2": 0.9990261335602242,
+      "RMSE": 0.01668323826376976,
+      "MAE": 0.011005674473292345,
+      "MAPE": 0.33272126025639276
+    },
+    "Volume": {
+      "R2": 0.9999670719446282,
+      "RMSE": 0.014601765860906345,
+      "MAE": 0.010525559281231521,
+      "MAPE": 13.690250390151611
+    }
+  }
+}
