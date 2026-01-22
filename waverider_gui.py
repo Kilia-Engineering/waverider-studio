@@ -707,17 +707,36 @@ class WaveriderGUI(QMainWindow):
         self.m_inf_spin.setRange(1.1, 20.0)
         self.m_inf_spin.setValue(5.0)
         self.m_inf_spin.setSingleStep(0.1)
+        self.m_inf_spin.valueChanged.connect(self.update_beta_hint)
         flow_layout.addWidget(self.m_inf_spin, 0, 1)
         
         flow_layout.addWidget(QLabel("Shock Angle β (deg):"), 1, 0)
+        beta_layout = QHBoxLayout()
         self.beta_spin = QDoubleSpinBox()
         self.beta_spin.setRange(5.0, 89.0)
         self.beta_spin.setValue(15.0)
         self.beta_spin.setSingleStep(0.5)
-        flow_layout.addWidget(self.beta_spin, 1, 1)
+        beta_layout.addWidget(self.beta_spin)
+        
+        # Auto-calculate beta button
+        self.auto_beta_btn = QPushButton("📐 Auto")
+        self.auto_beta_btn.setToolTip("Auto-calculate recommended β for current Mach")
+        self.auto_beta_btn.setMaximumWidth(60)
+        self.auto_beta_btn.clicked.connect(self.auto_calculate_beta)
+        beta_layout.addWidget(self.auto_beta_btn)
+        flow_layout.addLayout(beta_layout, 1, 1)
+        
+        # Beta hint label
+        self.beta_hint_label = QLabel("")
+        self.beta_hint_label.setStyleSheet("color: #666; font-size: 10px;")
+        self.beta_hint_label.setWordWrap(True)
+        flow_layout.addWidget(self.beta_hint_label, 2, 0, 1, 2)
         
         flow_group.setLayout(flow_layout)
         layout.addWidget(flow_group)
+        
+        # Initialize beta hint
+        self.update_beta_hint()
         
         # Geometry group
         geom_group = QGroupBox("Geometry")
@@ -743,6 +762,17 @@ class WaveriderGUI(QMainWindow):
         self.volume_label.setStyleSheet("font-weight: bold; color: #0066cc;")
         self.volume_label.setToolTip("Internal volume calculated after geometry generation")
         geom_layout.addWidget(self.volume_label, 2, 1)
+        
+        # Match lower surface to shockwave option (max volume)
+        self.match_shock_check = QCheckBox("Match lower surface to shockwave (Max Volume)")
+        self.match_shock_check.setToolTip(
+            "When enabled, the lower surface follows the shockwave curve\n"
+            "instead of tracing streamlines through the conical flowfield.\n\n"
+            "This maximizes internal volume for the given geometry,\n"
+            "but may affect aerodynamic performance predictions."
+        )
+        self.match_shock_check.setChecked(False)
+        geom_layout.addWidget(self.match_shock_check, 3, 0, 1, 2)
         
         geom_group.setLayout(geom_layout)
         layout.addWidget(geom_group)
@@ -1418,6 +1448,15 @@ class WaveriderGUI(QMainWindow):
             n_upper_surface = self.n_us_spin.value()
             n_shockwave = self.n_sw_spin.value()
             
+            dp = [
+                self.x1_spin.value(),
+                self.x2_spin.value(),
+                self.x3_spin.value(),
+                self.x4_spin.value()
+                ]
+            print(f"DEBUG: dp = {dp}")  # Add this line
+            print(f"DEBUG: x2_spin.value() = {self.x2_spin.value()}")  # And this
+            
             # Check design space constraint
             constraint = dp[1] / ((1 - dp[0])**4)
             max_constraint = (7/64) * (width/height)**4
@@ -1432,6 +1471,7 @@ class WaveriderGUI(QMainWindow):
                 return
             
             # Generate waverider
+            match_shockwave = self.match_shock_check.isChecked()
             self.waverider = wr(
                 M_inf=M_inf,
                 beta=beta,
@@ -1442,7 +1482,8 @@ class WaveriderGUI(QMainWindow):
                 n_shockwave=n_shockwave,
                 n_planes=n_planes,
                 n_streamwise=n_streamwise,
-                delta_streamwise=delta_streamwise
+                delta_streamwise=delta_streamwise,
+                match_shockwave=match_shockwave
             )
             
             # Calculate and display volume
@@ -1551,6 +1592,119 @@ class WaveriderGUI(QMainWindow):
             # Don't crash on hint update errors
             self.geom_constraint_label.setText("")
             self.design_constraint_label.setText("")
+    
+    def update_beta_hint(self):
+        """Update the beta hint label showing valid range for current Mach."""
+        try:
+            M = self.m_inf_spin.value()
+            
+            # Calculate Mach angle (minimum possible shock angle)
+            beta_min = np.degrees(np.arcsin(1.0 / M))
+            
+            # Get recommended beta values from lookup table
+            recommended = self.get_recommended_beta(M)
+            
+            # Update hint label
+            hint_text = f"β range: {beta_min:.1f}° (Mach angle) to ~45°  |  "
+            hint_text += f"Recommended: {recommended['mid']:.1f}° (range: {recommended['low']:.1f}°-{recommended['high']:.1f}°)"
+            
+            self.beta_hint_label.setText(hint_text)
+            
+            # Check if current beta is valid
+            current_beta = self.beta_spin.value()
+            if current_beta < beta_min:
+                self.beta_hint_label.setStyleSheet("color: #d32f2f; font-size: 10px; font-weight: bold;")
+            else:
+                self.beta_hint_label.setStyleSheet("color: #666; font-size: 10px;")
+                
+        except Exception as e:
+            self.beta_hint_label.setText("")
+    
+    def get_recommended_beta(self, M):
+        """
+        Get recommended shock angle (β) for a given Mach number.
+        
+        These values are derived from oblique shock theory and practical
+        waverider design experience. The recommended range gives attached
+        shocks with reasonable cone angles.
+        
+        Parameters
+        ----------
+        M : float
+            Freestream Mach number
+            
+        Returns
+        -------
+        dict
+            Contains 'low', 'mid', 'high' recommended beta values
+        """
+        # Lookup table based on the paper and oblique shock theory
+        # Format: Mach -> (low, mid, high) beta values in degrees
+        beta_table = {
+            2.0: (35.0, 40.0, 45.0),
+            2.5: (30.0, 34.0, 38.0),
+            3.0: (25.5, 26.5, 28.0),
+            3.5: (22.0, 23.5, 25.0),
+            4.0: (20.0, 21.0, 22.0),
+            4.5: (18.5, 19.5, 20.5),
+            5.0: (17.0, 18.0, 19.0),
+            5.5: (16.0, 17.0, 18.0),
+            6.0: (15.0, 16.0, 17.0),
+            7.0: (13.5, 14.5, 15.5),
+            8.0: (12.5, 13.5, 14.5),
+            10.0: (11.0, 12.0, 13.0),
+            12.0: (10.0, 11.0, 12.0),
+            15.0: (9.0, 10.0, 11.0),
+        }
+        
+        # Find closest Mach numbers for interpolation
+        mach_values = sorted(beta_table.keys())
+        
+        if M <= mach_values[0]:
+            low, mid, high = beta_table[mach_values[0]]
+        elif M >= mach_values[-1]:
+            low, mid, high = beta_table[mach_values[-1]]
+        else:
+            # Linear interpolation
+            for i in range(len(mach_values) - 1):
+                if mach_values[i] <= M <= mach_values[i + 1]:
+                    M1, M2 = mach_values[i], mach_values[i + 1]
+                    t = (M - M1) / (M2 - M1)
+                    
+                    low1, mid1, high1 = beta_table[M1]
+                    low2, mid2, high2 = beta_table[M2]
+                    
+                    low = low1 + t * (low2 - low1)
+                    mid = mid1 + t * (mid2 - mid1)
+                    high = high1 + t * (high2 - high1)
+                    break
+        
+        # Ensure beta is above Mach angle
+        beta_min = np.degrees(np.arcsin(1.0 / M)) + 0.5  # Small margin
+        low = max(low, beta_min)
+        mid = max(mid, beta_min)
+        high = max(high, beta_min)
+        
+        return {'low': low, 'mid': mid, 'high': high}
+    
+    def auto_calculate_beta(self):
+        """Auto-calculate and set recommended beta for current Mach."""
+        M = self.m_inf_spin.value()
+        recommended = self.get_recommended_beta(M)
+        
+        # Set to middle recommended value
+        self.beta_spin.setValue(recommended['mid'])
+        
+        # Show info message
+        QMessageBox.information(
+            self, "Auto β Calculation",
+            f"For Mach {M:.1f}, recommended β values:\n\n"
+            f"  Low:  {recommended['low']:.2f}°\n"
+            f"  Mid:  {recommended['mid']:.2f}° ← (selected)\n"
+            f"  High: {recommended['high']:.2f}°\n\n"
+            f"Lower β → sharper leading edge, lower drag\n"
+            f"Higher β → blunter leading edge, more volume"
+        )
     
     def update_3d_view(self):
         """Update the 3D view with current display options"""
@@ -1713,7 +1867,7 @@ class WaveriderGUI(QMainWindow):
 
             dp = [
                 self.x1_spin.value(),
-                self.x1_spin.value(),
+                self.x2_spin.value(),
                 self.x3_spin.value(),
                 self.x4_spin.value(),
             ]
@@ -1749,6 +1903,7 @@ class WaveriderGUI(QMainWindow):
                 return
 
             # Build the waverider
+            match_shockwave = self.match_shock_check.isChecked()
             self.waverider = wr(
                 M_inf=M_inf,
                 beta=beta,
@@ -1760,6 +1915,7 @@ class WaveriderGUI(QMainWindow):
                 n_planes=n_planes,
                 n_streamwise=n_streamwise,
                 delta_streamwise=delta_streamwise,
+                match_shockwave=match_shockwave
             )
             
             # Calculate and display volume

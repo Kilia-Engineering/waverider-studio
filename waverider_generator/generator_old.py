@@ -123,12 +123,6 @@ class waverider():
         else:
             self.delta_streamwise = 0.05
 
-        # check optional input "match_shockwave" - when True, lower surface matches shockwave for max volume
-        if "match_shockwave" in kwargs:
-            self.match_shockwave = bool(kwargs["match_shockwave"])
-        else:
-            self.match_shockwave = False
-
 
         #ratio of specific heats
         self.gamma=1.4
@@ -297,12 +291,6 @@ class waverider():
 
     def Streamline_Tracing(self):
 
-        # If match_shockwave is True, lower surface follows the shockwave curve directly
-        # This maximizes volume but doesn't follow the actual streamlines
-        if self.match_shockwave:
-            self._create_shockwave_matched_lower_surface()
-            return
-
         # propagate the streamlines
         Vr, Vt = cone_field(self.M_inf,self.cone_angle*np.pi/180,self.beta*np.pi/180,self.gamma)
 
@@ -389,44 +377,6 @@ class waverider():
 
                 # append
                 self.lower_surface_streams.append(stream)
-    
-    def _create_shockwave_matched_lower_surface(self):
-        """
-        Create lower surface that matches the shockwave curve (maximum volume configuration).
-        
-        Instead of tracing streamlines through the conical flowfield, the lower surface
-        is created by drawing straight lines from each leading edge point to the 
-        corresponding shockwave point at the base plane.
-        """
-        # make the following arrays of size n_planes+2
-        leading_edge = self.leading_edge
-        y_local_shockwave = self.y_local_shockwave
-        y_local_shockwave = np.vstack((np.array([[0]]), y_local_shockwave, np.array([[self.X2*self.height]])))
-
-        z_local_shockwave = self.z_local_shockwave[:,None]
-        z_local_shockwave = np.vstack((np.array([[0]]), z_local_shockwave, np.array([[self.width]])))
-
-        for i, le_point in enumerate(leading_edge):
-            # tip - same as normal case
-            if i == len(leading_edge) - 1:
-                stream = np.vstack((le_point, le_point))
-                self.lower_surface_streams.append(stream)
-            else:
-                # Get the shockwave point at the base plane for this z-location
-                # The shockwave y-value in global coordinates
-                z_shock = float(z_local_shockwave[i, 0])
-                y_shock_local = float(y_local_shockwave[i, 0])
-                y_shock_global = self.Local_to_Global(y_shock_local)
-                
-                # Base plane is at x = length
-                x_base = self.length
-                
-                # Create straight line from leading edge to shockwave point at base
-                x = np.linspace(le_point[0], x_base, self.n_streamwise)[:, None]
-                y = np.linspace(le_point[1], y_shock_global, self.n_streamwise)[:, None]
-                z = np.full((self.n_streamwise, 1), le_point[2])
-                
-                self.lower_surface_streams.append(np.column_stack([x, y, z]))
 
     def Compute_Upper_Surface(self):
         
