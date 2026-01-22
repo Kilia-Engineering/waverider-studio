@@ -998,6 +998,13 @@ class SurrogateWorker(QThread):
             obj_name = obj_cfg['name']
             self.training_y[obj_name] = np.array([r.get(obj_name, 0.0) for r in successful])
         
+        # Always include CL and CD for CLCDOptimizedSurrogate
+        # (it computes CL/CD from these with proper uncertainty propagation)
+        if 'CL' not in self.training_y:
+            self.training_y['CL'] = np.array([r.get('CL', 0.0) for r in successful])
+        if 'CD' not in self.training_y:
+            self.training_y['CD'] = np.array([r.get('CD', 0.0) for r in successful])
+        
         # Build initial surrogate
         self.log_message.emit("")
         self.log_message.emit("Building initial surrogate model...")
@@ -1129,6 +1136,13 @@ class SurrogateWorker(QThread):
         for obj_cfg in objectives_config:
             obj_name = obj_cfg['name']
             self.training_y[obj_name] = np.array([r.get(obj_name, 0.0) for r in successful])
+        
+        # Always include CL and CD for CLCDOptimizedSurrogate
+        # (it computes CL/CD from these with proper uncertainty propagation)
+        if 'CL' not in self.training_y:
+            self.training_y['CL'] = np.array([r.get('CL', 0.0) for r in successful])
+        if 'CD' not in self.training_y:
+            self.training_y['CD'] = np.array([r.get('CD', 0.0) for r in successful])
         
         # Build initial surrogate
         self.log_message.emit("")
