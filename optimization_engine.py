@@ -101,6 +101,9 @@ class WaveriderProblem(Problem):
                  n_streamwise: int = 30,
                  delta_streamwise: float = 0.1,
                  
+                 # Geometry options
+                 match_shockwave: bool = False,  # Match lower surface to shockwave for max volume
+                 
                  # Debug
                  verbose: bool = False):
         """
@@ -142,6 +145,7 @@ class WaveriderProblem(Problem):
         self.n_planes = n_planes
         self.n_streamwise = n_streamwise
         self.delta_streamwise = delta_streamwise
+        self.match_shockwave = match_shockwave
         
         # Parallelization
         self.n_cores = n_cores
@@ -460,7 +464,7 @@ class WaveriderProblem(Problem):
                     self.M_inf, self.beta, self.pressure, self.temperature, self.aoa,
                     self.height, self.width, self.A_ref,
                     self.mesh_size, self.n_planes, self.n_streamwise, self.delta_streamwise,
-                    worker_id=i, verbose=self.verbose
+                    worker_id=i, verbose=self.verbose, match_shockwave=self.match_shockwave
                 )
                 if self.verbose:
                     if result['success']:
@@ -489,7 +493,9 @@ class WaveriderProblem(Problem):
                     self.M_inf, self.beta, self.pressure, self.temperature, self.aoa,
                     self.height, self.width, self.A_ref,
                     self.mesh_size, self.n_planes, self.n_streamwise, self.delta_streamwise,
-                    i  # worker_id
+                    i,  # worker_id
+                    False,  # verbose
+                    self.match_shockwave  # match_shockwave
                 ))
         
         # Evaluate in parallel using spawn context (Windows-safe)
@@ -555,7 +561,8 @@ def evaluate_single_design(
     n_streamwise: int,
     delta_streamwise: float,
     worker_id: int = 0,
-    verbose: bool = False
+    verbose: bool = False,
+    match_shockwave: bool = False
 ) -> Dict:
     """
     Evaluate a single waverider design.
@@ -607,7 +614,8 @@ def evaluate_single_design(
                 n_shockwave=10000,
                 n_planes=n_planes,
                 n_streamwise=n_streamwise,
-                delta_streamwise=delta_streamwise
+                delta_streamwise=delta_streamwise,
+                match_shockwave=match_shockwave
             )
         except Exception as e:
             return {
