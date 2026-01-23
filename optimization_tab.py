@@ -110,6 +110,7 @@ class OptimizationWorker(QThread):
                 A_ref=sim_params.get('A_ref'),
                 mesh_size=algorithm_params.get('mesh_size', 0.1),
                 n_cores=algorithm_params['n_cores'],
+                match_shockwave=sim_params.get('match_shockwave', False),
                 verbose=True  # Enable verbose mode to see errors
             )
             self.log_message.emit("✓ Problem created successfully")
@@ -1022,6 +1023,26 @@ class OptimizationTab(QWidget):
         info_label.setWordWrap(True)
         info_label.setStyleSheet("color: #666; font-size: 9px;")
         layout.addWidget(info_label, row, 0, 1, 4)
+        row += 1
+        
+        # Geometry options separator
+        layout.addWidget(QLabel(""), row, 0)  # spacer
+        row += 1
+        
+        # Match lower surface to shockwave option
+        self.opt_match_shock_check = QCheckBox("Match lower surface to shockwave (Max Volume)")
+        self.opt_match_shock_check.setToolTip(
+            "When enabled, the lower surface follows the shockwave curve\n"
+            "instead of tracing streamlines through the conical flowfield.\n\n"
+            "This maximizes internal volume for each design.\n"
+            "Aerodynamic coefficients are still computed correctly."
+        )
+        self.opt_match_shock_check.setChecked(False)
+        # Try to sync with main GUI checkbox
+        if hasattr(self, 'parent_gui') and self.parent_gui:
+            if hasattr(self.parent_gui, 'match_shock_check'):
+                self.opt_match_shock_check.setChecked(self.parent_gui.match_shock_check.isChecked())
+        layout.addWidget(self.opt_match_shock_check, row, 0, 1, 4)
         
         group.setLayout(layout)
         return group
@@ -1409,7 +1430,8 @@ class OptimizationTab(QWidget):
             'aoa': self.opt_aoa_spin.value(),
             'A_ref': self.opt_aref_spin.value(),
             'pressure': self.opt_pressure_spin.value(),
-            'temperature': self.opt_temperature_spin.value()
+            'temperature': self.opt_temperature_spin.value(),
+            'match_shockwave': self.opt_match_shock_check.isChecked()
         }
         
         # Fixed parameters (geometry + flow)
