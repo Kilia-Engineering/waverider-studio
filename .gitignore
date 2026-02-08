@@ -1,2 +1,6 @@
 # Auto Claude data directory
 .auto-claude/
+
+# Python bytecode
+__pycache__/
+*.pyc
