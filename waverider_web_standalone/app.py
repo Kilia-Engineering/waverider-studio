@@ -83,12 +83,8 @@ def _post_shock_mach(M_inf, beta_deg, gamma=1.4):
     return float(Ma2)
 
 
-def generate_shadow_waverider(data):
-    """
-    Generate a cone-derived (shadow) waverider using the ShadowWaverider class.
-    Uses Adam Weaver's SHADOW methodology: polynomial leading edge projected
-    onto a conical shock, streamlines traced through Taylor-Maccoll flow field.
-    """
+def _create_shadow_waverider(data):
+    """Create a ShadowWaverider object from request data."""
     M_inf = float(data.get('mach', 6.0))
     beta_deg = float(data.get('beta', 12.0))
     poly_order = int(data.get('poly_order', 2))
@@ -98,18 +94,25 @@ def generate_shadow_waverider(data):
     n_le = int(data.get('n_le', 21))
     n_streamwise = int(data.get('n_streamwise', 20))
     length = float(data.get('length', 1.0))
-
-    # Create the ShadowWaverider object (does all computation)
     if poly_order == 3:
-        sw = create_third_order_waverider(
+        return create_third_order_waverider(
             mach=M_inf, shock_angle=beta_deg,
             A3=A3, A2=A2, A0=A0,
             n_leading_edge=n_le, n_streamwise=n_streamwise, length=length)
     else:
-        sw = create_second_order_waverider(
+        return create_second_order_waverider(
             mach=M_inf, shock_angle=beta_deg,
             A2=A2, A0=A0,
             n_leading_edge=n_le, n_streamwise=n_streamwise, length=length)
+
+
+def generate_shadow_waverider(data):
+    """
+    Generate a cone-derived (shadow) waverider using the ShadowWaverider class.
+    Uses Adam Weaver's SHADOW methodology: polynomial leading edge projected
+    onto a conical shock, streamlines traced through Taylor-Maccoll flow field.
+    """
+    sw = _create_shadow_waverider(data)
 
     # ─── Build Three.js mesh from ShadowWaverider surfaces ───
     # After _transform_coordinates: X=streamwise, Y=vertical, Z=span
@@ -314,6 +317,105 @@ def _create_waverider(data):
     )
 
 
+def _write_stl(vertices, faces, filename, scale=1000):
+    """Write STL file directly from vertex/face data (no gmsh needed)."""
+    with open(filename, 'w') as f:
+        f.write("solid waverider\n")
+        for face in faces:
+            v0 = np.array(vertices[face[0]]) * scale
+            v1 = np.array(vertices[face[1]]) * scale
+            v2 = np.array(vertices[face[2]]) * scale
+            e1 = v1 - v0
+            e2 = v2 - v0
+            normal = np.cross(e1, e2)
+            norm = np.linalg.norm(normal)
+            if norm > 1e-10:
+                normal /= norm
+            else:
+                normal = np.array([0.0, 0.0, 1.0])
+            f.write(f"  facet normal {normal[0]:.6e} {normal[1]:.6e} {normal[2]:.6e}\n")
+            f.write("    outer loop\n")
+            f.write(f"      vertex {v0[0]:.6e} {v0[1]:.6e} {v0[2]:.6e}\n")
+            f.write(f"      vertex {v1[0]:.6e} {v1[1]:.6e} {v1[2]:.6e}\n")
+            f.write(f"      vertex {v2[0]:.6e} {v2[1]:.6e} {v2[2]:.6e}\n")
+            f.write("    endloop\n")
+            f.write("  endfacet\n")
+        f.write("endsolid waverider\n")
+
+
+def shadow_to_CAD(sw, sides='both', export=True, filename='waverider.step', scale=1000):
+    """Create CAD solid from ShadowWaverider using cadquery interpPlate."""
+    import cadquery as cq
+
+    x_offset = sw.x_start
+
+    # Copy and offset surfaces
+    le = sw.leading_edge.copy()
+    upper = sw.upper_surface.copy()
+    lower = sw.lower_surface.copy()
+    le[:, 0] -= x_offset
+    upper[:, :, 0] -= x_offset
+    lower[:, :, 0] -= x_offset
+
+    # Work with one half (z >= 0), then mirror
+    pos_idx = sorted([i for i in range(len(le)) if le[i, 2] >= -1e-6],
+                     key=lambda i: le[i, 2])
+    le_half = le[pos_idx] * scale
+    upper_half = upper[pos_idx] * scale
+    lower_half = lower[pos_idx] * scale
+    n_half = len(pos_idx)
+    n_stream = upper_half.shape[1]
+
+    # Symmetry boundary points (z ~ 0)
+    nose = tuple(le_half[0])
+    te_u_sym = tuple(upper_half[0, -1])
+    te_l_sym = tuple(lower_half[0, -1])
+
+    # 3D boundary edges (must use 3D edges, not 2D workplane ops)
+    e_le = cq.Edge.makeSpline([cq.Vector(*tuple(le_half[i])) for i in range(n_half)])
+    e_sym_u = cq.Edge.makeLine(cq.Vector(*nose), cq.Vector(*te_u_sym))
+    e_te_u = cq.Edge.makeSpline([cq.Vector(*tuple(upper_half[i, -1])) for i in range(n_half)])
+    e_sym_l = cq.Edge.makeLine(cq.Vector(*nose), cq.Vector(*te_l_sym))
+    e_te_l = cq.Edge.makeSpline([cq.Vector(*tuple(lower_half[i, -1])) for i in range(n_half)])
+
+    # Interior points (skip 2 columns near LE/TE boundaries and boundary span rows
+    # to avoid conflicts with boundary edge constraints)
+    us_pts = [tuple(upper_half[i, j]) for i in range(1, n_half - 1) for j in range(2, n_stream - 2)]
+    ls_pts = [tuple(lower_half[i, j]) for i in range(1, n_half - 1) for j in range(2, n_stream - 2)]
+
+    # Create interpolated surfaces
+    upper_face = cq.Workplane("XY").interpPlate([e_sym_u, e_le, e_te_u], us_pts, 0)
+    lower_face = cq.Workplane("XY").interpPlate([e_sym_l, e_le, e_te_l], ls_pts, 0)
+
+    # Back face (trailing edge)
+    e1 = cq.Edge.makeSpline([cq.Vector(*tuple(lower_half[i, -1])) for i in range(n_half)])
+    e2 = cq.Edge.makeSpline([cq.Vector(*tuple(upper_half[i, -1])) for i in range(n_half)])
+    e3 = cq.Edge.makeLine(cq.Vector(*te_u_sym), cq.Vector(*te_l_sym))
+    back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2, e3]))
+
+    # Symmetry face
+    e4 = cq.Edge.makeLine(cq.Vector(*nose), cq.Vector(*te_u_sym))
+    e5 = cq.Edge.makeLine(cq.Vector(*nose), cq.Vector(*te_l_sym))
+    sym = cq.Face.makeFromWires(cq.Wire.assembleEdges([e3, e4, e5]))
+
+    # Assemble solid
+    left = cq.Solid.makeSolid(
+        cq.Shell.makeShell([upper_face.objects[0], lower_face.objects[0], back, sym])
+    )
+    right = left.mirror(mirrorPlane='XY')
+
+    if sides == 'left':
+        result = left
+    elif sides == 'right':
+        result = right
+    else:
+        result = cq.Workplane("XY").newObject([right]).union(left)
+
+    if export:
+        cq.exporters.export(result, filename)
+    return result
+
+
 # ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.route('/')
@@ -443,10 +545,15 @@ def generate():
 @app.route('/api/export/step', methods=['POST'])
 def export_step():
     try:
-        wr = _create_waverider(request.get_json())
+        data = request.get_json()
         with tempfile.NamedTemporaryFile(suffix='.step', delete=False) as f:
             tmppath = f.name
-        to_CAD(wr, sides='both', export=True, filename=tmppath, scale=1000)
+        if data.get('method') == 'shadow':
+            sw = _create_shadow_waverider(data)
+            shadow_to_CAD(sw, sides='both', export=True, filename=tmppath, scale=1000)
+        else:
+            wr = _create_waverider(data)
+            to_CAD(wr, sides='both', export=True, filename=tmppath, scale=1000)
         return send_file(tmppath, mimetype='application/step',
                          as_attachment=True, download_name='waverider.step')
     except ValueError as e:
@@ -460,31 +567,19 @@ def export_step():
 def export_stl():
     try:
         data = request.get_json()
-        wr = _create_waverider(data)
-        min_size = float(data.get('mesh_min_size', 5.0))
-        max_size = float(data.get('mesh_max_size', 50.0))
-
-        with tempfile.NamedTemporaryFile(suffix='.step', delete=False) as f:
-            step_path = f.name
         with tempfile.NamedTemporaryFile(suffix='.stl', delete=False) as f:
             stl_path = f.name
 
-        to_CAD(wr, sides='both', export=True, filename=step_path, scale=1000)
-
-        import gmsh
-        gmsh.initialize()
-        gmsh.option.setNumber("General.Terminal", 0)
-        gmsh.model.occ.importShapes(step_path)
-        gmsh.model.occ.synchronize()
-        gmsh.model.occ.removeAllDuplicates()
-        gmsh.model.occ.synchronize()
-        gmsh.option.setNumber("Mesh.MeshSizeMin", min_size)
-        gmsh.option.setNumber("Mesh.MeshSizeMax", max_size)
-        gmsh.option.setNumber("Mesh.Algorithm", 6)
-        gmsh.model.mesh.generate(2)
-        gmsh.write(stl_path)
-        gmsh.finalize()
-        os.unlink(step_path)
+        if data.get('method') == 'shadow':
+            sw = _create_shadow_waverider(data)
+            vertices, triangles = sw.get_mesh()
+            vertices = vertices.copy()
+            vertices[:, 0] -= sw.x_start  # nose at x=0
+            _write_stl(vertices.tolist(), triangles.tolist(), stl_path, scale=1000)
+        else:
+            wr = _create_waverider(data)
+            mesh = build_mesh_data(wr)
+            _write_stl(mesh['vertices'], mesh['faces'], stl_path, scale=1000)
 
         return send_file(stl_path, mimetype='application/sla',
                          as_attachment=True, download_name='waverider.stl')
