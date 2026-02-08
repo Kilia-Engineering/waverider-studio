@@ -80,55 +80,75 @@ function displayWaverider(data) {
   waveriderGroup = new THREE.Group();
   const { vertices, faces } = data;
 
-  // Build full geometry
-  const geo = new THREE.BufferGeometry();
-  const pos = new Float32Array(faces.length * 9);
-  for (let i = 0; i < faces.length; i++) {
-    const [a, b, c] = faces[i];
-    for (let k = 0; k < 3; k++) { pos[i*9+k] = vertices[a][k]; pos[i*9+3+k] = vertices[b][k]; pos[i*9+6+k] = vertices[c][k]; }
+  console.log('Waverider mesh: ' + vertices.length + ' vertices, ' + faces.length + ' faces');
+
+  // Build indexed geometry (more efficient and reliable)
+  const positions = new Float32Array(vertices.length * 3);
+  for (let i = 0; i < vertices.length; i++) {
+    positions[i * 3]     = vertices[i][0];
+    positions[i * 3 + 1] = vertices[i][1];
+    positions[i * 3 + 2] = vertices[i][2];
   }
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+
+  const indices = [];
+  for (let i = 0; i < faces.length; i++) {
+    indices.push(faces[i][0], faces[i][1], faces[i][2]);
+  }
+
+  // Compute bounding box to verify data
+  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity, minZ=Infinity, maxZ=-Infinity;
+  for (let i = 0; i < vertices.length; i++) {
+    minX = Math.min(minX, vertices[i][0]); maxX = Math.max(maxX, vertices[i][0]);
+    minY = Math.min(minY, vertices[i][1]); maxY = Math.max(maxY, vertices[i][1]);
+    minZ = Math.min(minZ, vertices[i][2]); maxZ = Math.max(maxZ, vertices[i][2]);
+  }
+  console.log('Bounds X: [' + minX.toFixed(2) + ', ' + maxX.toFixed(2) + '] Y: [' + minY.toFixed(2) + ', ' + maxY.toFixed(2) + '] Z: [' + minZ.toFixed(2) + ', ' + maxZ.toFixed(2) + ']');
+
+  // Upper surface geometry (uses all faces, colored by normal direction)
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setIndex(indices);
   geo.computeVertexNormals();
 
-  const norms = geo.getAttribute('normal');
-  const upperPos = [], lowerPos = [];
-  for (let i = 0; i < faces.length; i++) {
-    const ny = (norms.getY(i*3) + norms.getY(i*3+1) + norms.getY(i*3+2)) / 3;
-    const arr = ny > 0 ? upperPos : lowerPos;
-    for (let j = 0; j < 9; j++) arr.push(pos[i*9+j]);
-  }
+  // Assign per-face colors: amber for upward-facing, blue for downward-facing
+  const colors = new Float32Array(vertices.length * 3);
+  const amberR = 0.96, amberG = 0.62, amberB = 0.04;  // #f59e0b
+  const blueR  = 0.23, blueG  = 0.51, blueB  = 0.96;  // #3b82f6
+  const normals = geo.getAttribute('normal');
 
-  // Upper surface — amber-tinted
-  if (upperPos.length) {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(upperPos), 3));
-    g.computeVertexNormals();
-    waveriderGroup.add(new THREE.Mesh(g, new THREE.MeshPhongMaterial({
-      color: 0xf59e0b, transparent: true, opacity: 0.75, side: THREE.DoubleSide, shininess: 80,
-    })));
-    waveriderGroup.children[waveriderGroup.children.length-1].name = 'upper';
-    const gw = g.clone();
-    waveriderGroup.add(new THREE.Mesh(gw, new THREE.MeshPhongMaterial({
-      color: 0xf59e0b, wireframe: true, transparent: true, opacity: 0.5,
-    })));
-    waveriderGroup.children[waveriderGroup.children.length-1].name = 'upper_wire';
+  for (let i = 0; i < vertices.length; i++) {
+    const ny = normals.getY(i);
+    if (ny > 0) {
+      colors[i*3] = amberR; colors[i*3+1] = amberG; colors[i*3+2] = amberB;
+    } else {
+      colors[i*3] = blueR; colors[i*3+1] = blueG; colors[i*3+2] = blueB;
+    }
   }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-  // Lower surface — blue-tinted
-  if (lowerPos.length) {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lowerPos), 3));
-    g.computeVertexNormals();
-    waveriderGroup.add(new THREE.Mesh(g, new THREE.MeshPhongMaterial({
-      color: 0x3b82f6, transparent: true, opacity: 0.75, side: THREE.DoubleSide, shininess: 80,
-    })));
-    waveriderGroup.children[waveriderGroup.children.length-1].name = 'lower';
-    const gw = g.clone();
-    waveriderGroup.add(new THREE.Mesh(gw, new THREE.MeshPhongMaterial({
-      color: 0x3b82f6, wireframe: true, transparent: true, opacity: 0.5,
-    })));
-    waveriderGroup.children[waveriderGroup.children.length-1].name = 'lower_wire';
-  }
+  // Solid mesh
+  const solidMat = new THREE.MeshPhongMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    shininess: 60,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const solidMesh = new THREE.Mesh(geo, solidMat);
+  solidMesh.name = 'solid';
+  waveriderGroup.add(solidMesh);
+
+  // Wireframe mesh (same geometry)
+  const wireMat = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.5,
+  });
+  const wireMesh = new THREE.Mesh(geo.clone(), wireMat);
+  wireMesh.name = 'wireframe';
+  wireMesh.visible = false;
+  waveriderGroup.add(wireMesh);
 
   // Leading edge — green
   if (data.leading_edge && data.leading_edge.length > 1) {
@@ -153,19 +173,19 @@ function fitCamera() {
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z);
+  if (maxDim === 0) { console.error('Bounding box is zero-size'); return; }
   controls.target.copy(center);
   camera.position.set(center.x + maxDim * 1.5, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
   camera.lookAt(center);
   controls.update();
+  console.log('Camera at', camera.position, 'looking at', center, 'maxDim', maxDim);
 }
 
 function updateVisibility() {
   if (!waveriderGroup) return;
   waveriderGroup.traverse(c => {
-    if (c.name === 'upper')       c.visible = showUpper && !showWire;
-    if (c.name === 'upper_wire')  c.visible = showUpper && showWire;
-    if (c.name === 'lower')       c.visible = showLower && !showWire;
-    if (c.name === 'lower_wire')  c.visible = showLower && showWire;
+    if (c.name === 'solid')        c.visible = (showUpper || showLower) && !showWire;
+    if (c.name === 'wireframe')    c.visible = (showUpper || showLower) && showWire;
     if (c.name === 'leading_edge') c.visible = showLE;
   });
 }
