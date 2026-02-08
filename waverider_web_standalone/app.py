@@ -176,8 +176,8 @@ def generate_shadow_waverider(data):
     # Split into positive-z and negative-z halves for the JS viewer
     le_pos = [[float(p[0] - x_offset), float(p[1]), float(p[2])] for p in le if p[2] >= -1e-8]
     le_neg = [[float(p[0] - x_offset), float(p[1]), float(p[2])] for p in le if p[2] <= 1e-8]
-    le_pos.sort(key=lambda p: p[2])
-    le_neg.sort(key=lambda p: -p[2])
+    le_pos.sort(key=lambda p: p[2])   # center (z=0) → right tip (z>0)
+    le_neg.sort(key=lambda p: p[2])   # left tip (z<0) → center (z=0)
 
     cg = [round(float(sw.cg[0] - x_offset), 4), round(float(sw.cg[1]), 4), round(float(sw.cg[2]), 4)]
 
