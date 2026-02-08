@@ -1,0 +1,7 @@
+flask>=3.0
+gunicorn>=21.0
+numpy>=1.24
+scipy>=1.10
+cadquery>=2.4
+gmsh>=4.12
+numpy-stl>=3.0

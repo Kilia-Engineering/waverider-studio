@@ -1,0 +1,16 @@
+[Unit]
+Description=Waverider Web Designer
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/waverider
+ExecStart=/opt/waverider/venv/bin/gunicorn --bind 127.0.0.1:5000 --workers 2 --timeout 300 app:app
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
