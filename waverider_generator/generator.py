@@ -487,7 +487,7 @@ class waverider():
             else:
                 first_derivative,_,_=self.Get_First_Derivative(z)
                 # print(first_derivative)
-                intersection=self.Intersection_With_Upper_Surface(first_derivative=first_derivative,z_s=float(z),y_s=float(self.y_local_shockwave[i,:]))
+                intersection=self.Intersection_With_Upper_Surface(first_derivative=first_derivative,z_s=float(z),y_s=float(self.y_local_shockwave[i,0]))
                 self.local_intersections_us[i,:]=intersection
 
     # create an interp1d object for the shockwave curve 

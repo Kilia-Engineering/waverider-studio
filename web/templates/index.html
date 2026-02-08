@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Waverider Designer | kilia.engineering</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+
+        <!-- ─── Left Panel ───────────────────────────────────────────────── -->
+        <div class="panel">
+            <div class="panel-header">
+                <h1>Waverider Designer</h1>
+                <span class="subtitle">waverider.kilia.engineering</span>
+            </div>
+
+            <div class="panel-scroll">
+
+                <!-- Design Method -->
+                <div class="section">
+                    <div class="section-title">Design Method</div>
+                    <div class="method-tabs">
+                        <button class="method-tab active" id="param-method-osculating"
+                            data-tooltip="Lower surface follows actual post-shock streamlines from the conical flowfield via Taylor-Maccoll ODE integration. Physically accurate aerodynamic surface.">
+                            Osculating Cones
+                        </button>
+                        <button class="method-tab" id="param-method-shadow"
+                            data-tooltip="Lower surface follows the shockwave curve directly instead of tracing streamlines. Maximizes internal volume for the given geometry, but may affect aerodynamic performance predictions.">
+                            Shadow (Max Vol.)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Flow Conditions -->
+                <div class="section">
+                    <div class="section-header">
+                        <span class="section-title" style="margin-bottom:0; border:none; padding:0;">Flow Conditions</span>
+                        <span class="collapse-icon">&#9660;</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="input-row">
+                            <label data-tooltip="Freestream Mach number for design. Higher Mach numbers produce thinner, more slender waverider shapes with weaker shock waves.">
+                                Mach (M&#8734;) <span class="tooltip-icon">?</span>
+                            </label>
+                            <input type="number" id="param-mach" value="6.0" min="1.1" max="20.0" step="0.1">
+                        </div>
+
+                        <div class="input-row">
+                            <label data-tooltip="Oblique shock angle in degrees. Must be greater than the Mach angle (arcsin(1/M)). Controls the shock geometry and compression.">
+                                Shock &#946; (deg) <span class="tooltip-icon">?</span>
+                            </label>
+                            <div class="beta-row" style="flex:1; margin:0;">
+                                <input type="number" id="param-beta" value="12.0" min="5" max="89" step="0.1">
+                                <button class="btn-auto" id="btn-auto-beta">Auto</button>
+                            </div>
+                        </div>
+                        <div class="beta-hint" id="beta-hint"></div>
+                    </div>
+                </div>
+
+                <!-- Geometry -->
+                <div class="section">
+                    <div class="section-header">
+                        <span class="section-title" style="margin-bottom:0; border:none; padding:0;">Geometry</span>
+                        <span class="collapse-icon">&#9660;</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="input-row">
+                            <label data-tooltip="Waverider height in meters. Controls vehicle size and the shock geometry together with width.">
+                                Height (m) <span class="tooltip-icon">?</span>
+                            </label>
+                            <input type="number" id="param-height" value="1.0" min="0.1" max="10.0" step="0.1">
+                        </div>
+                        <div class="input-row">
+                            <label data-tooltip="Waverider wingspan/width in meters. Larger width produces a wider design with more lateral spread.">
+                                Width (m) <span class="tooltip-icon">?</span>
+                            </label>
+                            <input type="number" id="param-width" value="3.0" min="0.1" max="10.0" step="0.1">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Design Parameters -->
+                <div class="section">
+                    <div class="section-header">
+                        <span class="section-title" style="margin-bottom:0; border:none; padding:0;">Design Parameters</span>
+                        <span class="collapse-icon">&#9660;</span>
+                    </div>
+                    <div class="section-body">
+                        <div id="constraint-badge" class="constraint-badge valid">Checking...</div>
+
+                        <div class="slider-row">
+                            <div class="slider-header">
+                                <label data-tooltip="Flat region extent: controls where the curved part of the shockwave begins. Higher X1 means the shockwave starts further from the centerline. Linked to X2 by the geometric constraint.">
+                                    X1 &mdash; Flat Region <span class="tooltip-icon">?</span>
+                                </label>
+                                <span class="slider-value" id="display-x1">0.11</span>
+                            </div>
+                            <input type="range" id="param-x1" min="0" max="0.99" step="0.01" value="0.11">
+                        </div>
+
+                        <div class="slider-row">
+                            <div class="slider-header">
+                                <label data-tooltip="Shock height at base plane: controls the maximum deflection of the shockwave curve. Automatically limited by X1 via the geometric constraint: X2/(1-X1)^4 < (7/64)(w/h)^4.">
+                                    X2 &mdash; Shock Height <span class="tooltip-icon">?</span>
+                                </label>
+                                <span class="slider-value" id="display-x2">0.63</span>
+                            </div>
+                            <input type="range" id="param-x2" min="0" max="1.0" step="0.01" value="0.63">
+                        </div>
+
+                        <div class="slider-row">
+                            <div class="slider-header">
+                                <label data-tooltip="Upper surface 1st control point. Strong influence on internal volume. Controls the curvature of the upper surface B&eacute;zier curve at mid-span.">
+                                    X3 &mdash; Upper Surf. 1 <span class="tooltip-icon">?</span>
+                                </label>
+                                <span class="slider-value" id="display-x3">0.00</span>
+                            </div>
+                            <input type="range" id="param-x3" min="0" max="1.0" step="0.01" value="0.0">
+                        </div>
+
+                        <div class="slider-row">
+                            <div class="slider-header">
+                                <label data-tooltip="Upper surface 2nd control point. Strong influence on internal volume. Controls the curvature of the upper surface B&eacute;zier curve near the wing tip.">
+                                    X4 &mdash; Upper Surf. 2 <span class="tooltip-icon">?</span>
+                                </label>
+                                <span class="slider-value" id="display-x4">0.46</span>
+                            </div>
+                            <input type="range" id="param-x4" min="0" max="1.0" step="0.01" value="0.46">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Mesh Resolution -->
+                <div class="section collapsed">
+                    <div class="section-header">
+                        <span class="section-title" style="margin-bottom:0; border:none; padding:0;">Mesh Resolution</span>
+                        <span class="collapse-icon">&#9660;</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="input-row">
+                            <label data-tooltip="Number of cross-sectional osculating planes for streamline tracing. More planes = smoother spanwise resolution but slower computation.">
+                                N Planes <span class="tooltip-icon">?</span>
+                            </label>
+                            <input type="number" id="param-nplanes" value="40" min="10" max="200" step="5">
+                        </div>
+                        <div class="input-row">
+                            <label data-tooltip="Number of points along each streamline in the streamwise direction. More points = smoother surface but larger data.">
+                                N Streamwise <span class="tooltip-icon">?</span>
+                            </label>
+                            <input type="number" id="param-nstreamwise" value="30" min="10" max="200" step="5">
+                        </div>
+                        <div class="input-row">
+                            <label data-tooltip="Streamline ODE integration step size as a fraction of waverider length (0.01 to 0.2). Smaller = more accurate but slower.">
+                                &#948; Streamwise <span class="tooltip-icon">?</span>
+                            </label>
+                            <input type="number" id="param-delta" value="0.1" min="0.01" max="0.2" step="0.01">
+                        </div>
+                        <div class="input-row">
+                            <label data-tooltip="Number of interpolation points for the upper surface B&eacute;zier curve. Higher values give smoother curves.">
+                                N Upper Surf. <span class="tooltip-icon">?</span>
+                            </label>
+                            <input type="number" id="param-nuppersurface" value="200" min="50" max="2000" step="50">
+                        </div>
+                        <div class="input-row">
+                            <label data-tooltip="Number of interpolation points for the shockwave B&eacute;zier curve. Higher values give smoother shock curve definition.">
+                                N Shockwave <span class="tooltip-icon">?</span>
+                            </label>
+                            <input type="number" id="param-nshockwave" value="200" min="50" max="2000" step="50">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Generate Button -->
+                <div class="section">
+                    <button class="btn btn-primary" id="btn-generate">
+                        Generate Waverider
+                    </button>
+                </div>
+
+                <!-- Export -->
+                <div class="section">
+                    <div class="section-header">
+                        <span class="section-title" style="margin-bottom:0; border:none; padding:0;">Export CAD</span>
+                        <span class="collapse-icon">&#9660;</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="export-buttons">
+                            <button class="btn btn-secondary" id="btn-export-step" disabled
+                                data-tooltip="Export as STEP file (for CAD software like SolidWorks, FreeCAD, Fusion 360). Geometry is scaled to mm.">
+                                &#128190; STEP
+                            </button>
+                            <button class="btn btn-secondary" id="btn-export-stl" disabled
+                                data-tooltip="Export as STL mesh file (for 3D printing, CFD meshing). Uses Gmsh for high-quality surface meshing.">
+                                &#128190; STL
+                            </button>
+                        </div>
+
+                        <div style="margin-top: 10px;">
+                            <div class="section-title" style="font-size:9px;">STL Mesh Settings</div>
+                            <div class="mesh-presets">
+                                <button class="mesh-preset-btn" data-min="10" data-max="100">Coarse</button>
+                                <button class="mesh-preset-btn active" data-min="5" data-max="50">Medium</button>
+                                <button class="mesh-preset-btn" data-min="2" data-max="20">Fine</button>
+                            </div>
+                            <div class="input-row">
+                                <label data-tooltip="Minimum triangle edge length in mm. Smaller values capture more detail in curved regions.">
+                                    Min Size (mm) <span class="tooltip-icon">?</span>
+                                </label>
+                                <input type="number" id="param-meshmin" value="5" min="0.1" max="1000" step="1">
+                            </div>
+                            <div class="input-row">
+                                <label data-tooltip="Maximum triangle edge length in mm. Controls the coarsest mesh regions on flat surfaces.">
+                                    Max Size (mm) <span class="tooltip-icon">?</span>
+                                </label>
+                                <input type="number" id="param-meshmax" value="50" min="0.1" max="1000" step="1">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- /panel-scroll -->
+
+            <!-- Status Bar -->
+            <div class="status-bar" id="status-bar">
+                Ready
+            </div>
+        </div><!-- /panel -->
+
+        <!-- ─── 3D Viewer ────────────────────────────────────────────────── -->
+        <div class="viewer">
+            <div id="viewer-canvas"></div>
+
+            <!-- Viewer controls overlay -->
+            <div class="viewer-controls">
+                <button class="viewer-btn active" id="btn-toggle-upper" title="Toggle upper surface">Upper</button>
+                <button class="viewer-btn active" id="btn-toggle-lower" title="Toggle lower surface">Lower</button>
+                <button class="viewer-btn active" id="btn-toggle-le" title="Toggle leading edge">LE</button>
+                <button class="viewer-btn" id="btn-toggle-wireframe" title="Toggle wireframe mode">Wire</button>
+                <button class="viewer-btn" id="btn-reset-view" title="Reset camera view">Reset</button>
+            </div>
+
+            <!-- Info overlay -->
+            <div class="viewer-info" id="info-panel">
+                <div class="info-title">Waverider Info</div>
+                <div class="info-row">
+                    <span class="info-label">Method:</span>
+                    <span class="info-value" id="info-method">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Length:</span>
+                    <span class="info-value" id="info-length">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Volume:</span>
+                    <span class="info-value" id="info-volume">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Deflection:</span>
+                    <span class="info-value" id="info-deflection">-</span>
+                </div>
+            </div>
+
+            <!-- Empty state -->
+            <div class="empty-state">
+                <div class="icon">&#9992;</div>
+                <p>No waverider generated yet</p>
+                <p class="hint">Configure parameters and click Generate</p>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Three.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
