@@ -114,6 +114,15 @@ def generate_shadow_waverider(data):
     """
     sw = _create_shadow_waverider(data)
 
+    # Extract params needed for info dict
+    M_inf = float(data.get('mach', 6.0))
+    beta_deg = float(data.get('beta', 12.0))
+    poly_order = int(data.get('poly_order', 2))
+    A3 = float(data.get('A3', 0.0))
+    A2 = float(data.get('A2', -2.0))
+    A0 = float(data.get('A0', -0.15))
+    length = float(data.get('length', 1.0))
+
     # ─── Build Three.js mesh from ShadowWaverider surfaces ───
     # After _transform_coordinates: X=streamwise, Y=vertical, Z=span
     # upper_surface and lower_surface shape: (n_span, n_streamwise, 3)
