@@ -708,6 +708,49 @@ input[type="range"]::-webkit-slider-thumb:hover {
   text-align: right;
 }
 
+/* ─── Color Legend ───────────────────────────────────────────────────────── */
+
+.viewer-legend {
+  position: absolute;
+  bottom: 1rem;
+  right: 1rem;
+  padding: 0.6rem 0.85rem;
+  background: rgba(17, 17, 17, 0.9);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+  z-index: 10;
+  display: none;
+}
+
+.viewer-legend.visible {
+  display: block;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--text-soft);
+  padding: 0.15rem 0;
+}
+
+.legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.legend-star {
+  background: none !important;
+  color: #10b981;
+  font-size: 1rem;
+  line-height: 12px;
+  text-align: center;
+}
+
 /* ─── Empty State ────────────────────────────────────────────────────────── */
 
 .empty-state {

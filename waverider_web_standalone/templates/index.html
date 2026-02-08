@@ -8,7 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="stylesheet" href="/static/css/style.css?v=5">
 </head>
 <body>
 
@@ -45,12 +46,12 @@
             </button>
             <button class="method-btn" id="method-shadow">
               Shadow (Max Vol.)
-              <span class="method-desc">Shockwave-matched lower surface</span>
+              <span class="method-desc">Cone-derived polynomial cross-section</span>
             </button>
           </div>
         </div>
 
-        <!-- Flow Conditions -->
+        <!-- Flow Conditions (shared) -->
         <div class="section">
           <div class="section-label">Flow Conditions</div>
 
@@ -79,121 +80,135 @@
           </div>
         </div>
 
-        <!-- Geometry -->
-        <div class="section">
-          <div class="section-label">Geometry</div>
+        <!-- ════ Osculating Cones Parameters ════ -->
+        <div id="panel-osc">
 
-          <div class="field">
-            <div class="field-row">
-              <span class="field-label">
-                Height (m)
-                <span class="field-hint" data-tip="Waverider height in meters. Controls vehicle size and the shock geometry together with width. Range: 0.1 &ndash; 10.0">?</span>
-              </span>
-              <input type="number" id="p-height" value="1.0" min="0.1" max="10.0" step="0.1">
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="field-row">
-              <span class="field-label">
-                Width (m)
-                <span class="field-hint" data-tip="Waverider wingspan in meters. Larger width produces a wider design with more lateral spread. Range: 0.1 &ndash; 10.0">?</span>
-              </span>
-              <input type="number" id="p-width" value="3.0" min="0.1" max="10.0" step="0.1">
-            </div>
-          </div>
-        </div>
-
-        <!-- Design Parameters -->
-        <div class="section">
-          <div class="section-label section-label-blue">Design Parameters</div>
-
-          <div id="constraint-badge" class="constraint-badge valid">Checking...</div>
-
-          <div class="slider-field">
-            <div class="slider-header">
-              <label>
-                X1 &#8212; Flat Region
-                <span class="field-hint" data-tip="Controls where the curved part of the shockwave begins. Higher X1 means the shockwave starts further from the centerline. Linked to X2 by the geometric constraint.">?</span>
-              </label>
-              <span class="slider-val" id="v-x1">0.11</span>
-            </div>
-            <input type="range" id="p-x1" min="0" max="0.99" step="0.01" value="0.11">
-          </div>
-
-          <div class="slider-field">
-            <div class="slider-header">
-              <label>
-                X2 &#8212; Shock Height
-                <span class="field-hint" data-tip="Controls the maximum deflection of the shockwave curve at the base plane. Limited by X1 via constraint: X2/(1-X1)^4 < (7/64)(w/h)^4.">?</span>
-              </label>
-              <span class="slider-val" id="v-x2">0.63</span>
-            </div>
-            <input type="range" id="p-x2" min="0" max="1.0" step="0.01" value="0.63">
-          </div>
-
-          <div class="slider-field">
-            <div class="slider-header">
-              <label>
-                X3 &#8212; Upper Surf. 1
-                <span class="field-hint" data-tip="Upper surface 1st B&eacute;zier control point. Strong influence on internal volume. Controls the curvature of the upper surface at mid-span.">?</span>
-              </label>
-              <span class="slider-val" id="v-x3">0.00</span>
-            </div>
-            <input type="range" id="p-x3" min="0" max="1.0" step="0.01" value="0.0">
-          </div>
-
-          <div class="slider-field">
-            <div class="slider-header">
-              <label>
-                X4 &#8212; Upper Surf. 2
-                <span class="field-hint" data-tip="Upper surface 2nd B&eacute;zier control point. Strong influence on internal volume. Controls the curvature of the upper surface near the wing tip.">?</span>
-              </label>
-              <span class="slider-val" id="v-x4">0.46</span>
-            </div>
-            <input type="range" id="p-x4" min="0" max="1.0" step="0.01" value="0.46">
-          </div>
-        </div>
-
-        <!-- Mesh Resolution (collapsed by default) -->
-        <div class="section collapsed">
-          <div class="section-toggle">
-            <span class="section-label" style="margin:0;padding:0;border:none;">Mesh Resolution</span>
-            <span class="chevron">&#9660;</span>
-          </div>
-          <div class="section-body">
+          <!-- Geometry -->
+          <div class="section">
+            <div class="section-label">Geometry</div>
             <div class="field">
               <div class="field-row">
-                <span class="field-label">N Planes <span class="field-hint" data-tip="Number of cross-sectional osculating planes for streamline tracing. More planes = smoother spanwise resolution.">?</span></span>
-                <input type="number" id="p-nplanes" value="40" min="10" max="200" step="5">
+                <span class="field-label">
+                  Height (m)
+                  <span class="field-hint" data-tip="Waverider height in meters. Controls vehicle size and the shock geometry together with width. Range: 0.1 &ndash; 10.0">?</span>
+                </span>
+                <input type="number" id="p-height" value="1.0" min="0.1" max="10.0" step="0.1">
               </div>
             </div>
             <div class="field">
               <div class="field-row">
-                <span class="field-label">N Streamwise <span class="field-hint" data-tip="Number of points along each streamline. More points = smoother surface.">?</span></span>
-                <input type="number" id="p-nstream" value="30" min="10" max="200" step="5">
-              </div>
-            </div>
-            <div class="field">
-              <div class="field-row">
-                <span class="field-label">&#948; Streamwise <span class="field-hint" data-tip="ODE integration step as fraction of waverider length (0.01 &ndash; 0.2). Smaller = more accurate.">?</span></span>
-                <input type="number" id="p-delta" value="0.1" min="0.01" max="0.2" step="0.01">
-              </div>
-            </div>
-            <div class="field">
-              <div class="field-row">
-                <span class="field-label">N Upper Surf <span class="field-hint" data-tip="Interpolation points for upper surface B&eacute;zier curve. Higher = smoother.">?</span></span>
-                <input type="number" id="p-nupper" value="200" min="50" max="2000" step="50">
-              </div>
-            </div>
-            <div class="field">
-              <div class="field-row">
-                <span class="field-label">N Shockwave <span class="field-hint" data-tip="Interpolation points for shockwave B&eacute;zier curve. Higher = smoother.">?</span></span>
-                <input type="number" id="p-nshock" value="200" min="50" max="2000" step="50">
+                <span class="field-label">
+                  Width (m)
+                  <span class="field-hint" data-tip="Waverider wingspan in meters. Larger width produces a wider design with more lateral spread. Range: 0.1 &ndash; 10.0">?</span>
+                </span>
+                <input type="number" id="p-width" value="3.0" min="0.1" max="10.0" step="0.1">
               </div>
             </div>
           </div>
-        </div>
+
+          <!-- Design Parameters -->
+          <div class="section">
+            <div class="section-label section-label-blue">Design Parameters</div>
+            <div id="constraint-badge" class="constraint-badge valid">Checking...</div>
+
+            <div class="slider-field">
+              <div class="slider-header">
+                <label>X1 &#8212; Flat Region <span class="field-hint" data-tip="Controls where the curved part of the shockwave begins. Higher X1 means the shockwave starts further from the centerline. Linked to X2 by the geometric constraint.">?</span></label>
+                <span class="slider-val" id="v-x1">0.11</span>
+              </div>
+              <input type="range" id="p-x1" min="0" max="0.99" step="0.01" value="0.11">
+            </div>
+
+            <div class="slider-field">
+              <div class="slider-header">
+                <label>X2 &#8212; Shock Height <span class="field-hint" data-tip="Controls the maximum deflection of the shockwave curve at the base plane. Limited by X1 via constraint: X2/(1-X1)^4 < (7/64)(w/h)^4.">?</span></label>
+                <span class="slider-val" id="v-x2">0.63</span>
+              </div>
+              <input type="range" id="p-x2" min="0" max="1.0" step="0.01" value="0.63">
+            </div>
+
+            <div class="slider-field">
+              <div class="slider-header">
+                <label>X3 &#8212; Upper Surf. 1 <span class="field-hint" data-tip="Upper surface 1st B&eacute;zier control point. Strong influence on internal volume. Controls the curvature of the upper surface at mid-span.">?</span></label>
+                <span class="slider-val" id="v-x3">0.00</span>
+              </div>
+              <input type="range" id="p-x3" min="0" max="1.0" step="0.01" value="0.0">
+            </div>
+
+            <div class="slider-field">
+              <div class="slider-header">
+                <label>X4 &#8212; Upper Surf. 2 <span class="field-hint" data-tip="Upper surface 2nd B&eacute;zier control point. Strong influence on internal volume. Controls the curvature of the upper surface near the wing tip.">?</span></label>
+                <span class="slider-val" id="v-x4">0.46</span>
+              </div>
+              <input type="range" id="p-x4" min="0" max="1.0" step="0.01" value="0.46">
+            </div>
+          </div>
+
+          <!-- Mesh Resolution (collapsed) -->
+          <div class="section collapsed">
+            <div class="section-toggle">
+              <span class="section-label" style="margin:0;padding:0;border:none;">Mesh Resolution</span>
+              <span class="chevron">&#9660;</span>
+            </div>
+            <div class="section-body">
+              <div class="field"><div class="field-row"><span class="field-label">N Planes <span class="field-hint" data-tip="Number of cross-sectional osculating planes for streamline tracing.">?</span></span><input type="number" id="p-nplanes" value="40" min="10" max="200" step="5"></div></div>
+              <div class="field"><div class="field-row"><span class="field-label">N Streamwise <span class="field-hint" data-tip="Number of points along each streamline.">?</span></span><input type="number" id="p-nstream" value="30" min="10" max="200" step="5"></div></div>
+              <div class="field"><div class="field-row"><span class="field-label">&#948; Streamwise <span class="field-hint" data-tip="ODE integration step as fraction of waverider length.">?</span></span><input type="number" id="p-delta" value="0.1" min="0.01" max="0.2" step="0.01"></div></div>
+              <div class="field"><div class="field-row"><span class="field-label">N Upper Surf <span class="field-hint" data-tip="Interpolation points for upper surface B&eacute;zier curve.">?</span></span><input type="number" id="p-nupper" value="200" min="50" max="2000" step="50"></div></div>
+              <div class="field"><div class="field-row"><span class="field-label">N Shockwave <span class="field-hint" data-tip="Interpolation points for shockwave B&eacute;zier curve.">?</span></span><input type="number" id="p-nshock" value="200" min="50" max="2000" step="50"></div></div>
+            </div>
+          </div>
+
+        </div><!-- panel-osc -->
+
+        <!-- ════ Shadow (Cone-Derived) Parameters ════ -->
+        <div id="panel-shadow" style="display:none;">
+
+          <!-- Polynomial -->
+          <div class="section">
+            <div class="section-label section-label-blue">Polynomial (y = A&#8323;z&#179; + A&#8322;z&#178; + A&#8320;)</div>
+
+            <div class="field">
+              <div class="field-row">
+                <span class="field-label">Order <span class="field-hint" data-tip="Polynomial order for the cross-section curve. 2nd order uses A2 and A0. 3rd order adds A3 for asymmetric shapes.">?</span></span>
+                <select id="p-poly-order">
+                  <option value="2" selected>2nd Order</option>
+                  <option value="3">3rd Order</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field" id="field-a3" style="display:none;">
+              <div class="field-row">
+                <span class="field-label">A&#8323; <span class="field-hint" data-tip="Cubic coefficient. Controls asymmetry in the cross-section. Only active for 3rd order polynomial.">?</span></span>
+                <input type="number" id="p-a3" value="0.00" step="0.01">
+              </div>
+            </div>
+
+            <div class="field">
+              <div class="field-row">
+                <span class="field-label">A&#8322; <span class="field-hint" data-tip="Quadratic coefficient. Controls the curvature/width of the cross-section. Typically negative (concave down).">?</span></span>
+                <input type="number" id="p-a2" value="-2.00" step="0.1">
+              </div>
+            </div>
+
+            <div class="field">
+              <div class="field-row">
+                <span class="field-label">A&#8320; <span class="field-hint" data-tip="Constant term. Controls the depth of the cross-section at the centerline. Must be negative.">?</span></span>
+                <input type="number" id="p-a0" value="-0.150" step="0.01">
+              </div>
+            </div>
+          </div>
+
+          <!-- Mesh -->
+          <div class="section">
+            <div class="section-label">Mesh</div>
+            <div class="field"><div class="field-row"><span class="field-label">LE Points <span class="field-hint" data-tip="Number of discretization points along the leading edge curve.">?</span></span><input type="number" id="p-nle" value="21" min="5" max="100" step="1"></div></div>
+            <div class="field"><div class="field-row"><span class="field-label">Streamwise <span class="field-hint" data-tip="Number of streamwise discretization points from nose to base.">?</span></span><input type="number" id="p-sw-shadow" value="20" min="5" max="100" step="1"></div></div>
+            <div class="field"><div class="field-row"><span class="field-label">Length (m) <span class="field-hint" data-tip="Prescribed waverider length from nose to base plane.">?</span></span><input type="number" id="p-length" value="1.00" min="0.1" max="20.0" step="0.1"></div></div>
+          </div>
+
+        </div><!-- panel-shadow -->
 
         <!-- Generate -->
         <div class="section">
@@ -211,7 +226,6 @@
               <button class="btn btn-outline" id="btn-step" disabled>&#8615; STEP</button>
               <button class="btn btn-outline" id="btn-stl" disabled>&#8615; STL</button>
             </div>
-
             <div style="margin-top: 1rem;">
               <div style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:1.5px; color:var(--text-muted); margin-bottom:0.5rem;">STL Mesh Settings</div>
               <div class="mesh-presets">
@@ -219,18 +233,8 @@
                 <button class="mesh-preset active" data-min="5" data-max="50">Medium</button>
                 <button class="mesh-preset" data-min="2" data-max="20">Fine</button>
               </div>
-              <div class="field">
-                <div class="field-row">
-                  <span class="field-label">Min (mm) <span class="field-hint" data-tip="Minimum triangle edge length in mm. Smaller values capture more detail in curved regions.">?</span></span>
-                  <input type="number" id="p-meshmin" value="5" min="0.1" max="1000" step="1">
-                </div>
-              </div>
-              <div class="field">
-                <div class="field-row">
-                  <span class="field-label">Max (mm) <span class="field-hint" data-tip="Maximum triangle edge length in mm. Controls the coarsest mesh regions on flat surfaces.">?</span></span>
-                  <input type="number" id="p-meshmax" value="50" min="0.1" max="1000" step="1">
-                </div>
-              </div>
+              <div class="field"><div class="field-row"><span class="field-label">Min (mm) <span class="field-hint" data-tip="Minimum triangle edge length in mm.">?</span></span><input type="number" id="p-meshmin" value="5" min="0.1" max="1000" step="1"></div></div>
+              <div class="field"><div class="field-row"><span class="field-label">Max (mm) <span class="field-hint" data-tip="Maximum triangle edge length in mm.">?</span></span><input type="number" id="p-meshmax" value="50" min="0.1" max="1000" step="1"></div></div>
             </div>
           </div>
         </div>
@@ -248,22 +252,31 @@
         <button class="viewer-btn active" id="t-upper" title="Toggle upper surface (amber)">Upper</button>
         <button class="viewer-btn active" id="t-lower" title="Toggle lower surface (blue)">Lower</button>
         <button class="viewer-btn active" id="t-le" title="Toggle leading edge (green)">LE</button>
+        <button class="viewer-btn active" id="t-cg" title="Toggle center of gravity marker">CG</button>
         <button class="viewer-btn" id="t-wire" title="Toggle wireframe">Wire</button>
         <button class="viewer-btn" id="t-reset" title="Reset camera view">Reset</button>
       </div>
 
       <div class="viewer-info" id="info-panel">
         <div class="viewer-info-title">Waverider Info</div>
-        <div class="info-grid">
-          <span class="info-key">Method</span>
-          <span class="info-val" id="info-method">-</span>
-          <span class="info-key">Length</span>
-          <span class="info-val" id="info-length">-</span>
-          <span class="info-key">Volume</span>
-          <span class="info-val" id="info-volume">-</span>
-          <span class="info-key">Deflection</span>
-          <span class="info-val" id="info-deflection">-</span>
+        <div class="info-grid" id="info-grid">
+          <span class="info-key">Method</span>       <span class="info-val" id="info-method">-</span>
+          <span class="info-key">Mach</span>          <span class="info-val" id="info-mach">-</span>
+          <span class="info-key">Shock &#946;</span>  <span class="info-val" id="info-beta">-</span>
+          <span class="info-key">Cone &#952;c</span>  <span class="info-val" id="info-cone">-</span>
+          <span class="info-key">Post-shock M</span>  <span class="info-val" id="info-psm">-</span>
+          <span class="info-key">Length</span>         <span class="info-val" id="info-length">-</span>
+          <span class="info-key">Planform Area</span> <span class="info-val" id="info-area">-</span>
+          <span class="info-key">Volume</span>        <span class="info-val" id="info-volume">-</span>
+          <span class="info-key">CG</span>            <span class="info-val" id="info-cg">-</span>
         </div>
+      </div>
+
+      <div class="viewer-legend" id="viewer-legend">
+        <div class="legend-item"><span class="legend-swatch" style="background:#f59e0b;"></span>Upper Surface</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#3b82f6;"></span>Lower Surface</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#10b981;"></span>Leading Edge</div>
+        <div class="legend-item"><span class="legend-swatch legend-star">&#9733;</span>CG</div>
       </div>
 
       <div class="empty-state">
@@ -277,6 +290,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js?v=5"></script>
 </body>
 </html>

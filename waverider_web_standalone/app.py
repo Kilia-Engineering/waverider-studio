@@ -13,7 +13,9 @@ import numpy as np
 
 from flask import Flask, request, jsonify, send_file, render_template
 from waverider_generator.generator import waverider
+from waverider_generator.flowfield import cone_angle as compute_cone_angle, cone_field
 from waverider_generator.cad_export import to_CAD
+from shadow_waverider import ShadowWaverider, create_second_order_waverider, create_third_order_waverider
 
 app = Flask(__name__,
             template_folder='templates',
@@ -65,6 +67,144 @@ def _trapz(y, x):
         return float(np.trapezoid(y, x))
     except AttributeError:
         return float(np.trapz(y, x))
+
+
+# ─── Cone-derived (Shadow) Waverider ──────────────────────────────────────
+
+def _post_shock_mach(M_inf, beta_deg, gamma=1.4):
+    """Compute post-shock Mach number from oblique shock relations."""
+    beta_rad = np.radians(beta_deg)
+    d = np.arctan(2.0 / np.tan(beta_rad) *
+                  (M_inf**2 * np.sin(beta_rad)**2 - 1.0) /
+                  (M_inf**2 * (gamma + np.cos(2 * beta_rad)) + 2.0))
+    Ma2 = (1.0 / np.sin(beta_rad - d) *
+           np.sqrt((1.0 + (gamma - 1.0) / 2.0 * M_inf**2 * np.sin(beta_rad)**2) /
+                   (gamma * M_inf**2 * np.sin(beta_rad)**2 - (gamma - 1.0) / 2.0)))
+    return float(Ma2)
+
+
+def generate_shadow_waverider(data):
+    """
+    Generate a cone-derived (shadow) waverider using the ShadowWaverider class.
+    Uses Adam Weaver's SHADOW methodology: polynomial leading edge projected
+    onto a conical shock, streamlines traced through Taylor-Maccoll flow field.
+    """
+    M_inf = float(data.get('mach', 6.0))
+    beta_deg = float(data.get('beta', 12.0))
+    poly_order = int(data.get('poly_order', 2))
+    A3 = float(data.get('A3', 0.0))
+    A2 = float(data.get('A2', -2.0))
+    A0 = float(data.get('A0', -0.15))
+    n_le = int(data.get('n_le', 21))
+    n_streamwise = int(data.get('n_streamwise', 20))
+    length = float(data.get('length', 1.0))
+
+    # Create the ShadowWaverider object (does all computation)
+    if poly_order == 3:
+        sw = create_third_order_waverider(
+            mach=M_inf, shock_angle=beta_deg,
+            A3=A3, A2=A2, A0=A0,
+            n_leading_edge=n_le, n_streamwise=n_streamwise, length=length)
+    else:
+        sw = create_second_order_waverider(
+            mach=M_inf, shock_angle=beta_deg,
+            A2=A2, A0=A0,
+            n_leading_edge=n_le, n_streamwise=n_streamwise, length=length)
+
+    # ─── Build Three.js mesh from ShadowWaverider surfaces ───
+    # After _transform_coordinates: X=streamwise, Y=vertical, Z=span
+    # upper_surface and lower_surface shape: (n_span, n_streamwise, 3)
+    # Offset X so nose is at x=0 (ShadowWaverider places nose at x=x_start)
+    x_offset = sw.x_start
+    n_span = sw.upper_surface.shape[0]
+    n_stream = sw.upper_surface.shape[1]
+
+    vertices = []
+    faces_list = []
+    vmap = {}
+
+    def add_v(x, y, z):
+        key = (round(x, 8), round(y, 8), round(z, 8))
+        if key not in vmap:
+            vmap[key] = len(vertices)
+            vertices.append([float(x), float(y), float(z)])
+        return vmap[key]
+
+    # Upper surface triangles
+    for i in range(n_span - 1):
+        for j in range(n_stream - 1):
+            p00 = sw.upper_surface[i, j]
+            p10 = sw.upper_surface[i+1, j]
+            p01 = sw.upper_surface[i, j+1]
+            p11 = sw.upper_surface[i+1, j+1]
+            v00 = add_v(p00[0] - x_offset, p00[1], p00[2])
+            v10 = add_v(p10[0] - x_offset, p10[1], p10[2])
+            v01 = add_v(p01[0] - x_offset, p01[1], p01[2])
+            v11 = add_v(p11[0] - x_offset, p11[1], p11[2])
+            faces_list.append([v00, v11, v10])
+            faces_list.append([v00, v01, v11])
+
+    # Lower surface triangles
+    for i in range(n_span - 1):
+        for j in range(n_stream - 1):
+            p00 = sw.lower_surface[i, j]
+            p10 = sw.lower_surface[i+1, j]
+            p01 = sw.lower_surface[i, j+1]
+            p11 = sw.lower_surface[i+1, j+1]
+            v00 = add_v(p00[0] - x_offset, p00[1], p00[2])
+            v10 = add_v(p10[0] - x_offset, p10[1], p10[2])
+            v01 = add_v(p01[0] - x_offset, p01[1], p01[2])
+            v11 = add_v(p11[0] - x_offset, p11[1], p11[2])
+            faces_list.append([v00, v10, v11])
+            faces_list.append([v00, v11, v01])
+
+    # The ShadowWaverider generates both halves (symmetric LE with negative z)
+    # Check if mirroring is needed (min z >= 0 means only one half)
+    all_z = [v[2] for v in vertices]
+    if min(all_z) >= -1e-6:
+        n_v = len(vertices)
+        n_f = len(faces_list)
+        for i in range(n_v):
+            add_v(vertices[i][0], vertices[i][1], -vertices[i][2])
+        for i in range(n_f):
+            f = faces_list[i]
+            mv = [add_v(vertices[f[k]][0], vertices[f[k]][1], -vertices[f[k]][2]) for k in range(3)]
+            faces_list.append([mv[0], mv[2], mv[1]])
+
+    # Leading edge: extract from ShadowWaverider, apply X offset
+    le = sw.leading_edge  # shape: (n_span, 3)
+    # Split into positive-z and negative-z halves for the JS viewer
+    le_pos = [[float(p[0] - x_offset), float(p[1]), float(p[2])] for p in le if p[2] >= -1e-8]
+    le_neg = [[float(p[0] - x_offset), float(p[1]), float(p[2])] for p in le if p[2] <= 1e-8]
+    le_pos.sort(key=lambda p: p[2])
+    le_neg.sort(key=lambda p: -p[2])
+
+    cg = [round(float(sw.cg[0] - x_offset), 4), round(float(sw.cg[1]), 4), round(float(sw.cg[2]), 4)]
+
+    mesh = {
+        'vertices': vertices, 'faces': faces_list,
+        'leading_edge': le_pos, 'leading_edge_mirrored': le_neg,
+        'cg': cg,
+    }
+
+    coeffs = [A2, A3, A0] if poly_order == 3 else [A2, 0.0, A0]
+
+    info = {
+        'method': 'Shadow (Cone-Derived)',
+        'mach': M_inf,
+        'beta': beta_deg,
+        'cone_angle': round(float(sw.cone_angle_deg), 2),
+        'post_shock_mach': round(float(sw.post_shock_mach), 2),
+        'deflection_angle': round(float(np.degrees(sw.deflection_angle)), 2),
+        'poly_order': poly_order,
+        'coefficients': coeffs,
+        'length': round(length, 4),
+        'planform_area': round(float(sw.planform_area), 4),
+        'volume': round(float(sw.volume), 6),
+        'mac': round(float(sw.mac), 4),
+        'cg': cg,
+    }
+    return mesh, info
 
 
 def compute_volume(wr):
@@ -209,6 +349,13 @@ def validate_params():
 def generate():
     try:
         data = request.get_json()
+
+        # Shadow (cone-derived) waverider
+        if data.get('method') == 'shadow':
+            mesh, info = generate_shadow_waverider(data)
+            return jsonify({'success': True, 'mesh': mesh, 'info': info})
+
+        # Osculating Cones waverider
         M_inf = float(data.get('mach', 6.0))
         beta = float(data.get('beta', 12.0))
         mach_angle = np.degrees(np.arcsin(1.0 / M_inf))
@@ -217,18 +364,73 @@ def generate():
         wr = _create_waverider(data)
         mesh = build_mesh_data(wr)
         volume = compute_volume(wr)
+        gamma = 1.4
+
+        # Compute cone angle and post-shock Mach
+        try:
+            theta_c = compute_cone_angle(M_inf, beta, gamma)
+        except Exception:
+            theta_c = wr.theta
+        post_shock_M = _post_shock_mach(M_inf, beta, gamma)
+
+        # Compute planform area
+        planform_area = 0.0
+        X, Z = wr.upper_surface_x, wr.upper_surface_z
+        ny, nx = X.shape
+        for i in range(ny - 1):
+            for j in range(nx - 1):
+                p1 = np.array([X[i,j], Z[i,j]])
+                p2 = np.array([X[i+1,j], Z[i+1,j]])
+                p3 = np.array([X[i+1,j+1], Z[i+1,j+1]])
+                p4 = np.array([X[i,j+1], Z[i,j+1]])
+                planform_area += 0.5 * abs(np.cross(p2-p1, p3-p1))
+                planform_area += 0.5 * abs(np.cross(p3-p1, p4-p1))
+        planform_area *= 2.0
+
+        # CG from volume centroid (approximate)
+        cg_x, cg_y, total_w = 0.0, 0.0, 0.0
+        us, ls = wr.upper_surface_streams, wr.lower_surface_streams
+        n_s = min(len(us), len(ls))
+        for si in range(n_s):
+            u, l = us[si], ls[si]
+            if u.shape[0] < 2 or l.shape[0] < 2:
+                continue
+            n = min(u.shape[0], l.shape[0])
+            t_u, t_l = np.linspace(0, 1, u.shape[0]), np.linspace(0, 1, l.shape[0])
+            t = np.linspace(0, 1, n)
+            ux = np.interp(t, t_u, u[:, 0])
+            uy = np.interp(t, t_u, u[:, 1])
+            ly = np.interp(t, t_l, l[:, 1])
+            for j in range(n - 1):
+                dy = uy[j] - ly[j]
+                if dy > 0:
+                    dx = abs(ux[j+1] - ux[j]) if j+1 < n else 0
+                    w = dy * dx
+                    cg_x += 0.5 * (ux[j] + ux[j+1]) * w
+                    cg_y += 0.5 * (uy[j] + ly[j]) * w
+                    total_w += w
+        if total_w > 0:
+            cg_x /= total_w
+            cg_y /= total_w
+        cg = [round(cg_x, 4), round(cg_y, 4), 0.0]
+        mesh['cg'] = cg
+
         return jsonify({
             'success': True,
             'mesh': mesh,
             'info': {
+                'method': 'Osculating Cones',
                 'length': round(wr.length, 4),
                 'height': float(data.get('height', 1.0)),
                 'width': float(data.get('width', 3.0)),
                 'volume': volume,
                 'mach': M_inf,
                 'beta': beta,
+                'cone_angle': round(theta_c, 2),
+                'post_shock_mach': round(post_shock_M, 2),
                 'deflection_angle': round(wr.theta, 4),
-                'method': 'Shadow (Shockwave-Matched)' if bool(data.get('match_shockwave')) else 'Osculating Cones',
+                'planform_area': round(planform_area, 4),
+                'cg': cg,
             }
         })
     except ValueError as e:

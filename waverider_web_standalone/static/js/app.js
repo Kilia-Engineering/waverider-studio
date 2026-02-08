@@ -1,27 +1,32 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   Waverider Web Designer — Frontend
+   Waverider Web Designer — Frontend  (v4)
    ═══════════════════════════════════════════════════════════════════════════ */
+console.log('app.js v5 loaded');
 
 let scene, camera, renderer, controls;
 let waveriderGroup = null;
 let isGenerating = false;
 let currentParams = null;
+let currentMethod = 'osc'; // 'osc' or 'shadow'
 
-let showUpper = true, showLower = true, showLE = true, showWire = false;
+let showUpper = true, showLower = true, showLE = true, showCG = true, showWire = false;
 
 /* ─── Three.js ───────────────────────────────────────────────────────────── */
 
 function initViewer() {
   const el = document.getElementById('viewer-canvas');
+  let w = el.clientWidth, h = el.clientHeight;
+  console.log('initViewer: container size', w, 'x', h);
+  if (w === 0 || h === 0) { setTimeout(initViewer, 100); return; }
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0a0a);
 
-  camera = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 0.01, 1000);
+  camera = new THREE.PerspectiveCamera(45, w / h, 0.01, 1000);
   camera.position.set(8, 4, 6);
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(el.clientWidth, el.clientHeight);
+  renderer.setSize(w, h);
   renderer.setPixelRatio(window.devicePixelRatio);
   el.appendChild(renderer.domElement);
 
@@ -30,24 +35,16 @@ function initViewer() {
   controls.dampingFactor = 0.08;
   controls.rotateSpeed = 0.8;
 
-  // Lighting
   scene.add(new THREE.AmbientLight(0x404060, 0.6));
   const d1 = new THREE.DirectionalLight(0xffffff, 0.8);
-  d1.position.set(5, 8, 5);
-  scene.add(d1);
+  d1.position.set(5, 8, 5); scene.add(d1);
   const d2 = new THREE.DirectionalLight(0x4488ff, 0.3);
-  d2.position.set(-5, 2, -3);
-  scene.add(d2);
+  d2.position.set(-5, 2, -3); scene.add(d2);
 
-  // Grid
   const grid = new THREE.GridHelper(20, 20, 0x1a1a1a, 0x111111);
-  grid.position.y = -2;
-  scene.add(grid);
-
-  // Axes
+  grid.position.y = -2; scene.add(grid);
   const axes = new THREE.AxesHelper(1.5);
-  axes.position.set(-1, -2, -1);
-  scene.add(axes);
+  axes.position.set(-1, -2, -1); scene.add(axes);
 
   window.addEventListener('resize', onResize);
   animate();
@@ -55,6 +52,7 @@ function initViewer() {
 
 function onResize() {
   const el = document.getElementById('viewer-canvas');
+  if (!renderer) return;
   camera.aspect = el.clientWidth / el.clientHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(el.clientWidth, el.clientHeight);
@@ -62,8 +60,8 @@ function onResize() {
 
 function animate() {
   requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
+  if (controls) controls.update();
+  if (renderer && scene && camera) renderer.render(scene, camera);
 }
 
 /* ─── Mesh Rendering ─────────────────────────────────────────────────────── */
@@ -79,92 +77,84 @@ function displayWaverider(data) {
 
   waveriderGroup = new THREE.Group();
   const { vertices, faces } = data;
-
   console.log('Waverider mesh: ' + vertices.length + ' vertices, ' + faces.length + ' faces');
 
-  // Build indexed geometry (more efficient and reliable)
   const positions = new Float32Array(vertices.length * 3);
   for (let i = 0; i < vertices.length; i++) {
-    positions[i * 3]     = vertices[i][0];
-    positions[i * 3 + 1] = vertices[i][1];
-    positions[i * 3 + 2] = vertices[i][2];
+    positions[i*3] = vertices[i][0]; positions[i*3+1] = vertices[i][1]; positions[i*3+2] = vertices[i][2];
   }
 
   const indices = [];
-  for (let i = 0; i < faces.length; i++) {
-    indices.push(faces[i][0], faces[i][1], faces[i][2]);
-  }
+  for (let i = 0; i < faces.length; i++) indices.push(faces[i][0], faces[i][1], faces[i][2]);
 
-  // Compute bounding box to verify data
-  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity, minZ=Infinity, maxZ=-Infinity;
-  for (let i = 0; i < vertices.length; i++) {
-    minX = Math.min(minX, vertices[i][0]); maxX = Math.max(maxX, vertices[i][0]);
-    minY = Math.min(minY, vertices[i][1]); maxY = Math.max(maxY, vertices[i][1]);
-    minZ = Math.min(minZ, vertices[i][2]); maxZ = Math.max(maxZ, vertices[i][2]);
-  }
-  console.log('Bounds X: [' + minX.toFixed(2) + ', ' + maxX.toFixed(2) + '] Y: [' + minY.toFixed(2) + ', ' + maxY.toFixed(2) + '] Z: [' + minZ.toFixed(2) + ', ' + maxZ.toFixed(2) + ']');
-
-  // Upper surface geometry (uses all faces, colored by normal direction)
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.setIndex(indices);
   geo.computeVertexNormals();
 
-  // Assign per-face colors: amber for upward-facing, blue for downward-facing
+  // Per-vertex colors: amber (upper, ny>0) / blue (lower, ny<=0)
   const colors = new Float32Array(vertices.length * 3);
-  const amberR = 0.96, amberG = 0.62, amberB = 0.04;  // #f59e0b
-  const blueR  = 0.23, blueG  = 0.51, blueB  = 0.96;  // #3b82f6
   const normals = geo.getAttribute('normal');
-
   for (let i = 0; i < vertices.length; i++) {
-    const ny = normals.getY(i);
-    if (ny > 0) {
-      colors[i*3] = amberR; colors[i*3+1] = amberG; colors[i*3+2] = amberB;
-    } else {
-      colors[i*3] = blueR; colors[i*3+1] = blueG; colors[i*3+2] = blueB;
-    }
+    if (normals.getY(i) > 0) { colors[i*3]=0.96; colors[i*3+1]=0.62; colors[i*3+2]=0.04; }
+    else { colors[i*3]=0.23; colors[i*3+1]=0.51; colors[i*3+2]=0.96; }
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-  // Solid mesh
-  const solidMat = new THREE.MeshPhongMaterial({
-    vertexColors: true,
-    side: THREE.DoubleSide,
-    shininess: 60,
-    transparent: true,
-    opacity: 0.85,
-  });
+  const solidMat = new THREE.MeshPhongMaterial({ vertexColors: true, side: THREE.DoubleSide, shininess: 60, transparent: true, opacity: 0.85 });
   const solidMesh = new THREE.Mesh(geo, solidMat);
   solidMesh.name = 'solid';
   waveriderGroup.add(solidMesh);
 
-  // Wireframe mesh (same geometry)
-  const wireMat = new THREE.MeshBasicMaterial({
-    vertexColors: true,
-    wireframe: true,
-    transparent: true,
-    opacity: 0.5,
-  });
+  const wireMat = new THREE.MeshBasicMaterial({ vertexColors: true, wireframe: true, transparent: true, opacity: 0.5 });
   const wireMesh = new THREE.Mesh(geo.clone(), wireMat);
-  wireMesh.name = 'wireframe';
-  wireMesh.visible = false;
+  wireMesh.name = 'wireframe'; wireMesh.visible = false;
   waveriderGroup.add(wireMesh);
 
-  // Leading edge — green
+  // Leading edge
   if (data.leading_edge && data.leading_edge.length > 1) {
     const pts = [];
-    data.leading_edge.forEach(p => pts.push(new THREE.Vector3(p[0], p[1], p[2])));
     if (data.leading_edge_mirrored) data.leading_edge_mirrored.forEach(p => pts.push(new THREE.Vector3(p[0], p[1], p[2])));
+    const startIdx = data.leading_edge_mirrored ? 1 : 0;
+    for (let i = startIdx; i < data.leading_edge.length; i++) {
+      const p = data.leading_edge[i]; pts.push(new THREE.Vector3(p[0], p[1], p[2]));
+    }
     const g = new THREE.BufferGeometry().setFromPoints(pts);
     const line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0x10b981, linewidth: 2 }));
     line.name = 'leading_edge';
     waveriderGroup.add(line);
   }
 
+  // CG marker (green star)
+  if (data.cg && data.cg.length === 3) {
+    const cgGroup = new THREE.Group();
+    cgGroup.name = 'cg_marker';
+
+    // Sphere
+    const sgeo = new THREE.SphereGeometry(0.04, 16, 16);
+    const smat = new THREE.MeshBasicMaterial({ color: 0x10b981 });
+    const sphere = new THREE.Mesh(sgeo, smat);
+    sphere.position.set(data.cg[0], data.cg[1], data.cg[2]);
+    cgGroup.add(sphere);
+
+    // Cross lines through CG for visibility
+    const cLen = 0.08;
+    const cgPos = new THREE.Vector3(data.cg[0], data.cg[1], data.cg[2]);
+    [new THREE.Vector3(cLen,0,0), new THREE.Vector3(0,cLen,0), new THREE.Vector3(0,0,cLen)].forEach(dir => {
+      const pts = [cgPos.clone().sub(dir), cgPos.clone().add(dir)];
+      const lg = new THREE.BufferGeometry().setFromPoints(pts);
+      cgGroup.add(new THREE.Line(lg, new THREE.LineBasicMaterial({ color: 0x10b981, linewidth: 2 })));
+    });
+
+    waveriderGroup.add(cgGroup);
+    console.log('CG at', data.cg);
+  }
+
   scene.add(waveriderGroup);
   updateVisibility();
   fitCamera();
   document.querySelector('.empty-state').style.display = 'none';
+  document.getElementById('viewer-legend').classList.add('visible');
 }
 
 function fitCamera() {
@@ -173,12 +163,11 @@ function fitCamera() {
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z);
-  if (maxDim === 0) { console.error('Bounding box is zero-size'); return; }
+  if (maxDim === 0) return;
   controls.target.copy(center);
   camera.position.set(center.x + maxDim * 1.5, center.y + maxDim * 0.8, center.z + maxDim * 1.2);
   camera.lookAt(center);
   controls.update();
-  console.log('Camera at', camera.position, 'looking at', center, 'maxDim', maxDim);
 }
 
 function updateVisibility() {
@@ -187,27 +176,57 @@ function updateVisibility() {
     if (c.name === 'solid')        c.visible = (showUpper || showLower) && !showWire;
     if (c.name === 'wireframe')    c.visible = (showUpper || showLower) && showWire;
     if (c.name === 'leading_edge') c.visible = showLE;
+    if (c.name === 'cg_marker')    c.visible = showCG;
   });
+}
+
+/* ─── Method switching ────────────────────────────────────────────────────── */
+
+function switchMethod(method) {
+  currentMethod = method;
+  document.getElementById('panel-osc').style.display = method === 'osc' ? '' : 'none';
+  document.getElementById('panel-shadow').style.display = method === 'shadow' ? '' : 'none';
+
+  document.getElementById('method-osc').classList.toggle('active', method === 'osc');
+  document.getElementById('method-shadow').classList.toggle('active', method === 'shadow');
 }
 
 /* ─── API ────────────────────────────────────────────────────────────────── */
 
 function getParams() {
+  const base = {
+    mach: parseFloat(document.getElementById('p-mach').value),
+    beta: parseFloat(document.getElementById('p-beta').value),
+  };
+
+  if (currentMethod === 'shadow') {
+    return {
+      ...base,
+      method: 'shadow',
+      poly_order: parseInt(document.getElementById('p-poly-order').value),
+      A3: parseFloat(document.getElementById('p-a3').value),
+      A2: parseFloat(document.getElementById('p-a2').value),
+      A0: parseFloat(document.getElementById('p-a0').value),
+      n_le: parseInt(document.getElementById('p-nle').value),
+      n_streamwise: parseInt(document.getElementById('p-sw-shadow').value),
+      length: parseFloat(document.getElementById('p-length').value),
+    };
+  }
+
   return {
-    mach:            parseFloat(document.getElementById('p-mach').value),
-    beta:            parseFloat(document.getElementById('p-beta').value),
-    height:          parseFloat(document.getElementById('p-height').value),
-    width:           parseFloat(document.getElementById('p-width').value),
-    X1:              parseFloat(document.getElementById('p-x1').value),
-    X2:              parseFloat(document.getElementById('p-x2').value),
-    X3:              parseFloat(document.getElementById('p-x3').value),
-    X4:              parseFloat(document.getElementById('p-x4').value),
-    n_planes:        parseInt(document.getElementById('p-nplanes').value),
-    n_streamwise:    parseInt(document.getElementById('p-nstream').value),
-    delta_streamwise:parseFloat(document.getElementById('p-delta').value),
+    ...base,
+    method: 'osc',
+    height: parseFloat(document.getElementById('p-height').value),
+    width: parseFloat(document.getElementById('p-width').value),
+    X1: parseFloat(document.getElementById('p-x1').value),
+    X2: parseFloat(document.getElementById('p-x2').value),
+    X3: parseFloat(document.getElementById('p-x3').value),
+    X4: parseFloat(document.getElementById('p-x4').value),
+    n_planes: parseInt(document.getElementById('p-nplanes').value),
+    n_streamwise: parseInt(document.getElementById('p-nstream').value),
+    delta_streamwise: parseFloat(document.getElementById('p-delta').value),
     n_upper_surface: parseInt(document.getElementById('p-nupper').value),
-    n_shockwave:     parseInt(document.getElementById('p-nshock').value),
-    match_shockwave: document.getElementById('method-shadow').classList.contains('active'),
+    n_shockwave: parseInt(document.getElementById('p-nshock').value),
   };
 }
 
@@ -254,16 +273,12 @@ async function exportFile(fmt) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'waverider.' + fmt;
-    document.body.appendChild(a);
-    a.click();
-    URL.revokeObjectURL(a.href);
-    a.remove();
+    document.body.appendChild(a); a.click();
+    URL.revokeObjectURL(a.href); a.remove();
     setStatus(fmt.toUpperCase() + ' downloaded', 'success');
   } catch (e) {
     setStatus('Export error: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-  }
+  } finally { btn.disabled = false; }
 }
 
 async function fetchBetaHint() {
@@ -288,6 +303,7 @@ async function autoBeta() {
 }
 
 async function validateConstraints() {
+  if (currentMethod !== 'osc') return;
   const X1 = parseFloat(document.getElementById('p-x1').value);
   const X2 = parseFloat(document.getElementById('p-x2').value);
   const w = parseFloat(document.getElementById('p-width').value);
@@ -315,10 +331,15 @@ function setStatus(msg, type) {
 
 function updateInfo(info) {
   document.getElementById('info-panel').classList.add('visible');
-  document.getElementById('info-method').textContent = info.method;
-  document.getElementById('info-length').textContent = info.length.toFixed(3) + ' m';
-  document.getElementById('info-volume').textContent = info.volume.toFixed(4) + ' m\u00B3';
-  document.getElementById('info-deflection').textContent = info.deflection_angle.toFixed(2) + '\u00B0';
+  document.getElementById('info-method').textContent = info.method || '-';
+  document.getElementById('info-mach').textContent = info.mach ? info.mach.toFixed(1) : '-';
+  document.getElementById('info-beta').textContent = info.beta ? info.beta.toFixed(1) + '\u00B0' : '-';
+  document.getElementById('info-cone').textContent = info.cone_angle ? info.cone_angle.toFixed(2) + '\u00B0' : '-';
+  document.getElementById('info-psm').textContent = info.post_shock_mach ? info.post_shock_mach.toFixed(2) : '-';
+  document.getElementById('info-length').textContent = info.length ? info.length.toFixed(4) + ' m' : '-';
+  document.getElementById('info-area').textContent = info.planform_area ? info.planform_area.toFixed(4) + ' m\u00B2' : '-';
+  document.getElementById('info-volume').textContent = info.volume ? info.volume.toFixed(6) + ' m\u00B3' : '-';
+  document.getElementById('info-cg').textContent = info.cg ? '[' + info.cg.map(v => v.toFixed(4)).join(', ') + ']' : '-';
 }
 
 function syncSlider(id, displayId) {
@@ -340,18 +361,17 @@ document.addEventListener('DOMContentLoaded', () => {
   syncSlider('p-x4', 'v-x4');
 
   // Method tabs
-  document.getElementById('method-osc').addEventListener('click', function() {
-    this.classList.add('active'); document.getElementById('method-shadow').classList.remove('active');
-  });
-  document.getElementById('method-shadow').addEventListener('click', function() {
-    this.classList.add('active'); document.getElementById('method-osc').classList.remove('active');
+  document.getElementById('method-osc').addEventListener('click', () => switchMethod('osc'));
+  document.getElementById('method-shadow').addEventListener('click', () => switchMethod('shadow'));
+
+  // Polynomial order toggle
+  document.getElementById('p-poly-order').addEventListener('change', function() {
+    document.getElementById('field-a3').style.display = this.value === '3' ? '' : 'none';
   });
 
   // Generate
   document.getElementById('btn-generate').addEventListener('click', generate);
-
-  // Keyboard shortcut: Enter to generate
-  document.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.target.matches('input')) generate(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.target.matches('input,select')) generate(); });
 
   // Export
   document.getElementById('btn-step').addEventListener('click', () => exportFile('step'));
@@ -372,6 +392,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('t-upper').addEventListener('click', function() { showUpper = !showUpper; this.classList.toggle('active', showUpper); updateVisibility(); });
   document.getElementById('t-lower').addEventListener('click', function() { showLower = !showLower; this.classList.toggle('active', showLower); updateVisibility(); });
   document.getElementById('t-le').addEventListener('click', function() { showLE = !showLE; this.classList.toggle('active', showLE); updateVisibility(); });
+  document.getElementById('t-cg').addEventListener('click', function() { showCG = !showCG; this.classList.toggle('active', showCG); updateVisibility(); });
   document.getElementById('t-wire').addEventListener('click', function() { showWire = !showWire; this.classList.toggle('active', showWire); updateVisibility(); });
   document.getElementById('t-reset').addEventListener('click', fitCamera);
 
