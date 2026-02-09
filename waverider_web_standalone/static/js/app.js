@@ -97,8 +97,8 @@ function displayWaverider(data) {
   const upperFaces = [], lowerFaces = [];
   for (let i = 0; i < faces.length; i++) {
     const avgNy = (normals.getY(faces[i][0]) + normals.getY(faces[i][1]) + normals.getY(faces[i][2])) / 3;
-    if (avgNy > 0) upperFaces.push(faces[i]);
-    else lowerFaces.push(faces[i]);
+    if (avgNy > 0) lowerFaces.push(faces[i]);
+    else upperFaces.push(faces[i]);
   }
 
   // Helper to build a mesh from a subset of faces
