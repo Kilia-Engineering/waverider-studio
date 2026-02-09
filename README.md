@@ -103,6 +103,15 @@ See [requirements.txt](requirements.txt) for the full list. Core dependencies:
 - **scikit-learn** -- surrogate models
 - **pymoo / DEAP** -- optimization algorithms
 
+## References
+
+Kontogiannis, K., Sübester, A., & Taylor, N. (2017). Efficient Parameterization of Waverider Geometries. *J. Aircraft*, 54(3). [doi:10.2514/1.C033902](https://doi.org/10.2514/1.C033902)
+
+Son, J., Son, C., & Yee, K. (2022). A Novel Direct Optimization Framework for Hypersonic Waverider Inverse Design Methods. *Aerospace*, 9(7), 348. [doi:10.3390/aerospace9070348](https://doi.org/10.3390/aerospace9070348)
+
+Weaver, A. S. (2025). Investigating Stability of Cone-Derived Hypersonic Waverider Vehicles via Design Space Exploration. Master's Thesis, Utah State University. [digitalcommons.usu.edu/etd2023/485](https://digitalcommons.usu.edu/etd2023/485)
+
+
 ## License
 
 [MIT](LICENSE)
