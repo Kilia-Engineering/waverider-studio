@@ -578,10 +578,10 @@ class ShadowWaveriderTab(QWidget):
         self.length_spin.setToolTip("Waverider length in meters (streamwise extent)")
         layout.addWidget(self.length_spin, 2, 1)
         
-        layout.addWidget(QLabel("Scale (m→mm=1000):"), 3, 0)
+        layout.addWidget(QLabel("Scale (1.0 = meters):"), 3, 0)
         self.scale_spin = QDoubleSpinBox()
-        self.scale_spin.setRange(0.001, 10000); self.scale_spin.setValue(1000.0); self.scale_spin.setDecimals(3)
-        self.scale_spin.setToolTip("Scale factor for export (1000 = meters to mm)")
+        self.scale_spin.setRange(0.001, 10000); self.scale_spin.setValue(1.0); self.scale_spin.setDecimals(3)
+        self.scale_spin.setToolTip("Scale factor for export (1.0 = SI meters)")
         layout.addWidget(self.scale_spin, 3, 1)
         
         group.setLayout(layout)
@@ -618,14 +618,14 @@ class ShadowWaveriderTab(QWidget):
         layout.addWidget(stl_btn, 0, 0); layout.addWidget(tri_btn, 0, 1)
         layout.addWidget(step_btn, 1, 0); layout.addWidget(gmsh_btn, 1, 1)
         
-        layout.addWidget(QLabel("Gmsh min [mm]:"), 2, 0)
+        layout.addWidget(QLabel("Gmsh min [m]:"), 2, 0)
         self.gmsh_min = QDoubleSpinBox()
-        self.gmsh_min.setRange(0.1, 1000.0); self.gmsh_min.setValue(5.0); self.gmsh_min.setDecimals(2)
+        self.gmsh_min.setRange(0.00001, 10.0); self.gmsh_min.setValue(0.005); self.gmsh_min.setDecimals(5)
         layout.addWidget(self.gmsh_min, 2, 1)
 
-        layout.addWidget(QLabel("Gmsh max [mm]:"), 3, 0)
+        layout.addWidget(QLabel("Gmsh max [m]:"), 3, 0)
         self.gmsh_max = QDoubleSpinBox()
-        self.gmsh_max.setRange(0.1, 10000.0); self.gmsh_max.setValue(50.0); self.gmsh_max.setDecimals(2)
+        self.gmsh_max.setRange(0.0001, 100.0); self.gmsh_max.setValue(0.05); self.gmsh_max.setDecimals(5)
         layout.addWidget(self.gmsh_max, 3, 1)
         
         group.setLayout(layout)
@@ -1120,22 +1120,9 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             QMessageBox.warning(self, "Warning", "Gmsh not installed")
             return
 
-        # Export STL scaled to mm to match mesh size units
+        # Export STL in meters (SI units)
         temp_stl = tempfile.mktemp(suffix='.stl')
-        scale = self.scale_spin.value()
-        verts, tris = self.waverider.get_mesh()
-        verts = verts * scale
-        with open(temp_stl, 'w') as f:
-            f.write("solid waverider\n")
-            for tri in tris:
-                v0, v1, v2 = verts[tri[0]], verts[tri[1]], verts[tri[2]]
-                n = np.cross(v1-v0, v2-v0)
-                n = n/np.linalg.norm(n) if np.linalg.norm(n) > 1e-10 else [0,0,1]
-                f.write(f"  facet normal {n[0]:.6e} {n[1]:.6e} {n[2]:.6e}\n    outer loop\n")
-                f.write(f"      vertex {v0[0]:.6e} {v0[1]:.6e} {v0[2]:.6e}\n")
-                f.write(f"      vertex {v1[0]:.6e} {v1[1]:.6e} {v1[2]:.6e}\n")
-                f.write(f"      vertex {v2[0]:.6e} {v2[1]:.6e} {v2[2]:.6e}\n    endloop\n  endfacet\n")
-            f.write("endsolid waverider\n")
+        self.waverider.export_stl(temp_stl)
 
         fn, _ = QFileDialog.getSaveFileName(self, "Save Mesh", "shadow_waverider_gmsh.stl", "STL (*.stl);;MSH (*.msh)")
         if fn:

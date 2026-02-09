@@ -1202,23 +1202,23 @@ class WaveriderGUI(QMainWindow):
         mesh_gen_group = QGroupBox("STL Mesh Generation (using Gmsh)")
         mesh_gen_layout = QGridLayout()
         
-        # Mesh size controls (in mm to match CAD export units)
-        mesh_gen_layout.addWidget(QLabel("Min Element Size [mm]:"), 0, 0)
+        # Mesh size controls (SI units - meters)
+        mesh_gen_layout.addWidget(QLabel("Min Element Size [m]:"), 0, 0)
         self.mesh_min_spin = QDoubleSpinBox()
-        self.mesh_min_spin.setRange(0.01, 1000.0)
-        self.mesh_min_spin.setValue(5.0)  # 5mm default
-        self.mesh_min_spin.setSingleStep(1.0)
-        self.mesh_min_spin.setDecimals(2)
-        self.mesh_min_spin.setToolTip("Minimum triangle edge length in mm (smaller = finer mesh)")
+        self.mesh_min_spin.setRange(0.00001, 10.0)
+        self.mesh_min_spin.setValue(0.005)  # 5mm default
+        self.mesh_min_spin.setSingleStep(0.001)
+        self.mesh_min_spin.setDecimals(5)
+        self.mesh_min_spin.setToolTip("Minimum triangle edge length in meters (smaller = finer mesh)")
         mesh_gen_layout.addWidget(self.mesh_min_spin, 0, 1)
 
-        mesh_gen_layout.addWidget(QLabel("Max Element Size [mm]:"), 1, 0)
+        mesh_gen_layout.addWidget(QLabel("Max Element Size [m]:"), 1, 0)
         self.mesh_max_spin = QDoubleSpinBox()
-        self.mesh_max_spin.setRange(0.1, 10000.0)
-        self.mesh_max_spin.setValue(50.0)  # 50mm default
-        self.mesh_max_spin.setSingleStep(5.0)
-        self.mesh_max_spin.setDecimals(2)
-        self.mesh_max_spin.setToolTip("Maximum triangle edge length in mm (smaller = finer mesh)")
+        self.mesh_max_spin.setRange(0.0001, 100.0)
+        self.mesh_max_spin.setValue(0.05)  # 50mm default
+        self.mesh_max_spin.setSingleStep(0.005)
+        self.mesh_max_spin.setDecimals(5)
+        self.mesh_max_spin.setToolTip("Maximum triangle edge length in meters (smaller = finer mesh)")
         mesh_gen_layout.addWidget(self.mesh_max_spin, 1, 1)
         
         # Quality presets
@@ -1226,15 +1226,15 @@ class WaveriderGUI(QMainWindow):
         preset_layout.addWidget(QLabel("Presets:"))
         
         coarse_btn = QPushButton("Coarse (fast)")
-        coarse_btn.clicked.connect(lambda: self.set_mesh_preset(10.0, 100.0))
+        coarse_btn.clicked.connect(lambda: self.set_mesh_preset(0.01, 0.1))
         preset_layout.addWidget(coarse_btn)
 
         medium_btn = QPushButton("Medium")
-        medium_btn.clicked.connect(lambda: self.set_mesh_preset(5.0, 50.0))
+        medium_btn.clicked.connect(lambda: self.set_mesh_preset(0.005, 0.05))
         preset_layout.addWidget(medium_btn)
 
         fine_btn = QPushButton("Fine (slow)")
-        fine_btn.clicked.connect(lambda: self.set_mesh_preset(2.0, 20.0))
+        fine_btn.clicked.connect(lambda: self.set_mesh_preset(0.002, 0.02))
         preset_layout.addWidget(fine_btn)
         
         preset_layout.addStretch()
@@ -1993,12 +1993,12 @@ class WaveriderGUI(QMainWindow):
                 sides=sides,
                 export=True,
                 filename=filename,
-                scale=1000.0
+                scale=1.0
             )
             QMessageBox.information(
                 self, "Export successful",
                 f"STEP file exported to:\n{filename}\n\n"
-                f"Units: MILLIMETERS (m×1000)\n\n"
+                f"Units: METERS (SI)\n\n"
                 f"To create STL mesh for analysis:\n"
                 f"1. Go to 'Aerodynamic Analysis' tab\n"
                 f"2. Set mesh parameters\n"
@@ -2058,8 +2058,8 @@ class WaveriderGUI(QMainWindow):
             print(f"\n{'='*60}")
             print(f"Gmsh Mesh Generation")
             print(f"{'='*60}")
-            print(f"Min element size:  {min_size:.2f} mm")
-            print(f"Max element size:  {max_size:.2f} mm")
+            print(f"Min element size:  {min_size:.5f} m")
+            print(f"Max element size:  {max_size:.5f} m")
             sys.stdout.flush()
 
             # First, export STEP file temporarily
@@ -2076,7 +2076,7 @@ class WaveriderGUI(QMainWindow):
                 sides="both",
                 export=True,
                 filename=temp_step,
-                scale=1000.0  # 1.0 = meters (geometry units)
+                scale=1.0
             )
             
             # Initialize Gmsh
@@ -2267,7 +2267,7 @@ class WaveriderGUI(QMainWindow):
                 sides="both",
                 export=False,
                 filename="",
-                scale=1000.0
+                scale=1.0
             )
             
             # Ask for filename
