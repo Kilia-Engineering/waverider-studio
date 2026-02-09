@@ -10,7 +10,7 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
         if not (isinstance(scale, (int,float)) and scale >0):
             raise ValueError("scale must be a float or int greater than 0")
     else:
-        scale=1000 # to get meters
+        scale=1.0 # SI units (meters)
 
     # extract streams from waverider object
     us_streams=waverider.upper_surface_streams
