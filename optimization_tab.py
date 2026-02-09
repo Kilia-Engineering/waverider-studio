@@ -557,7 +557,7 @@ class OptimizationTab(QWidget):
             "📐 <i>Constraint: X2 / (1-X1)⁴ < 7/64 × (width/height)⁴</i>"
         )
         constraint_label.setWordWrap(True)
-        constraint_label.setStyleSheet("color: #666;")
+        constraint_label.setStyleSheet("color: #888888;")
         layout.addWidget(constraint_label, len(variables)+1, 0, 1, 4)
         
         # Auto-adjust info
@@ -565,13 +565,13 @@ class OptimizationTab(QWidget):
             "🔄 <i>X2 max is automatically adjusted when X1 changes (90% safety margin per paper)</i>"
         )
         auto_adjust_label.setWordWrap(True)
-        auto_adjust_label.setStyleSheet("color: #1976d2; font-size: 9px;")
+        auto_adjust_label.setStyleSheet("color: #F59E0B; font-size: 9px;")
         layout.addWidget(auto_adjust_label, len(variables)+2, 0, 1, 4)
         
         # Dynamic constraint hint label
         self.design_var_hint_label = QLabel("")
         self.design_var_hint_label.setWordWrap(True)
-        self.design_var_hint_label.setStyleSheet("color: #666; font-size: 10px; padding: 2px;")
+        self.design_var_hint_label.setStyleSheet("color: #888888; font-size: 10px; padding: 2px;")
         layout.addWidget(self.design_var_hint_label, len(variables)+3, 0, 1, 4)
         
         group.setLayout(layout)
@@ -682,7 +682,7 @@ class OptimizationTab(QWidget):
             # Update hint based on status
             if x2_max > max_x2_allowed * 1.01:  # Allow tiny floating point tolerance
                 self.design_var_hint_label.setStyleSheet(
-                    "color: #d32f2f; font-size: 10px; padding: 2px; font-weight: bold;"
+                    "color: #EF4444; font-size: 10px; padding: 2px; font-weight: bold;"
                 )
                 hint_text = (
                     f"⚠️ X2 max ({x2_max:.3f}) exceeds limit! "
@@ -690,7 +690,7 @@ class OptimizationTab(QWidget):
                 )
             elif headroom_pct < 5:
                 self.design_var_hint_label.setStyleSheet(
-                    "color: #f57c00; font-size: 10px; padding: 2px;"
+                    "color: #F59E0B; font-size: 10px; padding: 2px;"
                 )
                 hint_text = (
                     f"⚡ Near boundary | w={width:.2f}m, h={height:.2f}m | "
@@ -698,7 +698,7 @@ class OptimizationTab(QWidget):
                 )
             else:
                 self.design_var_hint_label.setStyleSheet(
-                    "color: #388e3c; font-size: 10px; padding: 2px;"
+                    "color: #4ADE80; font-size: 10px; padding: 2px;"
                 )
                 hint_text = (
                     f"✓ Valid | w={width:.2f}m, h={height:.2f}m | "
@@ -734,7 +734,7 @@ class OptimizationTab(QWidget):
             "<i>Single-objective: Optimize one objective (e.g., maximize CL/CD)</i>"
         )
         self.mode_description.setWordWrap(True)
-        self.mode_description.setStyleSheet("color: #666; margin: 5px 0;")
+        self.mode_description.setStyleSheet("color: #888888; margin: 5px 0;")
         main_layout.addWidget(self.mode_description)
         
         # Separator
@@ -801,14 +801,14 @@ class OptimizationTab(QWidget):
         self.pareto_preset_btn = QPushButton("📊 Set Classic Waverider Trade-off (CL/CD vs Volume)")
         self.pareto_preset_btn.clicked.connect(self.apply_pareto_preset)
         self.pareto_preset_btn.setVisible(False)  # Hidden in single-objective mode
-        self.pareto_preset_btn.setStyleSheet("background-color: #e3f2fd; padding: 5px;")
+        self.pareto_preset_btn.setStyleSheet("background-color: #78350F; padding: 5px;")
         preset_layout.addWidget(self.pareto_preset_btn)
         preset_layout.addStretch()
         main_layout.addLayout(preset_layout)
         
         # Selection status label
         self.obj_status_label = QLabel("")
-        self.obj_status_label.setStyleSheet("color: #666; font-style: italic;")
+        self.obj_status_label.setStyleSheet("color: #888888; font-style: italic;")
         main_layout.addWidget(self.obj_status_label)
         self.update_objective_status()
             
@@ -848,26 +848,26 @@ class OptimizationTab(QWidget):
         if is_multi:
             if n_enabled == 0:
                 self.obj_status_label.setText("⚠️ Select exactly 2 objectives for Pareto front")
-                self.obj_status_label.setStyleSheet("color: orange; font-style: italic;")
+                self.obj_status_label.setStyleSheet("color: #F59E0B; font-style: italic;")
             elif n_enabled == 1:
                 self.obj_status_label.setText(f"⚠️ Select one more objective (currently: {enabled[0]})")
-                self.obj_status_label.setStyleSheet("color: orange; font-style: italic;")
+                self.obj_status_label.setStyleSheet("color: #F59E0B; font-style: italic;")
             elif n_enabled == 2:
                 self.obj_status_label.setText(f"✓ Pareto front: {enabled[0]} vs {enabled[1]}")
-                self.obj_status_label.setStyleSheet("color: green; font-style: italic;")
+                self.obj_status_label.setStyleSheet("color: #4ADE80; font-style: italic;")
             else:
                 self.obj_status_label.setText(f"⚠️ Too many objectives ({n_enabled}). Select exactly 2.")
-                self.obj_status_label.setStyleSheet("color: red; font-style: italic;")
+                self.obj_status_label.setStyleSheet("color: #EF4444; font-style: italic;")
         else:
             if n_enabled == 0:
                 self.obj_status_label.setText("⚠️ Select one objective")
-                self.obj_status_label.setStyleSheet("color: orange; font-style: italic;")
+                self.obj_status_label.setStyleSheet("color: #F59E0B; font-style: italic;")
             elif n_enabled == 1:
                 self.obj_status_label.setText(f"✓ Optimizing: {enabled[0]}")
-                self.obj_status_label.setStyleSheet("color: green; font-style: italic;")
+                self.obj_status_label.setStyleSheet("color: #4ADE80; font-style: italic;")
             else:
                 self.obj_status_label.setText(f"⚠️ Single-objective mode: select only 1 objective (or switch to Multi-Objective)")
-                self.obj_status_label.setStyleSheet("color: orange; font-style: italic;")
+                self.obj_status_label.setStyleSheet("color: #F59E0B; font-style: italic;")
     
     def apply_pareto_preset(self):
         """Apply the classic waverider Pareto trade-off preset"""
@@ -1021,7 +1021,7 @@ class OptimizationTab(QWidget):
             "For optimization, ensure these match your design flight conditions.</i>"
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #666; font-size: 9px;")
+        info_label.setStyleSheet("color: #888888; font-size: 9px;")
         layout.addWidget(info_label, row, 0, 1, 4)
         row += 1
         
@@ -1149,12 +1149,12 @@ class OptimizationTab(QWidget):
         # Platform info
         if sys.platform == 'win32':
             info_label = QLabel(f"✅ Windows ({os.cpu_count()} cores)")
-            info_label.setStyleSheet("color: green; font-size: 9px;")
+            info_label.setStyleSheet("color: #4ADE80; font-size: 9px;")
             info_label.setWordWrap(True)
             layout.addWidget(info_label, row, 2)
         else:
             info_label = QLabel(f"✅ Linux/Mac ({os.cpu_count()} cores)")
-            info_label.setStyleSheet("color: green; font-size: 9px;")
+            info_label.setStyleSheet("color: #4ADE80; font-size: 9px;")
             layout.addWidget(info_label, row, 2)
         row += 1
         
@@ -1191,13 +1191,13 @@ class OptimizationTab(QWidget):
         
         # Start button
         self.start_btn = QPushButton("▶ Start Optimization")
-        self.start_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 10px; }")
+        self.start_btn.setStyleSheet("QPushButton { background-color: #F59E0B; color: #0A0A0A; font-weight: bold; padding: 10px; }")
         self.start_btn.clicked.connect(self.start_optimization)
         button_layout.addWidget(self.start_btn)
         
         # Stop button
         self.stop_btn = QPushButton("⏹ Stop")
-        self.stop_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; padding: 10px; }")
+        self.stop_btn.setStyleSheet("QPushButton { background-color: #EF4444; color: #FFFFFF; font-weight: bold; padding: 10px; }")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self.stop_optimization)
         button_layout.addWidget(self.stop_btn)
@@ -1278,7 +1278,7 @@ class OptimizationTab(QWidget):
         self.console = QTextEdit()
         self.console.setReadOnly(True)
         self.console.setMaximumHeight(200)
-        self.console.setStyleSheet("background-color: black; color: lime; font-family: monospace;")
+        self.console.setStyleSheet("background-color: #0A0A0A; color: #4ADE80; font-family: monospace;")
         layout.addWidget(self.console)
         
         # Clear button

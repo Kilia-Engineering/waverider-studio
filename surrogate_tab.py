@@ -2102,7 +2102,7 @@ class SurrogateTab(QWidget):
             "validation using real PySAGAS simulations.</i>"
         )
         self.mode_desc.setWordWrap(True)
-        self.mode_desc.setStyleSheet("color: #666; margin-top: 5px;")
+        self.mode_desc.setStyleSheet("color: #888888; margin-top: 5px;")
         layout.addWidget(self.mode_desc)
         
         self.mode_group.buttonClicked.connect(self.on_mode_changed)
@@ -2147,7 +2147,7 @@ class SurrogateTab(QWidget):
         # File selection
         file_layout = QHBoxLayout()
         self.data_file_label = QLabel("No file selected")
-        self.data_file_label.setStyleSheet("color: #666; font-size: 9px;")
+        self.data_file_label.setStyleSheet("color: #888888; font-size: 9px;")
         file_layout.addWidget(self.data_file_label)
         
         browse_btn = QPushButton("Browse...")
@@ -2244,7 +2244,7 @@ class SurrogateTab(QWidget):
         
         # Kappa value display
         self.kappa_label = QLabel("κ = 1.50")
-        self.kappa_label.setStyleSheet("color: #666;")
+        self.kappa_label.setStyleSheet("color: #888888;")
         layout.addWidget(self.kappa_label, row, 0, 1, 2)
         self.exploration_slider.valueChanged.connect(self.update_kappa_label)
         row += 1
@@ -2347,7 +2347,7 @@ class SurrogateTab(QWidget):
         
         # Time estimate label
         self.time_estimate_label = QLabel("")
-        self.time_estimate_label.setStyleSheet("color: #666; font-style: italic;")
+        self.time_estimate_label.setStyleSheet("color: #888888; font-style: italic;")
         layout.addWidget(self.time_estimate_label, row, 0, 1, 2)
         
         # Connect signals for time estimate
@@ -2631,7 +2631,7 @@ class SurrogateTab(QWidget):
         
         self.start_btn = QPushButton("▶ Start Surrogate Optimization")
         self.start_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; "
+            "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
             "font-weight: bold; padding: 10px; }"
         )
         self.start_btn.clicked.connect(self.start_optimization)
@@ -2639,7 +2639,7 @@ class SurrogateTab(QWidget):
         
         self.stop_btn = QPushButton("⏹ Stop")
         self.stop_btn.setStyleSheet(
-            "QPushButton { background-color: #f44336; color: white; "
+            "QPushButton { background-color: #EF4444; color: white; "
             "font-weight: bold; padding: 10px; }"
         )
         self.stop_btn.setEnabled(False)
@@ -2681,7 +2681,7 @@ class SurrogateTab(QWidget):
         self.inverse_design_btn.clicked.connect(self.show_inverse_design_dialog)
         self.inverse_design_btn.setEnabled(False)
         self.inverse_design_btn.setStyleSheet(
-            "QPushButton { background-color: #2196F3; color: white; "
+            "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
             "font-weight: bold; padding: 8px; }"
         )
         layout.addWidget(self.inverse_design_btn)
@@ -2707,11 +2707,11 @@ class SurrogateTab(QWidget):
             layout.addWidget(QLabel(f"{metric}:"), i, 0)
             
             label1 = QLabel("N/A")
-            label1.setStyleSheet("font-family: monospace;")
+            label1.setStyleSheet("font-family: monospace; color: #FFFFFF;")
             layout.addWidget(label1, i, 1)
             
             label2 = QLabel("N/A")
-            label2.setStyleSheet("font-family: monospace;")
+            label2.setStyleSheet("font-family: monospace; color: #FFFFFF;")
             layout.addWidget(label2, i, 2)
             
             self.metric_labels[metric] = (label1, label2)
@@ -2773,7 +2773,7 @@ class SurrogateTab(QWidget):
         self.console.setReadOnly(True)
         self.console.setMaximumHeight(200)
         self.console.setStyleSheet(
-            "background-color: #1e1e1e; color: #00ff00; font-family: monospace;"
+            "background-color: #0A0A0A; color: #4ADE80; font-family: monospace;"
         )
         layout.addWidget(self.console)
         
@@ -3348,22 +3348,22 @@ class SurrogateTab(QWidget):
                     # Color code R2
                     if key == 'R2':
                         if val1 > 0.95:
-                            label1.setStyleSheet("font-family: monospace; color: green;")
+                            label1.setStyleSheet("font-family: monospace; color: #4ADE80;")
                         elif val1 > 0.8:
-                            label1.setStyleSheet("font-family: monospace; color: orange;")
+                            label1.setStyleSheet("font-family: monospace; color: #F59E0B;")
                         else:
-                            label1.setStyleSheet("font-family: monospace; color: red;")
+                            label1.setStyleSheet("font-family: monospace; color: #EF4444;")
                 
                 if len(obj_names) >= 2 and key in metrics[obj_names[1]]:
                     val2 = metrics[obj_names[1]][key]
                     label2.setText(f"{val2:.4f}")
                     if key == 'R2':
                         if val2 > 0.95:
-                            label2.setStyleSheet("font-family: monospace; color: green;")
+                            label2.setStyleSheet("font-family: monospace; color: #4ADE80;")
                         elif val2 > 0.8:
-                            label2.setStyleSheet("font-family: monospace; color: orange;")
+                            label2.setStyleSheet("font-family: monospace; color: #F59E0B;")
                         else:
-                            label2.setStyleSheet("font-family: monospace; color: red;")
+                            label2.setStyleSheet("font-family: monospace; color: #EF4444;")
             
             self.log_message("✓ Metrics updated")
             
@@ -3697,7 +3697,7 @@ class InverseDesignDialog(QDialog):
             "and the surrogate model will find the design variables (X1-X4) that meet them."
         )
         instructions.setWordWrap(True)
-        instructions.setStyleSheet("background-color: #e3f2fd; padding: 10px; border-radius: 5px;")
+        instructions.setStyleSheet("background-color: #78350F; color: #FFFFFF; padding: 10px; border-radius: 5px;")
         layout.addWidget(instructions)
         
         # Fixed parameters group
@@ -3812,7 +3812,7 @@ class InverseDesignDialog(QDialog):
         # Find button
         self.find_btn = QPushButton("🔍 Find Designs")
         self.find_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; "
+            "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
             "font-weight: bold; padding: 12px; font-size: 14px; }"
         )
         self.find_btn.clicked.connect(self.find_designs)

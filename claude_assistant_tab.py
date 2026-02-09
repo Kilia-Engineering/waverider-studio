@@ -790,7 +790,7 @@ class ChatMessage(QFrame):
         
         role_label = QLabel("You:" if role == "user" else "Claude:")
         role_label.setFont(QFont("Arial", 9, QFont.Bold))
-        role_label.setStyleSheet(f"color: {'#007bff' if role == 'user' else '#28a745'};")
+        role_label.setStyleSheet(f"color: {'#F59E0B' if role == 'user' else '#4ADE80'};")
         layout.addWidget(role_label)
         
         self.content_label = QTextEdit()
@@ -798,7 +798,7 @@ class ChatMessage(QFrame):
         self.content_label.setPlainText(content)
         self.content_label.setFont(QFont("Arial", 10))
         self.content_label.setFrameStyle(QFrame.NoFrame)
-        self.content_label.setStyleSheet("QTextEdit { background-color: transparent; border: none; }")
+        self.content_label.setStyleSheet("QTextEdit { background-color: transparent; border: none; color: #FFFFFF; }")
         self.content_label.document().setTextWidth(self.content_label.viewport().width())
         height = int(self.content_label.document().size().height()) + 10
         self.content_label.setMinimumHeight(min(height, 300))
@@ -806,7 +806,7 @@ class ChatMessage(QFrame):
         
         layout.addWidget(self.content_label)
         
-        bg_color = "#e3f2fd" if role == "user" else "#e8f5e9"
+        bg_color = "#78350F" if role == "user" else "#1A1A1A"
         self.setStyleSheet(f"ChatMessage {{ background-color: {bg_color}; border-radius: 10px; margin: 5px; }}")
     
     def append_text(self, text):
@@ -828,17 +828,17 @@ class ActionResultWidget(QFrame):
         
         header = QLabel("🔧 Actions Executed:")
         header.setFont(QFont("Arial", 9, QFont.Bold))
-        header.setStyleSheet("color: #6c757d;")
+        header.setStyleSheet("color: #888888;")
         layout.addWidget(header)
         
         for result in results:
             icon = "✅" if result['success'] else "❌"
             msg = QLabel(f"  {icon} {result['message']}")
             msg.setFont(QFont("Arial", 9))
-            msg.setStyleSheet("color: #495057;")
+            msg.setStyleSheet("color: #FFFFFF;")
             layout.addWidget(msg)
         
-        self.setStyleSheet("ActionResultWidget { background-color: #f8f9fa; border-radius: 8px; margin: 3px; border: 1px solid #dee2e6; }")
+        self.setStyleSheet("ActionResultWidget { background-color: #1A1A1A; border-radius: 8px; margin: 3px; border: 1px solid #333333; }")
 
 
 # =============================================================================
@@ -897,14 +897,14 @@ class ClaudeAssistantTab(QWidget):
         api_layout.addWidget(save_key_btn)
         
         self.api_status = QLabel("❌ Not configured")
-        self.api_status.setStyleSheet("color: #dc3545;")
+        self.api_status.setStyleSheet("color: #EF4444;")
         api_layout.addWidget(self.api_status)
         
         main_layout.addWidget(api_group)
         
         if self.api_key:
             self.api_status.setText("✅ Key configured")
-            self.api_status.setStyleSheet("color: #28a745;")
+            self.api_status.setStyleSheet("color: #4ADE80;")
         
         # Main splitter
         splitter = QSplitter(Qt.Horizontal)
@@ -959,13 +959,14 @@ class ClaudeAssistantTab(QWidget):
                 QPushButton {
                     text-align: left;
                     padding: 8px;
-                    border: 1px solid #ddd;
+                    border: 1px solid #333333;
                     border-radius: 5px;
-                    background-color: #f8f9fa;
+                    background-color: #1A1A1A;
+                    color: #FFFFFF;
                 }
                 QPushButton:hover {
-                    background-color: #e9ecef;
-                    border-color: #007bff;
+                    background-color: #78350F;
+                    border-color: #F59E0B;
                 }
             """)
             actions_layout.addWidget(btn)
@@ -981,12 +982,13 @@ class ClaudeAssistantTab(QWidget):
         gen_report_btn.setStyleSheet("""
             QPushButton {
                 padding: 10px;
-                background-color: #17a2b8;
-                color: white;
+                background-color: #78350F;
+                color: #F59E0B;
                 border-radius: 5px;
                 font-weight: bold;
+                border: 1px solid #F59E0B;
             }
-            QPushButton:hover { background-color: #138496; }
+            QPushButton:hover { background-color: #F59E0B; color: #0A0A0A; }
         """)
         report_layout.addWidget(gen_report_btn)
         
@@ -1040,10 +1042,10 @@ class ClaudeAssistantTab(QWidget):
         welcome.setWordWrap(True)
         welcome.setStyleSheet("""
             QLabel {
-                background-color: #d4edda;
+                background-color: #1A1A1A;
                 padding: 15px;
                 border-radius: 10px;
-                color: #155724;
+                color: #4ADE80;
             }
         """)
         self.chat_layout.insertWidget(0, welcome)
@@ -1058,10 +1060,12 @@ class ClaudeAssistantTab(QWidget):
         self.chat_input.setStyleSheet("""
             QLineEdit {
                 padding: 10px;
-                border: 2px solid #ddd;
+                border: 2px solid #333333;
                 border-radius: 20px;
+                background-color: #1A1A1A;
+                color: #FFFFFF;
             }
-            QLineEdit:focus { border-color: #007bff; }
+            QLineEdit:focus { border-color: #F59E0B; }
         """)
         input_layout.addWidget(self.chat_input)
         
@@ -1069,14 +1073,14 @@ class ClaudeAssistantTab(QWidget):
         self.send_btn.clicked.connect(self.send_message)
         self.send_btn.setStyleSheet("""
             QPushButton {
-                background-color: #007bff;
-                color: white;
+                background-color: #F59E0B;
+                color: #0A0A0A;
                 padding: 10px 20px;
                 border-radius: 20px;
                 font-weight: bold;
             }
-            QPushButton:hover { background-color: #0056b3; }
-            QPushButton:disabled { background-color: #cccccc; }
+            QPushButton:hover { background-color: #78350F; color: #F59E0B; }
+            QPushButton:disabled { background-color: #333333; color: #888888; }
         """)
         input_layout.addWidget(self.send_btn)
         
@@ -1087,7 +1091,7 @@ class ClaudeAssistantTab(QWidget):
         clear_layout.addStretch()
         clear_btn = QPushButton("🗑️ Clear Chat")
         clear_btn.clicked.connect(self.clear_chat)
-        clear_btn.setStyleSheet("QPushButton { color: #dc3545; border: none; } QPushButton:hover { text-decoration: underline; }")
+        clear_btn.setStyleSheet("QPushButton { color: #EF4444; border: none; } QPushButton:hover { text-decoration: underline; }")
         clear_layout.addWidget(clear_btn)
         layout.addLayout(clear_layout)
         
@@ -1106,11 +1110,11 @@ class ClaudeAssistantTab(QWidget):
         if key:
             self.api_key = key
             self.api_status.setText("✅ Key configured")
-            self.api_status.setStyleSheet("color: #28a745;")
+            self.api_status.setStyleSheet("color: #4ADE80;")
             QMessageBox.information(self, "Saved", "API key saved for this session.")
         else:
             self.api_status.setText("❌ Not configured")
-            self.api_status.setStyleSheet("color: #dc3545;")
+            self.api_status.setStyleSheet("color: #EF4444;")
     
     def get_gui_context(self):
         """Get current state from the main GUI."""
@@ -1279,7 +1283,7 @@ Surrogate Loaded: {context.get('surrogate_loaded', False)}"""
         
         welcome = QLabel("👋 Chat cleared! What would you like me to do?")
         welcome.setWordWrap(True)
-        welcome.setStyleSheet("QLabel { background-color: #d4edda; padding: 15px; border-radius: 10px; color: #155724; }")
+        welcome.setStyleSheet("QLabel { background-color: #1A1A1A; padding: 15px; border-radius: 10px; color: #4ADE80; }")
         self.chat_layout.insertWidget(0, welcome)
     
     def generate_report(self):

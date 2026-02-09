@@ -193,7 +193,7 @@ class WaveriderCanvas(FigureCanvas):
         self.ax = self.fig.add_subplot(111, projection='3d')
         super().__init__(self.fig)
         self.setParent(parent)
-        
+
         # Initialize plot
         self.ax.set_xlabel('X (Streamwise) [m]')
         self.ax.set_ylabel('Y (Vertical) [m]')
@@ -321,7 +321,7 @@ class WaveriderCanvas(FigureCanvas):
 
 class BasePlaneCanvas(FigureCanvas):
     """Canvas for base plane visualization"""
-    
+
     def __init__(self, parent=None):
         self.fig = Figure(figsize=(8, 6))
         self.ax = self.fig.add_subplot(111)
@@ -374,7 +374,7 @@ class BasePlaneCanvas(FigureCanvas):
 
 class LECanvas(FigureCanvas):
     """Canvas for leading edge visualization"""
-    
+
     def __init__(self, parent=None):
         self.fig = Figure(figsize=(8, 6))
         self.ax = self.fig.add_subplot(111)
@@ -738,7 +738,7 @@ class WaveriderGUI(QMainWindow):
         
         # Beta hint label
         self.beta_hint_label = QLabel("")
-        self.beta_hint_label.setStyleSheet("color: #666; font-size: 10px;")
+        self.beta_hint_label.setStyleSheet("color: #888888; font-size: 10px;")
         self.beta_hint_label.setWordWrap(True)
         flow_layout.addWidget(self.beta_hint_label, 2, 0, 1, 2)
         
@@ -769,7 +769,7 @@ class WaveriderGUI(QMainWindow):
         # Volume display (calculated automatically after geometry generation)
         geom_layout.addWidget(QLabel("Volume (m³):"), 2, 0)
         self.volume_label = QLabel("N/A")
-        self.volume_label.setStyleSheet("font-weight: bold; color: #0066cc;")
+        self.volume_label.setStyleSheet("font-weight: bold; color: #F59E0B;")
         self.volume_label.setToolTip("Internal volume calculated after geometry generation")
         geom_layout.addWidget(self.volume_label, 2, 1)
         
@@ -789,7 +789,7 @@ class WaveriderGUI(QMainWindow):
         
         # Geometry constraint hint (from paper Equation 8)
         self.geom_constraint_label = QLabel("")
-        self.geom_constraint_label.setStyleSheet("color: #666; font-size: 10px; padding: 2px;")
+        self.geom_constraint_label.setStyleSheet("color: #888888; font-size: 10px; padding: 2px;")
         self.geom_constraint_label.setWordWrap(True)
         layout.addWidget(self.geom_constraint_label)
         
@@ -878,7 +878,7 @@ class WaveriderGUI(QMainWindow):
         
         # Design space constraint hint (X1, X2 relationship from paper Equation 8)
         self.design_constraint_label = QLabel("")
-        self.design_constraint_label.setStyleSheet("color: #666; font-size: 10px; padding: 2px;")
+        self.design_constraint_label.setStyleSheet("color: #888888; font-size: 10px; padding: 2px;")
         self.design_constraint_label.setWordWrap(True)
         layout.addWidget(self.design_constraint_label)
         
@@ -934,12 +934,12 @@ class WaveriderGUI(QMainWindow):
         
         generate_btn = QPushButton("Generate Waverider")
         generate_btn.clicked.connect(self.generate_waverider)
-        generate_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 10px; }")
+        generate_btn.setStyleSheet("QPushButton { background-color: #F59E0B; color: #0A0A0A; font-weight: bold; padding: 10px; } QPushButton:hover { background-color: #D97706; }")
         button_layout.addWidget(generate_btn)
         
         export_btn = QPushButton("Export CAD")
         export_btn.clicked.connect(self.export_cad)
-        export_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; padding: 10px; }")
+        export_btn.setStyleSheet("QPushButton { background-color: #78350F; color: #FFFFFF; font-weight: bold; padding: 10px; } QPushButton:hover { background-color: #F59E0B; color: #0A0A0A; }")
         button_layout.addWidget(export_btn)
         
         layout.addLayout(button_layout)
@@ -947,7 +947,7 @@ class WaveriderGUI(QMainWindow):
         # Info label
         self.info_label = QLabel("Ready to generate waverider")
         self.info_label.setWordWrap(True)
-        self.info_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }")
+        self.info_label.setStyleSheet("QLabel { background-color: #1A1A1A; padding: 10px; border-radius: 5px; border: 1px solid #78350F; }")
         layout.addWidget(self.info_label)
         
         layout.addStretch()
@@ -1047,7 +1047,7 @@ class WaveriderGUI(QMainWindow):
                 "Install with: pip install scikit-learn"
             )
             placeholder_label.setStyleSheet(
-                "QLabel { background-color: #fff3cd; padding: 20px; "
+                "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px; border: 1px solid #78350F;"
                 "border-radius: 5px; font-size: 12px; }"
             )
             placeholder_label.setAlignment(Qt.AlignCenter)
@@ -1074,7 +1074,7 @@ class WaveriderGUI(QMainWindow):
                 "  - config.json"
             )
             offdesign_label.setStyleSheet(
-                "QLabel { background-color: #fff3cd; padding: 20px; "
+                "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px; border: 1px solid #78350F;"
                 "border-radius: 5px; font-size: 12px; }"
             )
             offdesign_label.setAlignment(Qt.AlignCenter)
@@ -1104,7 +1104,7 @@ class WaveriderGUI(QMainWindow):
                 "Required: pip install anthropic"
             )
             claude_label.setStyleSheet(
-                "QLabel { background-color: #fff3cd; padding: 20px; "
+                "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px; border: 1px solid #78350F;"
                 "border-radius: 5px; font-size: 12px; }"
             )
             claude_label.setAlignment(Qt.AlignCenter)
@@ -1124,7 +1124,7 @@ class WaveriderGUI(QMainWindow):
 
         if not PYSAGAS_AVAILABLE:
             warning_label = QLabel("⚠️ PySAGAS not available. Install with: pip install pysagas")
-            warning_label.setStyleSheet("QLabel { background-color: #ffcccc; padding: 10px; }")
+            warning_label.setStyleSheet("QLabel { background-color: #1A1A1A; color: #EF4444; padding: 10px; border: 1px solid #78350F; }")
             layout.addWidget(warning_label)
 
         # Analysis parameters
@@ -1245,14 +1245,14 @@ class WaveriderGUI(QMainWindow):
         self.generate_mesh_btn.clicked.connect(self.generate_stl_mesh)
         self.generate_mesh_btn.setEnabled(False)
         self.generate_mesh_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; "
-            "font-weight: bold; padding: 10px; }"
+            "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
+            "font-weight: bold; padding: 10px; } QPushButton:hover { background-color: #D97706; }"
         )
         mesh_gen_layout.addWidget(self.generate_mesh_btn, 3, 0, 1, 2)
         
         # Mesh info
         self.mesh_gen_info = QLabel("Generate waverider first, then create mesh")
-        self.mesh_gen_info.setStyleSheet("color: gray; font-style: italic;")
+        self.mesh_gen_info.setStyleSheet("color: #888888; font-style: italic;")
         mesh_gen_layout.addWidget(self.mesh_gen_info, 4, 0, 1, 2)
         
         mesh_gen_group.setLayout(mesh_gen_layout)
@@ -1271,7 +1271,7 @@ class WaveriderGUI(QMainWindow):
         
         # Mesh info label
         self.mesh_info_label = QLabel("No mesh loaded - Export CAD first to create STL")
-        self.mesh_info_label.setStyleSheet("color: gray; font-style: italic;")
+        self.mesh_info_label.setStyleSheet("color: #888888; font-style: italic;")
         viz_layout.addWidget(self.mesh_info_label)
         
         # Load/Refresh mesh button
@@ -1291,8 +1291,9 @@ class WaveriderGUI(QMainWindow):
         self.run_analysis_btn = QPushButton("🚀 Run PySAGAS Analysis")
         self.run_analysis_btn.clicked.connect(self.run_analysis)
         self.run_analysis_btn.setStyleSheet(
-            "QPushButton { background-color: #FF5722; color: white; "
+            "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
             "font-weight: bold; padding: 12px; font-size: 14px; }"
+            "QPushButton:hover { background-color: #D97706; }"
         )
         self.run_analysis_btn.setEnabled(False)
         run_layout.addWidget(self.run_analysis_btn)
@@ -1301,8 +1302,9 @@ class WaveriderGUI(QMainWindow):
         self.stop_analysis_btn = QPushButton("⛔ Stop Analysis")
         self.stop_analysis_btn.clicked.connect(self.stop_analysis)
         self.stop_analysis_btn.setStyleSheet(
-            "QPushButton { background-color: #ff6b6b; color: white; "
+            "QPushButton { background-color: #EF4444; color: #FFFFFF; "
             "font-weight: bold; padding: 12px; font-size: 14px; }"
+            "QPushButton:hover { background-color: #DC2626; }"
         )
         self.stop_analysis_btn.setVisible(False)
         run_layout.addWidget(self.stop_analysis_btn)
@@ -1380,15 +1382,16 @@ class WaveriderGUI(QMainWindow):
         
         # Sweep info label
         self.sweep_info_label = QLabel("Enable sweep to analyze multiple flight conditions")
-        self.sweep_info_label.setStyleSheet("color: #666; font-style: italic;")
+        self.sweep_info_label.setStyleSheet("color: #888888; font-style: italic;")
         sweep_layout.addWidget(self.sweep_info_label, 3, 0, 1, 6)
         
         # Run sweep button
         self.run_sweep_btn = QPushButton("🔄 Run AeroDeck Sweep")
         self.run_sweep_btn.clicked.connect(self.run_aerodeck_sweep)
         self.run_sweep_btn.setStyleSheet(
-            "QPushButton { background-color: #2196F3; color: white; "
+            "QPushButton { background-color: #78350F; color: #FFFFFF; "
             "font-weight: bold; padding: 10px; }"
+            "QPushButton:hover { background-color: #F59E0B; color: #0A0A0A; }"
         )
         self.run_sweep_btn.setEnabled(False)
         sweep_layout.addWidget(self.run_sweep_btn, 4, 0, 1, 3)
@@ -1397,8 +1400,8 @@ class WaveriderGUI(QMainWindow):
         self.plot_sweep_btn = QPushButton("📈 Plot AeroDeck Results")
         self.plot_sweep_btn.clicked.connect(self.plot_aerodeck_results)
         self.plot_sweep_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; "
-            "font-weight: bold; padding: 10px; }"
+            "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
+            "font-weight: bold; padding: 10px; } QPushButton:hover { background-color: #D97706; }"
         )
         self.plot_sweep_btn.setEnabled(False)
         sweep_layout.addWidget(self.plot_sweep_btn, 4, 3, 1, 3)
@@ -1418,7 +1421,8 @@ class WaveriderGUI(QMainWindow):
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
         self.results_text.setStyleSheet(
-            "QTextEdit { font-family: 'Courier New'; font-size: 11pt; }"
+            "QTextEdit { font-family: 'Courier New'; font-size: 11pt; "
+            "background-color: #1A1A1A; color: #FFFFFF; border: 1px solid #78350F; }"
         )
         self.results_text.setText("No analysis results yet.\n\n"
                                   "Steps:\n"
@@ -1504,11 +1508,11 @@ class WaveriderGUI(QMainWindow):
             try:
                 self.waverider_volume = calculate_waverider_volume(self.waverider)
                 self.volume_label.setText(f"{self.waverider_volume:.4f}")
-                self.volume_label.setStyleSheet("font-weight: bold; color: #0066cc;")
+                self.volume_label.setStyleSheet("font-weight: bold; color: #F59E0B;")
             except Exception as vol_err:
                 self.waverider_volume = 0.0
                 self.volume_label.setText("Error")
-                self.volume_label.setStyleSheet("font-weight: bold; color: #cc0000;")
+                self.volume_label.setStyleSheet("font-weight: bold; color: #EF4444;")
                 print(f"Volume calculation error: {vol_err}")
             
             # Update all views
@@ -1586,19 +1590,19 @@ class WaveriderGUI(QMainWindow):
             
             # Update geometry constraint label
             if height > max_height:
-                self.geom_constraint_label.setStyleSheet("color: #d32f2f; font-size: 10px; padding: 2px; font-weight: bold;")
+                self.geom_constraint_label.setStyleSheet("color: #EF4444; font-size: 10px; padding: 2px; font-weight: bold;")
                 geom_text = f"⚠️ Height too large! Max height ≈ {max_height:.2f} m for current X1, X2"
             else:
-                self.geom_constraint_label.setStyleSheet("color: #388e3c; font-size: 10px; padding: 2px;")
+                self.geom_constraint_label.setStyleSheet("color: #4ADE80; font-size: 10px; padding: 2px;")
                 geom_text = f"✓ Max height ≈ {max_height:.2f} m (current: {height:.2f} m)"
             self.geom_constraint_label.setText(geom_text)
             
             # Update design variable constraint label
             if X2 > max_x2:
-                self.design_constraint_label.setStyleSheet("color: #d32f2f; font-size: 10px; padding: 2px; font-weight: bold;")
+                self.design_constraint_label.setStyleSheet("color: #EF4444; font-size: 10px; padding: 2px; font-weight: bold;")
                 design_text = f"⚠️ X2 too large! Max X2 ≈ {max_x2:.3f} for current X1={X1:.3f}"
             else:
-                self.design_constraint_label.setStyleSheet("color: #388e3c; font-size: 10px; padding: 2px;")
+                self.design_constraint_label.setStyleSheet("color: #4ADE80; font-size: 10px; padding: 2px;")
                 design_text = f"✓ Max X2 ≈ {max_x2:.3f} (current: {X2:.3f})"
             self.design_constraint_label.setText(design_text)
             
@@ -1627,9 +1631,9 @@ class WaveriderGUI(QMainWindow):
             # Check if current beta is valid
             current_beta = self.beta_spin.value()
             if current_beta < beta_min:
-                self.beta_hint_label.setStyleSheet("color: #d32f2f; font-size: 10px; font-weight: bold;")
+                self.beta_hint_label.setStyleSheet("color: #EF4444; font-size: 10px; font-weight: bold;")
             else:
-                self.beta_hint_label.setStyleSheet("color: #666; font-size: 10px;")
+                self.beta_hint_label.setStyleSheet("color: #888888; font-size: 10px;")
                 
         except Exception as e:
             self.beta_hint_label.setText("")
@@ -1902,11 +1906,11 @@ class WaveriderGUI(QMainWindow):
             try:
                 self.waverider_volume = calculate_waverider_volume(self.waverider)
                 self.volume_label.setText(f"{self.waverider_volume:.4f}")
-                self.volume_label.setStyleSheet("font-weight: bold; color: #0066cc;")
+                self.volume_label.setStyleSheet("font-weight: bold; color: #F59E0B;")
             except Exception as vol_err:
                 self.waverider_volume = 0.0
                 self.volume_label.setText("Error")
-                self.volume_label.setStyleSheet("font-weight: bold; color: #cc0000;")
+                self.volume_label.setStyleSheet("font-weight: bold; color: #EF4444;")
                 print(f"Volume calculation error: {vol_err}")
 
             # Update plots
@@ -1915,7 +1919,7 @@ class WaveriderGUI(QMainWindow):
             # Enable mesh generation and analysis buttons
             self.generate_mesh_btn.setEnabled(True)
             self.mesh_gen_info.setText("✓ Ready to generate mesh")
-            self.mesh_gen_info.setStyleSheet("color: green;")
+            self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
 
             self.info_label.setText(
                 "✓ Waverider generated successfully.\n\n"
@@ -2052,7 +2056,7 @@ class WaveriderGUI(QMainWindow):
             max_size = self.mesh_max_spin.value()
 
             self.mesh_gen_info.setText("Generating mesh with Gmsh...")
-            self.mesh_gen_info.setStyleSheet("color: orange;")
+            self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
             QApplication.processEvents()
 
             print(f"\n{'='*60}")
@@ -2171,7 +2175,7 @@ class WaveriderGUI(QMainWindow):
                 gmsh.finalize()
                 os.unlink(temp_step)
                 self.mesh_gen_info.setText("Mesh generation cancelled")
-                self.mesh_gen_info.setStyleSheet("color: gray; font-style: italic;")
+                self.mesh_gen_info.setStyleSheet("color: #888888; font-style: italic;")
                 return
             
             print(f"Saving STL to: {stl_filename}")
@@ -2204,7 +2208,7 @@ class WaveriderGUI(QMainWindow):
             self.mesh_gen_info.setText(
                 f"✓ Mesh generated: {num_triangles} triangles, {file_size_kb:.1f} KB"
             )
-            self.mesh_gen_info.setStyleSheet("color: green;")
+            self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
             
             # Enable buttons
             self.load_mesh_btn.setEnabled(True)
@@ -2246,7 +2250,7 @@ class WaveriderGUI(QMainWindow):
                 pass
 
             self.mesh_gen_info.setText(f"✗ Mesh generation failed")
-            self.mesh_gen_info.setStyleSheet("color: red;")
+            self.mesh_gen_info.setStyleSheet("color: #EF4444;")
             QMessageBox.critical(
                 self, "Mesh Generation Failed",
                 f"Could not generate mesh:\n\n{str(e)}"
@@ -2299,7 +2303,7 @@ class WaveriderGUI(QMainWindow):
             self.mesh_gen_info.setText(
                 f"✓ Mesh generated (CadQuery): {num_triangles} triangles"
             )
-            self.mesh_gen_info.setStyleSheet("color: orange;")
+            self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
             
             self.load_mesh_btn.setEnabled(True)
             self.run_analysis_btn.setEnabled(True)
@@ -2322,7 +2326,7 @@ class WaveriderGUI(QMainWindow):
             
         except Exception as e:
             self.mesh_gen_info.setText("✗ Mesh generation failed")
-            self.mesh_gen_info.setStyleSheet("color: red;")
+            self.mesh_gen_info.setStyleSheet("color: #EF4444;")
             QMessageBox.critical(
                 self, "Mesh Generation Failed",
                 f"Could not generate mesh:\n\n{str(e)}"
@@ -2371,11 +2375,11 @@ class WaveriderGUI(QMainWindow):
             self.mesh_info_label.setText(
                 f"✓ Loaded: {num_triangles} triangles, {file_size:.1f} KB"
             )
-            self.mesh_info_label.setStyleSheet("color: green;")
+            self.mesh_info_label.setStyleSheet("color: #4ADE80;")
             
         except Exception as e:
             self.mesh_info_label.setText(f"✗ Error loading mesh: {str(e)}")
-            self.mesh_info_label.setStyleSheet("color: red;")
+            self.mesh_info_label.setStyleSheet("color: #EF4444;")
             QMessageBox.critical(
                 self, "Mesh loading failed",
                 f"Could not load STL mesh:\n\n{str(e)}"
@@ -2564,15 +2568,15 @@ class WaveriderGUI(QMainWindow):
         if enabled:
             self.update_sweep_info()
             if stl_exists:
-                self.sweep_info_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+                self.sweep_info_label.setStyleSheet("color: #F59E0B; font-weight: bold;")
             else:
                 self.sweep_info_label.setText(
                     "⚠️ Generate STL mesh first, then run sweep"
                 )
-                self.sweep_info_label.setStyleSheet("color: orange; font-style: italic;")
+                self.sweep_info_label.setStyleSheet("color: #F59E0B; font-style: italic;")
         else:
             self.sweep_info_label.setText("Enable sweep to analyze multiple flight conditions")
-            self.sweep_info_label.setStyleSheet("color: #666; font-style: italic;")
+            self.sweep_info_label.setStyleSheet("color: #888888; font-style: italic;")
     
     def update_sweep_info(self):
         """Update sweep info label with point count"""
@@ -2590,7 +2594,7 @@ class WaveriderGUI(QMainWindow):
                 f"📊 {len(aoa_range)} AoA × {len(mach_range)} Mach = {n_points} points "
                 f"(~{est_time:.0f} min)"
             )
-            self.sweep_info_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+            self.sweep_info_label.setStyleSheet("color: #F59E0B; font-weight: bold;")
         except:
             pass
     
@@ -2927,10 +2931,202 @@ def main():
     
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # Modern look
-    
+
     # Force dot as decimal separator (not comma)
     from PyQt5.QtCore import QLocale
     QLocale.setDefault(QLocale(QLocale.English, QLocale.UnitedStates))
+
+    # Kilia dark theme
+    from PyQt5.QtGui import QPalette, QColor
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor("#0A0A0A"))
+    palette.setColor(QPalette.WindowText, QColor("#FFFFFF"))
+    palette.setColor(QPalette.Base, QColor("#1A1A1A"))
+    palette.setColor(QPalette.AlternateBase, QColor("#0A0A0A"))
+    palette.setColor(QPalette.ToolTipBase, QColor("#1A1A1A"))
+    palette.setColor(QPalette.ToolTipText, QColor("#FFFFFF"))
+    palette.setColor(QPalette.Text, QColor("#FFFFFF"))
+    palette.setColor(QPalette.Button, QColor("#1A1A1A"))
+    palette.setColor(QPalette.ButtonText, QColor("#FFFFFF"))
+    palette.setColor(QPalette.BrightText, QColor("#F59E0B"))
+    palette.setColor(QPalette.Link, QColor("#F59E0B"))
+    palette.setColor(QPalette.Highlight, QColor("#F59E0B"))
+    palette.setColor(QPalette.HighlightedText, QColor("#0A0A0A"))
+    palette.setColor(QPalette.Disabled, QPalette.Text, QColor("#888888"))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#888888"))
+    app.setPalette(palette)
+
+    # Matplotlib dark theme to match Kilia
+    import matplotlib
+    matplotlib.rcParams['figure.facecolor'] = '#0A0A0A'
+    matplotlib.rcParams['axes.facecolor'] = '#1A1A1A'
+    matplotlib.rcParams['axes.edgecolor'] = '#888888'
+    matplotlib.rcParams['axes.labelcolor'] = '#FFFFFF'
+    matplotlib.rcParams['text.color'] = '#FFFFFF'
+    matplotlib.rcParams['xtick.color'] = '#888888'
+    matplotlib.rcParams['ytick.color'] = '#888888'
+    matplotlib.rcParams['grid.color'] = '#333333'
+    matplotlib.rcParams['legend.facecolor'] = '#1A1A1A'
+    matplotlib.rcParams['legend.edgecolor'] = '#888888'
+
+    app.setStyleSheet("""
+        QMainWindow { background-color: #0A0A0A; }
+        QWidget { background-color: #0A0A0A; color: #FFFFFF; }
+
+        QGroupBox {
+            border: 1px solid #78350F;
+            border-radius: 4px;
+            margin-top: 8px;
+            padding-top: 12px;
+            font-weight: bold;
+            color: #F59E0B;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 8px;
+            padding: 0 4px;
+            color: #F59E0B;
+        }
+
+        QPushButton {
+            background-color: #1A1A1A;
+            color: #FFFFFF;
+            border: 1px solid #78350F;
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-weight: bold;
+        }
+        QPushButton:hover {
+            background-color: #78350F;
+            border-color: #F59E0B;
+        }
+        QPushButton:pressed {
+            background-color: #F59E0B;
+            color: #0A0A0A;
+        }
+        QPushButton:disabled {
+            background-color: #1A1A1A;
+            color: #888888;
+            border-color: #333333;
+        }
+
+        QDoubleSpinBox, QSpinBox {
+            background-color: #1A1A1A;
+            color: #FFFFFF;
+            border: 1px solid #78350F;
+            border-radius: 3px;
+            padding: 3px;
+        }
+        QDoubleSpinBox:focus, QSpinBox:focus {
+            border-color: #F59E0B;
+        }
+
+        QComboBox {
+            background-color: #1A1A1A;
+            color: #FFFFFF;
+            border: 1px solid #78350F;
+            border-radius: 3px;
+            padding: 3px 6px;
+        }
+        QComboBox:hover { border-color: #F59E0B; }
+        QComboBox QAbstractItemView {
+            background-color: #1A1A1A;
+            color: #FFFFFF;
+            selection-background-color: #F59E0B;
+            selection-color: #0A0A0A;
+        }
+
+        QCheckBox { color: #FFFFFF; spacing: 6px; }
+        QCheckBox::indicator {
+            width: 14px; height: 14px;
+            border: 1px solid #78350F;
+            border-radius: 2px;
+            background-color: #1A1A1A;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #F59E0B;
+            border-color: #F59E0B;
+        }
+
+        QTabWidget::pane {
+            border: 1px solid #78350F;
+            background-color: #0A0A0A;
+        }
+        QTabBar::tab {
+            background-color: #1A1A1A;
+            color: #888888;
+            border: 1px solid #78350F;
+            border-bottom: none;
+            padding: 6px 12px;
+            margin-right: 2px;
+        }
+        QTabBar::tab:selected {
+            background-color: #0A0A0A;
+            color: #F59E0B;
+            border-bottom: 2px solid #F59E0B;
+        }
+        QTabBar::tab:hover:!selected {
+            color: #FFFFFF;
+            background-color: #78350F;
+        }
+
+        QTextEdit, QPlainTextEdit {
+            background-color: #1A1A1A;
+            color: #FFFFFF;
+            border: 1px solid #78350F;
+            border-radius: 3px;
+            font-family: 'Courier New';
+        }
+
+        QProgressBar {
+            background-color: #1A1A1A;
+            border: 1px solid #78350F;
+            border-radius: 4px;
+            text-align: center;
+            color: #FFFFFF;
+            height: 18px;
+        }
+        QProgressBar::chunk {
+            background-color: #F59E0B;
+            border-radius: 3px;
+        }
+
+        QLabel { color: #FFFFFF; }
+
+        QScrollArea { border: none; }
+        QScrollBar:vertical {
+            background-color: #0A0A0A;
+            width: 10px;
+            border: none;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #78350F;
+            border-radius: 4px;
+            min-height: 20px;
+        }
+        QScrollBar::handle:vertical:hover { background-color: #F59E0B; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        QScrollBar:horizontal {
+            background-color: #0A0A0A;
+            height: 10px;
+            border: none;
+        }
+        QScrollBar::handle:horizontal {
+            background-color: #78350F;
+            border-radius: 4px;
+            min-width: 20px;
+        }
+        QScrollBar::handle:horizontal:hover { background-color: #F59E0B; }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+
+        QSplitter::handle { background-color: #78350F; }
+
+        QMessageBox { background-color: #1A1A1A; }
+        QInputDialog { background-color: #1A1A1A; }
+        QFileDialog { background-color: #1A1A1A; }
+
+        QToolBar { background-color: #0A0A0A; border: none; }
+    """)
     
     gui = WaveriderGUI()
     gui.show()
