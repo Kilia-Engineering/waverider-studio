@@ -249,8 +249,9 @@ class DesignSpaceWorker(QThread):
 class ShadowWaveriderCanvas(FigureCanvas):
     """Canvas for 3D visualization"""
     def __init__(self, parent=None):
-        self.fig = Figure(figsize=(10, 8))
+        self.fig = Figure(figsize=(10, 8), facecolor='#0A0A0A')
         self.ax = self.fig.add_subplot(111, projection='3d')
+        self.ax.set_facecolor('#1A1A1A')
         super().__init__(self.fig)
         self.setParent(parent)
         
@@ -304,10 +305,11 @@ class ShadowWaveriderCanvas(FigureCanvas):
             legend_elements.append(Line2D([0], [0], marker='*', color='w', markerfacecolor='lime',
                                          markeredgecolor='black', markersize=12, label='CG'))
         
-        self.ax.set_xlabel('Z (Span)')
-        self.ax.set_ylabel('X (Streamwise)')
-        self.ax.set_zlabel('Y (Vertical)')
-        self.ax.set_title(f'SHADOW Waverider (M={wr.mach:.1f}, β={wr.shock_angle:.1f}°)')
+        self.ax.set_xlabel('Z (Span)', color='#FFFFFF')
+        self.ax.set_ylabel('X (Streamwise)', color='#FFFFFF')
+        self.ax.set_zlabel('Y (Vertical)', color='#FFFFFF')
+        self.ax.set_title(f'SHADOW Waverider (M={wr.mach:.1f}, β={wr.shock_angle:.1f}°)', color='#FFFFFF')
+        self.ax.tick_params(colors='#888888')
         if legend_elements:
             self.ax.legend(handles=legend_elements, loc='upper left')
         self._set_axes_equal()
@@ -330,8 +332,9 @@ class ShadowWaveriderCanvas(FigureCanvas):
 class DesignSpaceCanvas(FigureCanvas):
     """Canvas for design space visualization"""
     def __init__(self, parent=None):
-        self.fig = Figure(figsize=(10, 8))
+        self.fig = Figure(figsize=(10, 8), facecolor='#0A0A0A')
         self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor('#1A1A1A')
         self.colorbar = None  # Track colorbar to remove it on updates
         super().__init__(self.fig)
         self.setParent(parent)
@@ -379,9 +382,10 @@ class DesignSpaceCanvas(FigureCanvas):
             self.ax.scatter(invalid_df[x_param], invalid_df[y_param], c='red', marker='x', 
                           s=50, alpha=0.5, label='Invalid')
         
-        self.ax.set_xlabel(x_param, fontsize=12)
-        self.ax.set_ylabel(y_param, fontsize=12)
-        self.ax.set_title(f'{color_param} vs ({x_param}, {y_param})', fontsize=14)
+        self.ax.set_xlabel(x_param, fontsize=12, color='#FFFFFF')
+        self.ax.set_ylabel(y_param, fontsize=12, color='#FFFFFF')
+        self.ax.set_title(f'{color_param} vs ({x_param}, {y_param})', fontsize=14, color='#FFFFFF')
+        self.ax.tick_params(colors='#888888')
         self.ax.grid(True, alpha=0.3)
         self.ax.legend(loc='upper right')
         self.fig.tight_layout()
@@ -495,7 +499,7 @@ class ShadowWaveriderTab(QWidget):
         
         # Shock angle recommendations label
         self.shock_rec_label = QLabel("")
-        self.shock_rec_label.setStyleSheet("color: #666; font-size: 9px;")
+        self.shock_rec_label.setStyleSheet("color: #888888; font-size: 9px;")
         self.shock_rec_label.setWordWrap(True)
         layout.addWidget(self.shock_rec_label, 2, 0, 1, 3)
         
@@ -592,12 +596,12 @@ class ShadowWaveriderTab(QWidget):
         layout = QVBoxLayout()
         
         btn = QPushButton("🚀 Generate Waverider")
-        btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;")
+        btn.setStyleSheet("background-color: #F59E0B; color: #0A0A0A; font-weight: bold; padding: 10px;")
         btn.clicked.connect(self.generate)
         layout.addWidget(btn)
         
         self.info_label = QLabel("Ready")
-        self.info_label.setStyleSheet("color: #666; font-size: 10px;")
+        self.info_label.setStyleSheet("color: #888888; font-size: 10px;")
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
         
@@ -663,7 +667,7 @@ class ShadowWaveriderTab(QWidget):
         layout.addWidget(self.analysis_progress, 5, 0, 1, 2)
 
         self.analysis_status = QLabel("")
-        self.analysis_status.setStyleSheet("color: gray; font-style: italic;")
+        self.analysis_status.setStyleSheet("color: #888888; font-style: italic;")
         layout.addWidget(self.analysis_status, 6, 0, 1, 2)
 
         group.setLayout(layout)
@@ -734,49 +738,49 @@ class ShadowWaveriderTab(QWidget):
         self.best_design_group = QGroupBox("⭐ Best Design Found")
         best_layout = QGridLayout()
         self.best_design_group.setStyleSheet(
-            "QGroupBox { font-weight: bold; border: 2px solid #f0ad4e; border-radius: 5px; margin-top: 10px; padding-top: 10px; }"
-            "QGroupBox::title { color: #f0ad4e; }"
+            "QGroupBox { font-weight: bold; border: 2px solid #F59E0B; border-radius: 5px; margin-top: 10px; padding-top: 10px; }"
+            "QGroupBox::title { color: #F59E0B; }"
         )
         
         best_layout.addWidget(QLabel("A₃:"), 0, 0)
         self.best_a3_label = QLabel("--")
-        self.best_a3_label.setStyleSheet("font-weight: bold; color: #333;")
+        self.best_a3_label.setStyleSheet("font-weight: bold; color: #FFFFFF;")
         best_layout.addWidget(self.best_a3_label, 0, 1)
         
         best_layout.addWidget(QLabel("A₂:"), 0, 2)
         self.best_a2_label = QLabel("--")
-        self.best_a2_label.setStyleSheet("font-weight: bold; color: #333;")
+        self.best_a2_label.setStyleSheet("font-weight: bold; color: #FFFFFF;")
         best_layout.addWidget(self.best_a2_label, 0, 3)
         
         best_layout.addWidget(QLabel("A₀:"), 0, 4)
         self.best_a0_label = QLabel("--")
-        self.best_a0_label.setStyleSheet("font-weight: bold; color: #333;")
+        self.best_a0_label.setStyleSheet("font-weight: bold; color: #FFFFFF;")
         best_layout.addWidget(self.best_a0_label, 0, 5)
         
         best_layout.addWidget(QLabel("Volume:"), 1, 0)
         self.best_volume_label = QLabel("--")
-        self.best_volume_label.setStyleSheet("font-weight: bold; color: #5cb85c;")
+        self.best_volume_label.setStyleSheet("font-weight: bold; color: #4ADE80;")
         best_layout.addWidget(self.best_volume_label, 1, 1)
         
         best_layout.addWidget(QLabel("Area:"), 1, 2)
         self.best_area_label = QLabel("--")
-        self.best_area_label.setStyleSheet("font-weight: bold; color: #5cb85c;")
+        self.best_area_label.setStyleSheet("font-weight: bold; color: #4ADE80;")
         best_layout.addWidget(self.best_area_label, 1, 3)
         
         best_layout.addWidget(QLabel("θc:"), 1, 4)
         self.best_cone_label = QLabel("--")
-        self.best_cone_label.setStyleSheet("font-weight: bold; color: #5cb85c;")
+        self.best_cone_label.setStyleSheet("font-weight: bold; color: #4ADE80;")
         best_layout.addWidget(self.best_cone_label, 1, 5)
         
         best_layout.addWidget(QLabel("L/D:"), 2, 0)
         self.best_ld_label = QLabel("--")
-        self.best_ld_label.setStyleSheet("font-weight: bold; color: #d9534f; font-size: 14px;")
+        self.best_ld_label.setStyleSheet("font-weight: bold; color: #EF4444; font-size: 14px;")
         best_layout.addWidget(self.best_ld_label, 2, 1)
         
         # Apply best design button
         apply_best_btn = QPushButton("📋 Apply to Main Panel")
         apply_best_btn.clicked.connect(self.apply_best_design)
-        apply_best_btn.setStyleSheet("background-color: #f0ad4e; color: white; font-weight: bold; padding: 5px;")
+        apply_best_btn.setStyleSheet("background-color: #F59E0B; color: #0A0A0A; font-weight: bold; padding: 5px;")
         best_layout.addWidget(apply_best_btn, 2, 2, 1, 4)
         
         self.best_design_group.setLayout(best_layout)
@@ -1194,7 +1198,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         self.analysis_progress.setVisible(True)
         self.analysis_progress.setRange(0, 0)  # Indeterminate
         self.analysis_status.setText("Starting analysis...")
-        self.analysis_status.setStyleSheet("color: orange;")
+        self.analysis_status.setStyleSheet("color: #F59E0B;")
 
         refs = self.waverider.get_reference_values(scale=scale)
         self.analysis_worker = AnalysisWorker(temp_stl, self.mach_spin.value(), self.aoa_spin.value(),
@@ -1212,7 +1216,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         self.analysis_progress.setVisible(False)
         self.analyze_btn.setEnabled(True)
         self.analysis_status.setText("Analysis failed")
-        self.analysis_status.setStyleSheet("color: red;")
+        self.analysis_status.setStyleSheet("color: #EF4444;")
         QMessageBox.critical(self, "Error", error_msg)
     
     def on_analysis_done(self, r):
@@ -1220,7 +1224,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         self.analysis_progress.setVisible(False)
         self.analyze_btn.setEnabled(True)
         self.analysis_status.setText("Analysis complete")
-        self.analysis_status.setStyleSheet("color: green;")
+        self.analysis_status.setStyleSheet("color: #4ADE80;")
 
         result_text = "\n" + "="*60 + "\n"
         result_text += "AERODYNAMIC ANALYSIS RESULTS\n"

@@ -528,7 +528,7 @@ if PYQT_AVAILABLE:
             # Description
             self.description_label = QLabel()
             self.description_label.setWordWrap(True)
-            self.description_label.setStyleSheet("color: gray; font-style: italic;")
+            self.description_label.setStyleSheet("color: #888888; font-style: italic;")
             self._update_description()
             selection_layout.addWidget(self.description_label)
             

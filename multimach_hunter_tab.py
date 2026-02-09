@@ -157,7 +157,7 @@ class MultiMachHunterTab(QWidget):
         # Header
         header = QLabel(
             "<h3>🌐 Multi-Mach Hunter</h3>"
-            "<p style='color: #666;'>Find designs that perform well across a range of Mach numbers</p>"
+            "<p style='color: #888888;'>Find designs that perform well across a range of Mach numbers</p>"
         )
         header.setWordWrap(True)
         layout.addWidget(header)
@@ -167,7 +167,7 @@ class MultiMachHunterTab(QWidget):
         model_layout = QVBoxLayout(model_group)
         
         self.model_status = QLabel("⚠️ No model loaded")
-        self.model_status.setStyleSheet("QLabel { color: #856404; background-color: #fff3cd; padding: 5px; border-radius: 3px; }")
+        self.model_status.setStyleSheet("QLabel { color: #F59E0B; background-color: #78350F; padding: 5px; border-radius: 3px; }")
         model_layout.addWidget(self.model_status)
         
         load_btn = QPushButton("📂 Load Surrogate Model...")
@@ -323,15 +323,15 @@ class MultiMachHunterTab(QWidget):
         self.run_btn.setEnabled(False)
         self.run_btn.setStyleSheet("""
             QPushButton {
-                background-color: #17a2b8;
-                color: white;
+                background-color: #F59E0B;
+                color: #0A0A0A;
                 padding: 15px;
                 font-size: 14px;
                 font-weight: bold;
                 border-radius: 8px;
             }
-            QPushButton:hover { background-color: #138496; }
-            QPushButton:disabled { background-color: #cccccc; }
+            QPushButton:hover { background-color: #D97706; }
+            QPushButton:disabled { background-color: #333333; color: #666666; }
         """)
         layout.addWidget(self.run_btn)
         
@@ -422,7 +422,7 @@ class MultiMachHunterTab(QWidget):
             
             self.model_status.setText("✅ Model loaded!")
             self.model_status.setStyleSheet(
-                "QLabel { color: #155724; background-color: #d4edda; "
+                "QLabel { color: #4ADE80; background-color: #14532D; "
                 "padding: 5px; border-radius: 3px; }"
             )
             

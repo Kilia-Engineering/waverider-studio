@@ -114,8 +114,8 @@ class UncertaintyGuide(QFrame):
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
         self.setStyleSheet("""
             QFrame {
-                background-color: #f8f9fa;
-                border: 1px solid #dee2e6;
+                background-color: #1A1A1A;
+                border: 1px solid #333333;
                 border-radius: 5px;
                 padding: 10px;
             }
@@ -130,14 +130,14 @@ class UncertaintyGuide(QFrame):
         
         guide_text = """
 <style>
-    .low { color: #28a745; font-weight: bold; }
-    .med { color: #ffc107; font-weight: bold; }
-    .high { color: #dc3545; font-weight: bold; }
+    .low { color: #4ADE80; font-weight: bold; }
+    .med { color: #F59E0B; font-weight: bold; }
+    .high { color: #EF4444; font-weight: bold; }
 </style>
 <p><span class="low">● Low uncertainty (σ &lt; 0.02)</span>: Trust the prediction</p>
 <p><span class="med">● Medium uncertainty (0.02 ≤ σ &lt; 0.05)</span>: Prediction is reasonable</p>
 <p><span class="high">● High uncertainty (σ ≥ 0.05)</span>: Run PySAGAS to verify</p>
-<p style="margin-top: 10px; font-size: 9px; color: #666;">
+<p style="margin-top: 10px; font-size: 9px; color: #888888;">
 This allows "smart" validation - only run expensive CFD when the surrogate is unsure.
 </p>
 """
@@ -213,7 +213,7 @@ class OffDesignSurrogateTab(QWidget):
         
         # Status label
         self.model_status = QLabel("⚠️ No model loaded")
-        self.model_status.setStyleSheet("QLabel { color: #856404; background-color: #fff3cd; padding: 5px; border-radius: 3px; }")
+        self.model_status.setStyleSheet("QLabel { color: #F59E0B; background-color: #78350F; padding: 5px; border-radius: 3px; }")
         model_layout.addWidget(self.model_status)
         
         # Load button
@@ -224,7 +224,7 @@ class OffDesignSurrogateTab(QWidget):
         # Model info
         self.model_info = QLabel("")
         self.model_info.setWordWrap(True)
-        self.model_info.setStyleSheet("QLabel { color: #666; font-size: 10px; }")
+        self.model_info.setStyleSheet("QLabel { color: #888888; font-size: 10px; }")
         model_layout.addWidget(self.model_info)
         
         layout.addWidget(model_group)
@@ -340,11 +340,11 @@ class OffDesignSurrogateTab(QWidget):
         self.predict_btn.setEnabled(False)
         self.predict_btn.setStyleSheet("""
             QPushButton {
-                background-color: #007bff; color: white;
+                background-color: #F59E0B; color: #0A0A0A;
                 padding: 8px; font-weight: bold; border-radius: 5px;
             }
-            QPushButton:hover { background-color: #0056b3; }
-            QPushButton:disabled { background-color: #cccccc; }
+            QPushButton:hover { background-color: #D97706; }
+            QPushButton:disabled { background-color: #333333; color: #888888; }
         """)
         btn_layout.addWidget(self.predict_btn)
         
@@ -359,7 +359,7 @@ class OffDesignSurrogateTab(QWidget):
         
         # ===== HUNTER MODE SECTION =====
         hunter_group = QGroupBox("🎯 CL/CD Hunter - Find Optimal Design")
-        hunter_group.setStyleSheet("QGroupBox { font-weight: bold; color: #28a745; }")
+        hunter_group.setStyleSheet("QGroupBox { font-weight: bold; color: #4ADE80; }")
         hunter_layout = QGridLayout(hunter_group)
         
         row = 0
@@ -473,7 +473,7 @@ class OffDesignSurrogateTab(QWidget):
         
         # Training domain note
         domain_note = QLabel(
-            "<i style='color: #666; font-size: 9px;'>"
+            "<i style='color: #888888; font-size: 9px;'>"
             "💡 Tip: For flight M6, use design M4-6 to stay within training domain (lower σ)"
             "</i>"
         )
@@ -483,7 +483,7 @@ class OffDesignSurrogateTab(QWidget):
         
         # Volume model status
         self.volume_model_status = QLabel("⚠️ Volume model not loaded")
-        self.volume_model_status.setStyleSheet("QLabel { color: #856404; font-size: 10px; }")
+        self.volume_model_status.setStyleSheet("QLabel { color: #F59E0B; font-size: 10px; }")
         hunter_layout.addWidget(self.volume_model_status, row, 0, 1, 4)
         row += 1
         
@@ -493,11 +493,11 @@ class OffDesignSurrogateTab(QWidget):
         self.hunter_btn.setEnabled(False)
         self.hunter_btn.setStyleSheet("""
             QPushButton {
-                background-color: #28a745; color: white;
+                background-color: #F59E0B; color: #0A0A0A;
                 padding: 12px; font-size: 13px; font-weight: bold; border-radius: 5px;
             }
-            QPushButton:hover { background-color: #1e7e34; }
-            QPushButton:disabled { background-color: #cccccc; }
+            QPushButton:hover { background-color: #D97706; }
+            QPushButton:disabled { background-color: #333333; color: #888888; }
         """)
         hunter_layout.addWidget(self.hunter_btn, row, 0, 1, 4)
         
@@ -611,7 +611,7 @@ class OffDesignSurrogateTab(QWidget):
             # Update UI
             self.model_status.setText("✅ Model loaded successfully!")
             self.model_status.setStyleSheet(
-                "QLabel { color: #155724; background-color: #d4edda; "
+                "QLabel { color: #4ADE80; background-color: #1A1A1A; "
                 "padding: 5px; border-radius: 3px; }"
             )
             
@@ -629,10 +629,10 @@ class OffDesignSurrogateTab(QWidget):
             # Update volume model status
             if self.has_volume_model:
                 self.volume_model_status.setText("✅ Volume model loaded")
-                self.volume_model_status.setStyleSheet("QLabel { color: #155724; font-size: 10px; }")
+                self.volume_model_status.setStyleSheet("QLabel { color: #4ADE80; font-size: 10px; }")
             else:
                 self.volume_model_status.setText("⚠️ Volume model not available - constraint will be approximate")
-                self.volume_model_status.setStyleSheet("QLabel { color: #856404; font-size: 10px; }")
+                self.volume_model_status.setStyleSheet("QLabel { color: #F59E0B; font-size: 10px; }")
             
             # Enable buttons
             self.predict_btn.setEnabled(True)
@@ -702,11 +702,11 @@ class OffDesignSurrogateTab(QWidget):
     def get_uncertainty_level(self, std):
         """Get uncertainty level and color."""
         if std < 0.02:
-            return "LOW", "#28a745", "Trust the prediction"
+            return "LOW", "#4ADE80", "Trust the prediction"
         elif std < 0.05:
-            return "MEDIUM", "#ffc107", "Prediction is reasonable"
+            return "MEDIUM", "#F59E0B", "Prediction is reasonable"
         else:
-            return "HIGH", "#dc3545", "Consider running PySAGAS"
+            return "HIGH", "#EF4444", "Consider running PySAGAS"
     
     def predict_single(self):
         """Make a single prediction for current parameters."""
