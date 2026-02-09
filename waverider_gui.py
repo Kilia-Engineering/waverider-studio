@@ -28,13 +28,6 @@ if GUI_ROOT not in sys.path:
 from waverider_generator.generator import waverider as wr
 from waverider_generator.cad_export import to_CAD
 
-# Import blunted waverider CAD export
-try:
-    from blunted_cad_export import export_blunted_waverider, export_waverider_stl
-    BLUNTED_CAD_EXPORT_AVAILABLE = True
-except ImportError as e:
-    print(f"Blunted CAD export not available: {e}")
-    BLUNTED_CAD_EXPORT_AVAILABLE = False
 
 # Import plot windows for proper Qt-compatible plotting
 try:
@@ -190,13 +183,6 @@ except ImportError as e:
     print(f"Claude assistant tab not available: {e}")
     CLAUDE_ASSISTANT_AVAILABLE = False
 
-# Import LE Blunting tab
-try:
-    from le_blunting_tab import LEBluntingTab
-    LE_BLUNTING_AVAILABLE = True
-except ImportError as e:
-    print(f"LE Blunting tab not available: {e}")
-    LE_BLUNTING_AVAILABLE = False
 
 
 class WaveriderCanvas(FigureCanvas):
@@ -694,9 +680,6 @@ class WaveriderGUI(QMainWindow):
         self.waverider_volume = 0.0  # Stored volume in m³
         self.analysis_worker = None
         self.last_stl_file = None
-        # Blunting state
-        self.blunted_waverider = None
-        self.use_blunted_for_export = False
         self.init_ui()
         
     def init_ui(self):
@@ -1129,32 +1112,6 @@ class WaveriderGUI(QMainWindow):
             claude_layout.addStretch()
             self.tab_widget.addTab(claude_placeholder, "🤖 Claude Assistant")
 
-        # LE Blunting tab
-        if LE_BLUNTING_AVAILABLE:
-            self.blunting_tab = LEBluntingTab(parent=self)
-            self.tab_widget.addTab(self.blunting_tab, "✂️ LE Blunting")
-            # Connect signals
-            self.blunting_tab.blunting_applied.connect(self._on_blunting_applied)
-            self.blunting_tab.blunting_reset.connect(self._on_blunting_reset)
-        else:
-            blunting_placeholder = QWidget()
-            blunting_layout = QVBoxLayout(blunting_placeholder)
-            blunting_label = QLabel(
-                "⚠️ LE Blunting tab not available.\n\n"
-                "Required files:\n"
-                "  - leading_edge_blunting.py\n"
-                "  - le_blunting_tab.py"
-            )
-            blunting_label.setStyleSheet(
-                "QLabel { background-color: #fff3cd; padding: 20px; "
-                "border-radius: 5px; font-size: 12px; }"
-            )
-            blunting_label.setAlignment(Qt.AlignCenter)
-            blunting_layout.addWidget(blunting_label)
-            blunting_layout.addStretch()
-            self.tab_widget.addTab(blunting_placeholder, "✂️ LE Blunting")
-
-        
         layout.addWidget(self.tab_widget)
         
         return panel
@@ -1297,16 +1254,6 @@ class WaveriderGUI(QMainWindow):
         self.mesh_gen_info = QLabel("Generate waverider first, then create mesh")
         self.mesh_gen_info.setStyleSheet("color: gray; font-style: italic;")
         mesh_gen_layout.addWidget(self.mesh_gen_info, 4, 0, 1, 2)
-        
-        # Blunted geometry checkbox
-        self.use_blunted_check = QCheckBox("Use blunted geometry for export/mesh")
-        self.use_blunted_check.setToolTip(
-            "When checked, CAD export and mesh generation will use\n"
-            "the blunted leading edge geometry instead of sharp.\n\n"
-            "Apply blunting first in the '✂️ LE Blunting' tab."
-        )
-        self.use_blunted_check.stateChanged.connect(self._on_use_blunted_changed)
-        mesh_gen_layout.addWidget(self.use_blunted_check, 5, 0, 1, 2)
         
         mesh_gen_group.setLayout(mesh_gen_layout)
         layout.addWidget(mesh_gen_group)
@@ -1580,12 +1527,6 @@ class WaveriderGUI(QMainWindow):
                 f"Design Point: [{dp[0]:.3f}, {dp[1]:.3f}, {dp[2]:.3f}, {dp[3]:.3f}]"
             )
             
-            # Notify blunting tab that a new waverider was generated
-            if LE_BLUNTING_AVAILABLE and hasattr(self, 'blunting_tab'):
-                self.blunting_tab.refresh_from_waverider()
-                # Reset blunted waverider since base geometry changed
-                self.blunted_waverider = None
-            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to generate waverider:\n\n{str(e)}")
             self.info_label.setText(f"Error: {str(e)}")
@@ -1599,57 +1540,6 @@ class WaveriderGUI(QMainWindow):
         self.canvas_base.plot_base_plane(self.waverider)
         self.canvas_le.plot_leading_edge(self.waverider)
     
-    def _on_blunting_applied(self, blunted_waverider):
-        """Handle blunting applied signal from blunting tab."""
-        self.blunted_waverider = blunted_waverider
-        
-        # Get profile info - handle both simple and complex blunting params
-        if hasattr(blunted_waverider.params, 'profile_type'):
-            profile_info = blunted_waverider.params.profile_type
-        else:
-            profile_info = "simple-ellipse"
-        
-        self.info_label.setText(
-            f"✓ Blunting applied!\n"
-            f"Profile: {profile_info}\n"
-            f"Nose radius: {blunted_waverider.params.nose_radius*1000:.1f} mm\n\n"
-            f"Enable 'Use blunted geometry' in Aero Analysis tab for export."
-        )
-    
-    def _on_blunting_reset(self):
-        """Handle blunting reset signal from blunting tab."""
-        self.blunted_waverider = None
-        self.info_label.setText("Blunting reset - using sharp leading edge")
-    
-    def get_active_waverider(self):
-        """
-        Get the waverider to use for export/analysis.
-        Returns blunted version if blunting is enabled and applied.
-        """
-        if self.use_blunted_for_export and self.blunted_waverider is not None:
-            return self.blunted_waverider
-        return self.waverider
-    
-    def _on_use_blunted_changed(self, state):
-        """Handle the 'use blunted geometry' checkbox state change."""
-        self.use_blunted_for_export = (state == Qt.Checked)
-        
-        if self.use_blunted_for_export:
-            if self.blunted_waverider is None:
-                QMessageBox.information(
-                    self, "No Blunted Geometry",
-                    "No blunted geometry available yet.\n\n"
-                    "Go to the '✂️ LE Blunting' tab to apply blunting first."
-                )
-                self.use_blunted_check.setChecked(False)
-                self.use_blunted_for_export = False
-            else:
-                self.mesh_gen_info.setText("✓ Will use BLUNTED geometry for mesh/export")
-                self.mesh_gen_info.setStyleSheet("color: green; font-weight: bold;")
-        else:
-            self.mesh_gen_info.setText("Will use sharp geometry for mesh/export")
-            self.mesh_gen_info.setStyleSheet("color: gray; font-style: italic;")
-
     def update_constraint_hints(self):
         """
         Update constraint hint labels based on current parameter values.
@@ -2070,33 +1960,11 @@ class WaveriderGUI(QMainWindow):
                                 "Generate a waverider before exporting CAD.")
             return
 
-        # Check if user wants blunted geometry
-        geometry_type = "sharp"
-        use_new_exporter = False
-        
-        if self.use_blunted_for_export and self.blunted_waverider is not None:
-            geometry_type = "blunted"
-            use_new_exporter = True
-        
-        # Get the appropriate waverider
-        if geometry_type == "blunted":
-            active_waverider = self.blunted_waverider
-        else:
-            active_waverider = self.waverider
-        
-        # Debug output
-        print(f"\n{'='*50}")
-        print(f"CAD EXPORT DEBUG:")
-        print(f"  geometry_type = {geometry_type}")
-        print(f"  use_new_exporter = {use_new_exporter}")
-        print(f"  active_waverider type = {type(active_waverider).__name__}")
-        print(f"{'='*50}\n")
-
         # Ask for geometry type
         items = ["Full vehicle (mirrored, both sides)", "Half only (right side)"]
         choice, ok = QInputDialog.getItem(
             self, "Export options",
-            f"Select geometry to export ({geometry_type} leading edge):",
+            "Select geometry to export:",
             items, 0, False
         )
         if not ok:
@@ -2104,29 +1972,10 @@ class WaveriderGUI(QMainWindow):
 
         sides = "both" if "Full vehicle" in choice else "right"
 
-        # Ask for export format if blunted
-        export_format = "STEP"
-        if geometry_type == "blunted":
-            format_items = ["STEP (CAD surfaces)", "STL (triangulated mesh)"]
-            format_choice, format_ok = QInputDialog.getItem(
-                self, "Export format",
-                "Select export format for blunted geometry:\n\n"
-                "STL is recommended for blunted geometry\n"
-                "(more reliable triangulated mesh export)",
-                format_items, 1, False  # Default to STL
-            )
-            if not format_ok:
-                return
-            export_format = "STEP" if "STEP" in format_choice else "STL"
-
         # File dialog
-        if export_format == "STL":
-            default_name = f"waverider_{geometry_type}.stl"
-            filter_str = "STL files (*.stl);;All files (*)"
-        else:
-            default_name = f"waverider_{geometry_type}.step"
-            filter_str = "STEP files (*.step *.stp);;All files (*)"
-            
+        default_name = "waverider.step"
+        filter_str = "STEP files (*.step *.stp);;All files (*)"
+
         filename, _ = QFileDialog.getSaveFileName(
             self, "Export waverider",
             default_name,
@@ -2136,60 +1985,27 @@ class WaveriderGUI(QMainWindow):
             return
 
         try:
-            self.info_label.setText(f"Exporting {geometry_type} {export_format} file...")
+            self.info_label.setText("Exporting STEP file...")
             QApplication.processEvents()
 
-            if export_format == "STL" and geometry_type == "blunted":
-                # Use direct STL export for blunted geometry
-                if BLUNTED_CAD_EXPORT_AVAILABLE:
-                    n_tris = export_waverider_stl(
-                        active_waverider,
-                        filename,
-                        scale=1000.0
-                    )
-                    QMessageBox.information(
-                        self, "Export successful",
-                        f"STL file ({geometry_type} LE) exported to:\n{filename}\n\n"
-                        f"Triangles: {n_tris}\n"
-                        f"Units: MILLIMETERS (m×1000)"
-                    )
-                else:
-                    raise ImportError("Blunted CAD export module not available")
-                    
-            elif geometry_type == "blunted" and BLUNTED_CAD_EXPORT_AVAILABLE:
-                # Use new lofted surface exporter for blunted STEP
-                export_blunted_waverider(
-                    active_waverider,
-                    filename,
-                    sides=sides,
-                    scale=1000.0
-                )
-                QMessageBox.information(
-                    self, "Export successful",
-                    f"STEP file ({geometry_type} LE) exported to:\n{filename}\n\n"
-                    f"Units: MILLIMETERS (m×1000)\n\n"
-                    f"Note: If geometry has issues, try STL export instead."
-                )
-            else:
-                # Use standard export for sharp geometry
-                to_CAD(
-                    waverider=active_waverider,
-                    sides=sides,
-                    export=True,
-                    filename=filename,
-                    scale=1000.0
-                )
-                QMessageBox.information(
-                    self, "Export successful",
-                    f"STEP file ({geometry_type} LE) exported to:\n{filename}\n\n"
-                    f"Units: MILLIMETERS (m×1000)\n\n"
-                    f"To create STL mesh for analysis:\n"
-                    f"1. Go to 'Aerodynamic Analysis' tab\n"
-                    f"2. Set mesh parameters\n"
-                    f"3. Click 'Generate STL Mesh'"
-                )
-            
-            self.info_label.setText(f"✓ {geometry_type.capitalize()} {export_format} file exported to: {filename}")
+            to_CAD(
+                waverider=self.waverider,
+                sides=sides,
+                export=True,
+                filename=filename,
+                scale=1000.0
+            )
+            QMessageBox.information(
+                self, "Export successful",
+                f"STEP file exported to:\n{filename}\n\n"
+                f"Units: MILLIMETERS (m×1000)\n\n"
+                f"To create STL mesh for analysis:\n"
+                f"1. Go to 'Aerodynamic Analysis' tab\n"
+                f"2. Set mesh parameters\n"
+                f"3. Click 'Generate STL Mesh'"
+            )
+
+            self.info_label.setText(f"✓ STEP file exported to: {filename}")
 
         except Exception as e:
             QMessageBox.critical(
@@ -2231,36 +2047,32 @@ class WaveriderGUI(QMainWindow):
                     self.generate_stl_mesh_cadquery()
                     return
             
-            # Get the appropriate waverider (blunted or original)
-            active_waverider = self.get_active_waverider()
-            geometry_type = "blunted" if self.use_blunted_for_export and self.blunted_waverider else "sharp"
-            
             # Get mesh parameters
-            min_size = self.mesh_min_spin.value() 
-            max_size = self.mesh_max_spin.value() 
-            
-            self.mesh_gen_info.setText(f"Generating {geometry_type} mesh with Gmsh...")
+            min_size = self.mesh_min_spin.value()
+            max_size = self.mesh_max_spin.value()
+
+            self.mesh_gen_info.setText("Generating mesh with Gmsh...")
             self.mesh_gen_info.setStyleSheet("color: orange;")
             QApplication.processEvents()
-            
+
             print(f"\n{'='*60}")
-            print(f"Gmsh Mesh Generation ({geometry_type} geometry)")
+            print(f"Gmsh Mesh Generation")
             print(f"{'='*60}")
             print(f"Min element size:  ({min_size:.5f} m)")
             print(f"Max element size:  ({max_size:.5f} m)")
             sys.stdout.flush()
-            
+
             # First, export STEP file temporarily
             import tempfile
             import cadquery as cq
-            
+
             temp_step = tempfile.NamedTemporaryFile(suffix='.step', delete=False).name
-            
-            print(f"Exporting {geometry_type} STEP geometry...")
+
+            print("Exporting STEP geometry...")
             sys.stdout.flush()
-            
+
             to_CAD(
-                waverider=active_waverider,
+                waverider=self.waverider,
                 sides="both",
                 export=True,
                 filename=temp_step,
