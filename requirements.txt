@@ -1,0 +1,24 @@
+# Core dependencies
+numpy
+scipy
+pandas
+matplotlib
+PyQt5
+
+# CAD and geometry
+cadquery
+numpy-stl
+
+# Optimization
+pymoo
+deap
+
+# Machine learning / surrogate modeling
+scikit-learn
+
+# Optional dependencies (uncomment as needed)
+# gmsh              # High-quality mesh generation
+# torch             # PyTorch surrogate models
+# anthropic         # Claude AI assistant integration
+# python-docx       # Report generation
+# tqdm              # Progress bars

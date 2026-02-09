@@ -415,7 +415,8 @@ def print_area_comparison(results):
 # Example usage
 if __name__ == "__main__":
     import sys
-    sys.path.insert(0, '/home/claude')
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from waverider_generator.generator import waverider as wr
     
     print("Generating baseline waverider...")
