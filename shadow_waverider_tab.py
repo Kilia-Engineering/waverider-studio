@@ -1133,10 +1133,27 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 gmsh.option.setNumber("Mesh.MeshSizeMin", self.gmsh_min.value())
                 gmsh.option.setNumber("Mesh.MeshSizeMax", self.gmsh_max.value())
                 gmsh.model.mesh.generate(2)
+
+                # Get mesh statistics
+                num_nodes = len(gmsh.model.mesh.getNodes()[0])
+                num_triangles = len(gmsh.model.mesh.getElementsByType(2)[0])
+
                 gmsh.write(fn)
                 gmsh.finalize()
                 os.unlink(temp_stl)
-                QMessageBox.information(self, "Success", f"Saved: {fn}")
+
+                file_size_kb = os.path.getsize(fn) / 1024
+                self.last_stl_file = fn
+
+                QMessageBox.information(
+                    self, "Mesh Generated",
+                    f"Mesh generated successfully!\n\n"
+                    f"Triangles: {num_triangles}\n"
+                    f"Nodes: {num_nodes}\n"
+                    f"File size: {file_size_kb:.1f} KB\n"
+                    f"Saved to: {fn}\n\n"
+                    f"You can now run PySAGAS analysis."
+                )
             except Exception as e:
                 gmsh.finalize()
                 QMessageBox.critical(self, "Error", str(e))
@@ -1174,10 +1191,33 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         self.analysis_worker.start()
     
     def on_analysis_done(self, r):
+        result_text = "\n" + "="*60 + "\n"
+        result_text += "AERODYNAMIC ANALYSIS RESULTS\n"
+        result_text += "="*60 + "\n\n"
+        result_text += f"Conditions:\n"
+        result_text += f"  Mach number:     {self.mach_spin.value():.2f}\n"
+        result_text += f"  Angle of attack: {self.aoa_spin.value():.2f}\n"
+        result_text += f"  Pressure:        {self.p_spin.value():.0f} Pa\n"
+        result_text += f"  Temperature:     {self.t_spin.value():.2f} K\n\n"
+        result_text += f"Coefficients:\n"
+        result_text += f"  CL (Lift):   {r['CL']:.6f}\n"
+        result_text += f"  CD (Drag):   {r['CD']:.6f}\n"
+        result_text += f"  Cm (Moment): {r['Cm']:.6f}\n"
+        result_text += f"  L/D Ratio:   {r['L/D']:.3f}\n\n"
+        result_text += "="*60 + "\n"
+
         txt = self.results_text.toPlainText()
-        txt += f"\n\nAERO RESULTS\n{'='*30}\nCL={r['CL']:.6f}  CD={r['CD']:.6f}  L/D={r['L/D']:.3f}\n"
-        self.results_text.setText(txt)
+        self.results_text.setText(txt + result_text)
         self.info_label.setText(f"✓ L/D = {r['L/D']:.3f}")
+
+        QMessageBox.information(
+            self, "Analysis Complete",
+            f"Analysis finished successfully!\n\n"
+            f"CL = {r['CL']:.6f}\n"
+            f"CD = {r['CD']:.6f}\n"
+            f"Cm = {r['Cm']:.6f}\n"
+            f"L/D = {r['L/D']:.3f}"
+        )
     
     # === Design Space ===
     def run_design_space(self):
