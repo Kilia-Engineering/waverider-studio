@@ -1,15 +1,16 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   Waverider Web Designer — Frontend  (v4)
+   Waverider Web Designer — Frontend  (v6)
    ═══════════════════════════════════════════════════════════════════════════ */
-console.log('app.js v5 loaded');
+console.log('app.js v6 loaded');
 
 let scene, camera, renderer, controls;
 let waveriderGroup = null;
+let axesHelper = null, gridHelper = null;
 let isGenerating = false;
 let currentParams = null;
 let currentMethod = 'osc'; // 'osc' or 'shadow'
 
-let showUpper = true, showLower = true, showLE = true, showCG = true, showWire = false;
+let showUpper = true, showLower = true, showLE = true, showCG = true, showWire = false, showAxes = true;
 
 /* ─── Three.js ───────────────────────────────────────────────────────────── */
 
@@ -41,10 +42,10 @@ function initViewer() {
   const d2 = new THREE.DirectionalLight(0x4488ff, 0.3);
   d2.position.set(-5, 2, -3); scene.add(d2);
 
-  const grid = new THREE.GridHelper(20, 20, 0x1a1a1a, 0x111111);
-  grid.position.y = -2; scene.add(grid);
-  const axes = new THREE.AxesHelper(1.5);
-  axes.position.set(-1, -2, -1); scene.add(axes);
+  gridHelper = new THREE.GridHelper(20, 20, 0x1a1a1a, 0x111111);
+  gridHelper.position.y = -2; scene.add(gridHelper);
+  axesHelper = new THREE.AxesHelper(1.5);
+  axesHelper.position.set(-1, -2, -1); scene.add(axesHelper);
 
   window.addEventListener('resize', onResize);
   animate();
@@ -79,37 +80,60 @@ function displayWaverider(data) {
   const { vertices, faces } = data;
   console.log('Waverider mesh: ' + vertices.length + ' vertices, ' + faces.length + ' faces');
 
+  // Build full geometry to compute vertex normals for upper/lower classification
   const positions = new Float32Array(vertices.length * 3);
   for (let i = 0; i < vertices.length; i++) {
     positions[i*3] = vertices[i][0]; positions[i*3+1] = vertices[i][1]; positions[i*3+2] = vertices[i][2];
   }
+  const allIndices = [];
+  for (let i = 0; i < faces.length; i++) allIndices.push(faces[i][0], faces[i][1], faces[i][2]);
+  const fullGeo = new THREE.BufferGeometry();
+  fullGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  fullGeo.setIndex(allIndices);
+  fullGeo.computeVertexNormals();
+  const normals = fullGeo.getAttribute('normal');
 
-  const indices = [];
-  for (let i = 0; i < faces.length; i++) indices.push(faces[i][0], faces[i][1], faces[i][2]);
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-
-  // Per-vertex colors: amber (upper, ny>0) / blue (lower, ny<=0)
-  const colors = new Float32Array(vertices.length * 3);
-  const normals = geo.getAttribute('normal');
-  for (let i = 0; i < vertices.length; i++) {
-    if (normals.getY(i) > 0) { colors[i*3]=0.96; colors[i*3+1]=0.62; colors[i*3+2]=0.04; }
-    else { colors[i*3]=0.23; colors[i*3+1]=0.51; colors[i*3+2]=0.96; }
+  // Classify faces: compute face normal from vertex normals average
+  const upperFaces = [], lowerFaces = [];
+  for (let i = 0; i < faces.length; i++) {
+    const avgNy = (normals.getY(faces[i][0]) + normals.getY(faces[i][1]) + normals.getY(faces[i][2])) / 3;
+    if (avgNy > 0) upperFaces.push(faces[i]);
+    else lowerFaces.push(faces[i]);
   }
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-  const solidMat = new THREE.MeshPhongMaterial({ vertexColors: true, side: THREE.DoubleSide, shininess: 60, transparent: true, opacity: 0.85 });
-  const solidMesh = new THREE.Mesh(geo, solidMat);
-  solidMesh.name = 'solid';
-  waveriderGroup.add(solidMesh);
+  // Helper to build a mesh from a subset of faces
+  function buildSurface(surfaceFaces, name, color) {
+    const remap = {}, newVerts = [], newIdx = [];
+    for (const f of surfaceFaces) {
+      for (const vi of f) {
+        if (remap[vi] === undefined) { remap[vi] = newVerts.length; newVerts.push(vertices[vi]); }
+      }
+      newIdx.push(remap[f[0]], remap[f[1]], remap[f[2]]);
+    }
+    const pos = new Float32Array(newVerts.length * 3);
+    const col = new Float32Array(newVerts.length * 3);
+    for (let i = 0; i < newVerts.length; i++) {
+      pos[i*3] = newVerts[i][0]; pos[i*3+1] = newVerts[i][1]; pos[i*3+2] = newVerts[i][2];
+      col[i*3] = color[0]; col[i*3+1] = color[1]; col[i*3+2] = color[2];
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.setIndex(newIdx);
+    geo.computeVertexNormals();
 
-  const wireMat = new THREE.MeshBasicMaterial({ vertexColors: true, wireframe: true, transparent: true, opacity: 0.5 });
-  const wireMesh = new THREE.Mesh(geo.clone(), wireMat);
-  wireMesh.name = 'wireframe'; wireMesh.visible = false;
-  waveriderGroup.add(wireMesh);
+    const solid = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ vertexColors: true, side: THREE.DoubleSide, shininess: 60, transparent: true, opacity: 0.85 }));
+    solid.name = name;
+    waveriderGroup.add(solid);
+
+    const wire = new THREE.Mesh(geo.clone(), new THREE.MeshBasicMaterial({ vertexColors: true, wireframe: true, transparent: true, opacity: 0.5 }));
+    wire.name = name + '_wire'; wire.visible = false;
+    waveriderGroup.add(wire);
+  }
+
+  buildSurface(upperFaces, 'upper', [0.96, 0.62, 0.04]);
+  buildSurface(lowerFaces, 'lower', [0.23, 0.51, 0.96]);
+  fullGeo.dispose();
 
   // Leading edge
   if (data.leading_edge && data.leading_edge.length > 1) {
@@ -173,11 +197,15 @@ function fitCamera() {
 function updateVisibility() {
   if (!waveriderGroup) return;
   waveriderGroup.traverse(c => {
-    if (c.name === 'solid')        c.visible = (showUpper || showLower) && !showWire;
-    if (c.name === 'wireframe')    c.visible = (showUpper || showLower) && showWire;
+    if (c.name === 'upper')        c.visible = showUpper && !showWire;
+    if (c.name === 'upper_wire')   c.visible = showUpper && showWire;
+    if (c.name === 'lower')        c.visible = showLower && !showWire;
+    if (c.name === 'lower_wire')   c.visible = showLower && showWire;
     if (c.name === 'leading_edge') c.visible = showLE;
     if (c.name === 'cg_marker')    c.visible = showCG;
   });
+  if (axesHelper) axesHelper.visible = showAxes;
+  if (gridHelper) gridHelper.visible = showAxes;
 }
 
 /* ─── Method switching ────────────────────────────────────────────────────── */
@@ -394,6 +422,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('t-le').addEventListener('click', function() { showLE = !showLE; this.classList.toggle('active', showLE); updateVisibility(); });
   document.getElementById('t-cg').addEventListener('click', function() { showCG = !showCG; this.classList.toggle('active', showCG); updateVisibility(); });
   document.getElementById('t-wire').addEventListener('click', function() { showWire = !showWire; this.classList.toggle('active', showWire); updateVisibility(); });
+  document.getElementById('t-axes').addEventListener('click', function() { showAxes = !showAxes; this.classList.toggle('active', showAxes); updateVisibility(); });
   document.getElementById('t-reset').addEventListener('click', fitCamera);
 
   // Mesh presets
