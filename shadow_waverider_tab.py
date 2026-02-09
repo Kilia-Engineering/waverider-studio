@@ -75,7 +75,7 @@ class AnalysisWorker(QThread):
     def run(self):
         try:
             self.progress.emit("Loading mesh...")
-            cells = MeshIO.read_mesh(self.stl_file)
+            cells = MeshIO.load_from_file(self.stl_file)
             
             self.progress.emit("Setting up flow...")
             flow = FlowState(mach=self.mach, pressure=self.pressure,
