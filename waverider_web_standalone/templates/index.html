@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="icon" type="image/png" href="/static/favicon.png">
-  <link rel="stylesheet" href="/static/css/style.css?v=6">
+  <link rel="stylesheet" href="/static/css/style.css?v=7">
 </head>
 <body>
 
@@ -103,6 +103,16 @@
                 </span>
                 <input type="number" id="p-width" value="3.0" min="0.1" max="10.0" step="0.1">
               </div>
+            </div>
+
+            <div class="field">
+              <label class="checkbox-field">
+                <input type="checkbox" id="p-match-shock">
+                <span class="field-label">
+                  Match lower surface to shockwave
+                  <span class="field-hint" data-tip="When enabled, the lower surface follows the shockwave curve instead of tracing streamlines through the conical flowfield. This maximizes volume but may affect aerodynamic performance predictions.">?</span>
+                </span>
+              </label>
             </div>
           </div>
 
@@ -291,6 +301,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-  <script src="/static/js/app.js?v=6"></script>
+  <script src="/static/js/app.js?v=7"></script>
 </body>
 </html>

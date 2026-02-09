@@ -247,6 +247,25 @@ body {
   margin-bottom: 0.6rem;
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.checkbox-field input[type="checkbox"] {
+  accent-color: var(--amber);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.checkbox-field .field-label {
+  min-width: unset;
+  cursor: pointer;
+}
+
 .field-row {
   display: flex;
   align-items: center;

@@ -246,6 +246,7 @@ function getParams() {
     method: 'osc',
     height: parseFloat(document.getElementById('p-height').value),
     width: parseFloat(document.getElementById('p-width').value),
+    match_shockwave: document.getElementById('p-match-shock').checked,
     X1: parseFloat(document.getElementById('p-x1').value),
     X2: parseFloat(document.getElementById('p-x2').value),
     X3: parseFloat(document.getElementById('p-x3').value),
