@@ -634,30 +634,38 @@ class ShadowWaveriderTab(QWidget):
     def _create_analysis_group(self):
         group = QGroupBox("PySAGAS Analysis")
         layout = QGridLayout()
-        
+
         if not PYSAGAS_AVAILABLE:
-            layout.addWidget(QLabel("⚠️ PySAGAS not available"), 0, 0, 1, 2)
-        
-        layout.addWidget(QLabel("AoA (°):"), 1, 0)
+            layout.addWidget(QLabel("PySAGAS not available"), 0, 0, 1, 2)
+
+        layout.addWidget(QLabel("AoA:"), 1, 0)
         self.aoa_spin = QDoubleSpinBox()
         self.aoa_spin.setRange(-20, 20); self.aoa_spin.setValue(0)
         layout.addWidget(self.aoa_spin, 1, 1)
-        
-        layout.addWidget(QLabel("P∞ (Pa):"), 2, 0)
+
+        layout.addWidget(QLabel("P (Pa):"), 2, 0)
         self.p_spin = QDoubleSpinBox()
         self.p_spin.setRange(100, 1e7); self.p_spin.setValue(101325); self.p_spin.setDecimals(0)
         layout.addWidget(self.p_spin, 2, 1)
-        
-        layout.addWidget(QLabel("T∞ (K):"), 3, 0)
+
+        layout.addWidget(QLabel("T (K):"), 3, 0)
         self.t_spin = QDoubleSpinBox()
         self.t_spin.setRange(100, 500); self.t_spin.setValue(288.15)
         layout.addWidget(self.t_spin, 3, 1)
-        
-        analyze_btn = QPushButton("🔬 Analyze")
-        analyze_btn.clicked.connect(self.run_analysis)
-        analyze_btn.setEnabled(PYSAGAS_AVAILABLE)
-        layout.addWidget(analyze_btn, 4, 0, 1, 2)
-        
+
+        self.analyze_btn = QPushButton("Analyze")
+        self.analyze_btn.clicked.connect(self.run_analysis)
+        self.analyze_btn.setEnabled(PYSAGAS_AVAILABLE)
+        layout.addWidget(self.analyze_btn, 4, 0, 1, 2)
+
+        self.analysis_progress = QProgressBar()
+        self.analysis_progress.setVisible(False)
+        layout.addWidget(self.analysis_progress, 5, 0, 1, 2)
+
+        self.analysis_status = QLabel("")
+        self.analysis_status.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(self.analysis_status, 6, 0, 1, 2)
+
         group.setLayout(layout)
         return group
     
@@ -1164,12 +1172,12 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             QMessageBox.warning(self, "Warning", "Generate waverider first!")
             return
         if not PYSAGAS_AVAILABLE: return
-        
+
         temp_stl = tempfile.mktemp(suffix='.stl')
         scale = self.scale_spin.value()
         verts, tris = self.waverider.get_mesh()
         verts = verts * scale
-        
+
         with open(temp_stl, 'w') as f:
             f.write("solid waverider\n")
             for tri in tris:
@@ -1180,17 +1188,40 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 f.write(f"      vertex {v1[0]:.6e} {v1[1]:.6e} {v1[2]:.6e}\n")
                 f.write(f"      vertex {v2[0]:.6e} {v2[1]:.6e} {v2[2]:.6e}\n    endloop\n  endfacet\n")
             f.write("endsolid waverider\n")
-        
+
+        # Show progress bar and disable button
+        self.analyze_btn.setEnabled(False)
+        self.analysis_progress.setVisible(True)
+        self.analysis_progress.setRange(0, 0)  # Indeterminate
+        self.analysis_status.setText("Starting analysis...")
+        self.analysis_status.setStyleSheet("color: orange;")
+
         refs = self.waverider.get_reference_values(scale=scale)
         self.analysis_worker = AnalysisWorker(temp_stl, self.mach_spin.value(), self.aoa_spin.value(),
             self.p_spin.value(), self.t_spin.value(), refs['area'])
-        self.analysis_worker.progress.connect(lambda m: self.info_label.setText(m))
+        self.analysis_worker.progress.connect(self._on_analysis_progress)
         self.analysis_worker.finished.connect(self.on_analysis_done)
-        self.analysis_worker.error.connect(lambda e: QMessageBox.critical(self, "Error", e))
-        self.info_label.setText("Running...")
+        self.analysis_worker.error.connect(self._on_analysis_error)
         self.analysis_worker.start()
+
+    def _on_analysis_progress(self, message):
+        self.analysis_status.setText(message)
+        self.info_label.setText(message)
+
+    def _on_analysis_error(self, error_msg):
+        self.analysis_progress.setVisible(False)
+        self.analyze_btn.setEnabled(True)
+        self.analysis_status.setText("Analysis failed")
+        self.analysis_status.setStyleSheet("color: red;")
+        QMessageBox.critical(self, "Error", error_msg)
     
     def on_analysis_done(self, r):
+        # Hide progress bar, re-enable button
+        self.analysis_progress.setVisible(False)
+        self.analyze_btn.setEnabled(True)
+        self.analysis_status.setText("Analysis complete")
+        self.analysis_status.setStyleSheet("color: green;")
+
         result_text = "\n" + "="*60 + "\n"
         result_text += "AERODYNAMIC ANALYSIS RESULTS\n"
         result_text += "="*60 + "\n\n"
@@ -1208,7 +1239,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
 
         txt = self.results_text.toPlainText()
         self.results_text.setText(txt + result_text)
-        self.info_label.setText(f"✓ L/D = {r['L/D']:.3f}")
+        self.info_label.setText(f"L/D = {r['L/D']:.3f}")
 
         QMessageBox.information(
             self, "Analysis Complete",
