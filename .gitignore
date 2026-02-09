@@ -39,6 +39,7 @@ Thumbs.db
 
 # Results and output data
 results/
+surrogate_model/
 *.csv
 
 # Archives
@@ -52,6 +53,11 @@ results/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Serialized models
+*.pkl
+*.pickle
+*.joblib
 
 # Logs
 *.log
