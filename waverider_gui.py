@@ -7,11 +7,14 @@ Allows real-time parameter adjustment and 3D visualization
 import sys
 import os
 import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QLabel, QLineEdit, QPushButton,
                              QGroupBox, QGridLayout, QSlider, QDoubleSpinBox,
                              QMessageBox, QTabWidget, QCheckBox, QSpinBox,
-                             QProgressBar, QTextEdit, QFileDialog, QInputDialog)
+                             QProgressBar, QTextEdit, QFileDialog, QInputDialog,
+                             QMenuBar, QAction, QComboBox, QSplitter, QFrame,
+                             QStackedWidget, QDialog, QDialogButtonBox,
+                             QScrollArea)
 from PyQt5.QtCore import Qt, pyqtSignal, QThread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -194,11 +197,30 @@ class WaveriderCanvas(FigureCanvas):
         super().__init__(self.fig)
         self.setParent(parent)
 
+        # Mouse-wheel zoom
+        self.mpl_connect('scroll_event', self._on_scroll)
+
         # Initialize plot
         self.ax.set_xlabel('X (Streamwise) [m]')
         self.ax.set_ylabel('Y (Vertical) [m]')
         self.ax.set_zlabel('Z (Spanwise) [m]')
         self.ax.set_title('Waverider 3D Visualization')
+
+    def _on_scroll(self, event):
+        """Zoom in/out on mouse wheel scroll."""
+        if event.inaxes != self.ax:
+            return
+        factor = 0.9 if event.button == 'up' else 1.1
+        for getter, setter in [
+            (self.ax.get_xlim, self.ax.set_xlim),
+            (self.ax.get_ylim, self.ax.set_ylim),
+            (self.ax.get_zlim, self.ax.set_zlim),
+        ]:
+            lo, hi = getter()
+            mid = (lo + hi) / 2
+            half = (hi - lo) / 2 * factor
+            setter(mid - half, mid + half)
+        self.draw_idle()
         
     def plot_waverider(self, waverider_obj, show_upper=True, show_lower=True, 
                       show_le=True, show_wireframe=False):
@@ -594,11 +616,30 @@ class MeshCanvas(FigureCanvas):
         # Enable mouse interaction
         self.ax.mouse_init()
 
+        # Mouse-wheel zoom
+        self.mpl_connect('scroll_event', self._on_scroll)
+
         # Show axes (reverted from previous change)
         self.ax.set_xlabel('X [m]')
         self.ax.set_ylabel('Y [m]')
         self.ax.set_zlabel('Z [m]')
         self.ax.set_title('STL Mesh Preview')
+
+    def _on_scroll(self, event):
+        """Zoom in/out on mouse wheel scroll."""
+        if event.inaxes != self.ax:
+            return
+        factor = 0.9 if event.button == 'up' else 1.1
+        for getter, setter in [
+            (self.ax.get_xlim, self.ax.set_xlim),
+            (self.ax.get_ylim, self.ax.set_ylim),
+            (self.ax.get_zlim, self.ax.set_zlim),
+        ]:
+            lo, hi = getter()
+            mid = (lo + hi) / 2
+            half = (hi - lo) / 2 * factor
+            setter(mid - half, mid + half)
+        self.draw_idle()
 
     def plot_stl_mesh(self, stl_file):
         """Load and plot an STL file"""
@@ -680,29 +721,578 @@ class WaveriderGUI(QMainWindow):
         self.waverider_volume = 0.0  # Stored volume in m³
         self.analysis_worker = None
         self.last_stl_file = None
+        # Imported geometry state
+        self.imported_geometry = None       # trimesh.Trimesh or dict with vertices/faces
+        self.imported_geometry_path = None  # Original file path
+        self.imported_step_path = None      # Path to STEP file (if imported STEP)
+        self.imported_stl_path = None       # Path to STL (imported or converted)
+        self._claude_dialog = None
         self.init_ui()
-        
+
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle('Interactive Waverider Design Tool')
         self.setGeometry(100, 100, 1600, 900)
-        
+
+        # Menu bar
+        self._create_menu_bar()
+
         # Main widget and layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
-        
+
         # Left panel - Parameters
         left_panel = self.create_parameter_panel()
         main_layout.addWidget(left_panel, 1)
-        
+
         # Right panel - Visualization
         right_panel = self.create_visualization_panel()
         main_layout.addWidget(right_panel, 3)
-        
+
         # Set default values
         self.set_default_parameters()
         
+    # ---- Menu bar -------------------------------------------------------
+
+    def _create_menu_bar(self):
+        """Create the application menu bar."""
+        menubar = self.menuBar()
+
+        # --- File menu ---
+        file_menu = menubar.addMenu("File")
+
+        import_action = QAction("Import Geometry...", self)
+        import_action.setShortcut("Ctrl+I")
+        import_action.setStatusTip("Import STL, STEP, or OBJ geometry")
+        import_action.triggered.connect(self.import_geometry)
+        file_menu.addAction(import_action)
+
+        file_menu.addSeparator()
+
+        export_action = QAction("Export CAD...", self)
+        export_action.setShortcut("Ctrl+E")
+        export_action.triggered.connect(self.export_cad)
+        file_menu.addAction(export_action)
+
+        # --- View menu ---
+        view_menu = menubar.addMenu("View")
+        view_names = ["3D Waverider", "Base Plane", "Leading Edge",
+                      "Geometry Schematic", "Imported Geometry"]
+        for i, name in enumerate(view_names):
+            action = QAction(name, self)
+            action.triggered.connect(lambda checked, idx=i: self._switch_view(idx))
+            view_menu.addAction(action)
+
+        # --- Tools menu ---
+        tools_menu = menubar.addMenu("Tools")
+
+        if CLAUDE_ASSISTANT_AVAILABLE:
+            claude_action = QAction("Claude Assistant...", self)
+            claude_action.setShortcut("Ctrl+Shift+A")
+            claude_action.triggered.connect(self._open_claude_assistant)
+            tools_menu.addAction(claude_action)
+        else:
+            claude_action = QAction("Claude Assistant (not installed)", self)
+            claude_action.setEnabled(False)
+            tools_menu.addAction(claude_action)
+
+    def _switch_view(self, index):
+        """Switch to a specific visualization view from the View menu."""
+        # Make sure we're on the Visualization tab first
+        self.tab_widget.setCurrentIndex(0)
+        self.view_selector.setCurrentIndex(index)
+
+    def _open_claude_assistant(self):
+        """Open Claude Assistant in a floating dialog."""
+        if not hasattr(self, '_claude_dialog') or self._claude_dialog is None:
+            self._claude_dialog = QDialog(self)
+            self._claude_dialog.setWindowTitle("Claude Assistant")
+            self._claude_dialog.resize(700, 600)
+            dialog_layout = QVBoxLayout(self._claude_dialog)
+            dialog_layout.setContentsMargins(0, 0, 0, 0)
+            self.claude_tab = ClaudeAssistantTab(parent=self)
+            dialog_layout.addWidget(self.claude_tab)
+        self._claude_dialog.show()
+        self._claude_dialog.raise_()
+        self._claude_dialog.activateWindow()
+
+    # ---- Geometry import ------------------------------------------------
+
+    def import_geometry(self):
+        """Open a file dialog and import a geometry file (STL / STEP / OBJ)."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Geometry",
+            "",
+            "All Supported (*.stl *.step *.stp *.obj);;"
+            "STL files (*.stl);;"
+            "STEP files (*.step *.stp);;"
+            "OBJ files (*.obj);;"
+            "All files (*)",
+        )
+        if not filepath:
+            return
+
+        ext = os.path.splitext(filepath)[1].lower()
+        try:
+            if ext == ".stl":
+                self._import_stl(filepath)
+            elif ext in (".step", ".stp"):
+                self._import_step(filepath)
+            elif ext == ".obj":
+                self._import_obj(filepath)
+            else:
+                QMessageBox.warning(
+                    self, "Unsupported format",
+                    f"File format '{ext}' is not supported.\n"
+                    "Supported formats: STL, STEP, OBJ",
+                )
+                return
+
+            self.imported_geometry_path = filepath
+            name = os.path.basename(filepath)
+
+            # Switch to the Imported Geometry view
+            self.tab_widget.setCurrentIndex(0)  # Visualization tab
+            self.view_selector.setCurrentIndex(4)  # Imported Geometry page
+
+            # Update the info panel
+            self._update_import_info()
+
+            QMessageBox.information(
+                self, "Import Successful",
+                f"Successfully imported: {name}\n\n"
+                f"Triangles: {len(self.imported_geometry['faces']):,}\n"
+                f"Vertices: {len(self.imported_geometry['vertices']):,}",
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Import Failed",
+                f"Could not import geometry:\n\n{str(e)}",
+            )
+
+    def _import_stl(self, filepath):
+        """Import an STL file."""
+        from stl import mesh as stl_mesh
+
+        mesh_data = stl_mesh.Mesh.from_file(filepath)
+        vectors = mesh_data.vectors  # (N, 3, 3)
+
+        # Deduplicate vertices and build face indices
+        all_verts = vectors.reshape(-1, 3)
+        unique_verts, inverse = np.unique(
+            np.round(all_verts, decimals=10), axis=0, return_inverse=True
+        )
+        faces = inverse.reshape(-1, 3)
+
+        self.imported_geometry = {
+            "vertices": unique_verts,
+            "faces": faces,
+            "vectors": vectors,  # keep raw triangles for fast plotting
+        }
+        self.imported_step_path = None
+        self.imported_stl_path = filepath
+
+    def _import_step(self, filepath):
+        """Import a STEP file via CadQuery, then tessellate to mesh."""
+        import cadquery as cq
+
+        shape = cq.importers.importStep(filepath)
+
+        # Collect solids; fall back to shells/faces if no solids
+        solids = shape.solids().vals()
+        if not solids:
+            solids = shape.shells().vals()
+        if not solids:
+            solids = shape.faces().vals()
+        if not solids:
+            raise ValueError("STEP file contains no geometry (no solids, shells, or faces).")
+
+        verts_list, faces_list = [], []
+        offset = 0
+        for solid in solids:
+            tess = solid.tessellate(tolerance=0.0001, angularTolerance=0.1)
+            # tess[0] is a list of cq.Vector objects – convert explicitly
+            v = np.array([(pt.x, pt.y, pt.z) for pt in tess[0]])
+            f = np.array(tess[1]) + offset
+            verts_list.append(v)
+            faces_list.append(f)
+            offset += len(v)
+
+        vertices = np.vstack(verts_list)
+        faces = np.vstack(faces_list)
+
+        # Build raw triangle vectors for plotting
+        vectors = vertices[faces]
+
+        self.imported_geometry = {
+            "vertices": vertices,
+            "faces": faces,
+            "vectors": vectors,
+        }
+        self.imported_step_path = filepath
+        self.imported_stl_path = None
+
+    def _import_obj(self, filepath):
+        """Import an OBJ file via trimesh."""
+        try:
+            import trimesh
+        except ImportError:
+            raise ImportError(
+                "trimesh is required for OBJ import.\n"
+                "Install with: pip install trimesh"
+            )
+
+        loaded = trimesh.load(filepath)
+
+        # trimesh.load can return a Scene (multiple meshes) or a single Trimesh
+        if isinstance(loaded, trimesh.Scene):
+            # Concatenate all meshes in the scene
+            meshes = [g for g in loaded.geometry.values() if isinstance(g, trimesh.Trimesh)]
+            if not meshes:
+                raise ValueError("OBJ file contains no triangle meshes.")
+            mesh = trimesh.util.concatenate(meshes)
+        else:
+            mesh = loaded
+
+        vertices = np.array(mesh.vertices)
+        faces = np.array(mesh.faces)
+        vectors = vertices[faces]
+
+        self.imported_geometry = {
+            "vertices": vertices,
+            "faces": faces,
+            "vectors": vectors,
+        }
+        self.imported_step_path = None
+        self.imported_stl_path = None
+
+    def _update_import_info(self):
+        """Update the imported geometry info labels."""
+        if self.imported_geometry is None:
+            return
+
+        geo = self.imported_geometry
+        verts = geo["vertices"]
+        faces = geo["faces"]
+        name = os.path.basename(self.imported_geometry_path) if self.imported_geometry_path else "N/A"
+        ext = os.path.splitext(name)[1].upper() if name else ""
+
+        # Detect if geometry is likely in millimetres (max extent > 100)
+        bounds_min = verts.min(axis=0)
+        bounds_max = verts.max(axis=0)
+        max_extent = (bounds_max - bounds_min).max()
+
+        if max_extent > 100:
+            # Almost certainly in mm – convert to metres
+            scale = 0.001
+            verts = verts * scale
+            vectors = geo["vectors"] * scale
+            geo["vertices"] = verts
+            geo["vectors"] = vectors
+            bounds_min = verts.min(axis=0)
+            bounds_max = verts.max(axis=0)
+
+        dims = bounds_max - bounds_min
+
+        self.import_file_label.setText(f"File: {name}")
+        self.import_format_label.setText(f"Format: {ext}")
+        self.import_verts_label.setText(f"Vertices: {len(verts):,}")
+        self.import_faces_label.setText(f"Triangles: {len(faces):,}")
+        self.import_dims_label.setText(
+            f"Dimensions: {dims[0]:.4f} x {dims[1]:.4f} x {dims[2]:.4f} m"
+        )
+        self.import_bounds_label.setText(
+            f"Bounds: [{bounds_min[0]:.4f}, {bounds_max[0]:.4f}] x "
+            f"[{bounds_min[1]:.4f}, {bounds_max[1]:.4f}] x "
+            f"[{bounds_min[2]:.4f}, {bounds_max[2]:.4f}]"
+        )
+
+        # Enable action buttons
+        self.import_mesh_btn.setEnabled(True)
+        self.import_analyze_btn.setEnabled(self.imported_stl_path is not None)
+        self.import_export_btn.setEnabled(True)
+
+        # Visualize
+        self._visualize_imported_geometry()
+
+    def _visualize_imported_geometry(self):
+        """Plot the imported geometry in the 3D canvas."""
+        if self.imported_geometry is None:
+            return
+
+        geo = self.imported_geometry
+        verts = geo["vertices"]
+        faces = geo["faces"]
+        ax = self.import_canvas.ax
+        ax.clear()
+
+        from matplotlib.colors import LightSource
+
+        ls = LightSource(azdeg=315, altdeg=45)
+
+        ax.plot_trisurf(
+            verts[:, 0], verts[:, 1], verts[:, 2],
+            triangles=faces,
+            color='#F59E0B', alpha=1.0,
+            shade=True, lightsource=ls,
+            edgecolor='#F59E0B', linewidth=0,
+            antialiased=False,
+        )
+
+        all_pts = verts
+        for dim, setter in enumerate([ax.set_xlim, ax.set_ylim, ax.set_zlim]):
+            pmin, pmax = all_pts[:, dim].min(), all_pts[:, dim].max()
+            pad = max((pmax - pmin) * 0.3, 1e-3)
+            setter(pmin - pad, pmax + pad)
+
+        try:
+            spans = [np.ptp(all_pts[:, i]) for i in range(3)]
+            max_span = max(spans) if max(spans) > 0 else 1
+            ax.set_box_aspect([s / max_span for s in spans])
+        except Exception:
+            pass
+
+        name = os.path.basename(self.imported_geometry_path) if self.imported_geometry_path else "Imported"
+        ax.set_title(f"{name} ({len(faces):,} triangles)")
+        ax.set_xlabel("X [m]")
+        ax.set_ylabel("Y [m]")
+        ax.set_zlabel("Z [m]")
+        ax.view_init(elev=20, azim=45)
+        self.import_canvas.fig.tight_layout()
+        self.import_canvas.draw()
+
+    # ---- Imported geometry actions ---------------------------------------
+
+    def _import_mesh_gmsh(self):
+        """Re-mesh imported geometry with Gmsh."""
+        if self.imported_geometry is None:
+            QMessageBox.warning(self, "No geometry", "Import a geometry first.")
+            return
+
+        try:
+            import gmsh
+        except ImportError:
+            QMessageBox.warning(
+                self, "Gmsh not installed",
+                "Gmsh is required for meshing.\nInstall with: pip install gmsh",
+            )
+            return
+
+        import tempfile
+
+        # We need a STEP or STL on disk to feed Gmsh
+        if self.imported_step_path and os.path.exists(self.imported_step_path):
+            input_file = self.imported_step_path
+        elif self.imported_stl_path and os.path.exists(self.imported_stl_path):
+            input_file = self.imported_stl_path
+        else:
+            # Write current mesh as temporary STL
+            input_file = tempfile.NamedTemporaryFile(suffix=".stl", delete=False).name
+            self._save_imported_as_stl(input_file)
+
+        min_size = self.import_mesh_min_spin.value()
+        max_size = self.import_mesh_max_spin.value()
+
+        out_stl, _ = QFileDialog.getSaveFileName(
+            self, "Save Meshed STL",
+            "imported_mesh.stl",
+            "STL files (*.stl);;All files (*)",
+        )
+        if not out_stl:
+            return
+
+        try:
+            self.import_status_label.setText("Meshing with Gmsh...")
+            self.import_status_label.setStyleSheet("color: #F59E0B;")
+            QApplication.processEvents()
+
+            gmsh.initialize()
+            gmsh.option.setNumber("General.Terminal", 1)
+            gmsh.merge(input_file)
+            gmsh.option.setNumber("Mesh.MeshSizeMin", min_size)
+            gmsh.option.setNumber("Mesh.MeshSizeMax", max_size)
+            gmsh.model.mesh.generate(2)
+            gmsh.write(out_stl)
+
+            # Read stats
+            node_tags, _, _ = gmsh.model.mesh.getNodes()
+            elem_types, elem_tags, _ = gmsh.model.mesh.getElements(dim=2)
+            n_triangles = sum(len(t) for t in elem_tags)
+            n_nodes = len(node_tags)
+            gmsh.finalize()
+
+            file_size = os.path.getsize(out_stl) / 1024
+
+            self.imported_stl_path = out_stl
+            self.import_analyze_btn.setEnabled(True)
+
+            self.import_status_label.setText("Meshing complete!")
+            self.import_status_label.setStyleSheet("color: #4ADE80;")
+
+            # Reload the meshed geometry for visualization
+            self._import_stl(out_stl)
+            self.imported_geometry_path = self.imported_geometry_path  # keep original name
+            self._update_import_info()
+
+            QMessageBox.information(
+                self, "Mesh Generated",
+                f"Gmsh meshing complete!\n\n"
+                f"Triangles: {n_triangles:,}\n"
+                f"Nodes: {n_nodes:,}\n"
+                f"File size: {file_size:.1f} KB\n"
+                f"Saved to: {out_stl}",
+            )
+
+        except Exception as e:
+            try:
+                gmsh.finalize()
+            except Exception:
+                pass
+            self.import_status_label.setText(f"Meshing failed: {str(e)}")
+            self.import_status_label.setStyleSheet("color: #EF4444;")
+            QMessageBox.critical(self, "Meshing Failed", str(e))
+
+    def _import_run_analysis(self):
+        """Run PySAGAS analysis on imported geometry."""
+        if not PYSAGAS_AVAILABLE:
+            QMessageBox.warning(
+                self, "PySAGAS not available",
+                "PySAGAS is required for aerodynamic analysis.\n"
+                "Install with: pip install pysagas",
+            )
+            return
+
+        if self.imported_stl_path is None or not os.path.exists(self.imported_stl_path):
+            QMessageBox.warning(
+                self, "No STL mesh",
+                "An STL mesh is required for PySAGAS analysis.\n\n"
+                "If you imported a STEP or OBJ file, please mesh it first\n"
+                "using the 'Mesh with Gmsh' button.",
+            )
+            return
+
+        # Get analysis parameters from the import panel spinboxes
+        aoa = self.import_aoa_spin.value()
+        mach = self.import_mach_spin.value()
+        pressure = self.import_pressure_spin.value()
+        temperature = self.import_temp_spin.value()
+        a_ref = self.import_aref_spin.value()
+
+        freestream_dict = {
+            "mach": mach,
+            "pressure": pressure,
+            "temperature": temperature,
+        }
+
+        self.import_analyze_btn.setEnabled(False)
+        self.import_status_label.setText("Running PySAGAS analysis...")
+        self.import_status_label.setStyleSheet("color: #F59E0B;")
+        QApplication.processEvents()
+
+        self.import_analysis_worker = AnalysisWorker(
+            self.imported_stl_path, freestream_dict, aoa, a_ref
+        )
+        self.import_analysis_worker.finished.connect(self._on_import_analysis_done)
+        self.import_analysis_worker.error.connect(self._on_import_analysis_error)
+        self.import_analysis_worker.start()
+
+    def _on_import_analysis_done(self, results):
+        """Handle completed analysis for imported geometry."""
+        self.import_analyze_btn.setEnabled(True)
+        self.import_status_label.setText("Analysis complete!")
+        self.import_status_label.setStyleSheet("color: #4ADE80;")
+
+        CL = results.get("CL", 0)
+        CD = results.get("CD", 0)
+        Cm = results.get("Cm", 0)
+        LD = CL / CD if CD != 0 else 0
+
+        text = (
+            f"PySAGAS Aerodynamic Analysis Results\n"
+            f"{'='*45}\n\n"
+            f"  Mach:           {self.import_mach_spin.value():.2f}\n"
+            f"  AoA:            {self.import_aoa_spin.value():.1f} deg\n"
+            f"  Pressure:       {self.import_pressure_spin.value():.0f} Pa\n"
+            f"  Temperature:    {self.import_temp_spin.value():.0f} K\n"
+            f"  A_ref:          {self.import_aref_spin.value():.4f} m²\n\n"
+            f"  CL:             {CL:.6f}\n"
+            f"  CD:             {CD:.6f}\n"
+            f"  Cm:             {Cm:.6f}\n"
+            f"  L/D:            {LD:.4f}\n"
+        )
+
+        QMessageBox.information(self, "Analysis Results", text)
+
+    def _on_import_analysis_error(self, error_msg):
+        """Handle analysis error for imported geometry."""
+        self.import_analyze_btn.setEnabled(True)
+        self.import_status_label.setText("Analysis failed!")
+        self.import_status_label.setStyleSheet("color: #EF4444;")
+        QMessageBox.critical(self, "Analysis Error", error_msg)
+
+    def _import_export_geometry(self):
+        """Export imported geometry to a different format."""
+        if self.imported_geometry is None:
+            QMessageBox.warning(self, "No geometry", "Import a geometry first.")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Geometry",
+            "exported_geometry.stl",
+            "STL files (*.stl);;"
+            "OBJ files (*.obj);;"
+            "All files (*)",
+        )
+        if not filepath:
+            return
+
+        ext = os.path.splitext(filepath)[1].lower()
+        try:
+            if ext == ".stl":
+                self._save_imported_as_stl(filepath)
+            elif ext == ".obj":
+                self._save_imported_as_obj(filepath)
+            else:
+                # Default to STL
+                self._save_imported_as_stl(filepath)
+
+            QMessageBox.information(
+                self, "Export Successful",
+                f"Geometry exported to:\n{filepath}",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", str(e))
+
+    def _save_imported_as_stl(self, filepath):
+        """Save imported geometry as STL."""
+        from stl import mesh as stl_mesh
+
+        geo = self.imported_geometry
+        vectors = geo["vectors"]
+        mesh_data = stl_mesh.Mesh(np.zeros(len(vectors), dtype=stl_mesh.Mesh.dtype))
+        mesh_data.vectors = vectors
+        mesh_data.save(filepath)
+
+    def _save_imported_as_obj(self, filepath):
+        """Save imported geometry as OBJ."""
+        geo = self.imported_geometry
+        verts = geo["vertices"]
+        faces = geo["faces"]
+
+        with open(filepath, "w") as f:
+            f.write("# Exported from Waverider Design Tool\n")
+            for v in verts:
+                f.write(f"v {v[0]:.8f} {v[1]:.8f} {v[2]:.8f}\n")
+            for face in faces:
+                # OBJ faces are 1-indexed
+                f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+
+    # ---- End geometry import section -------------------------------------
+
     def create_parameter_panel(self):
         """Create the parameter input panel"""
         panel = QWidget()
@@ -955,167 +1545,397 @@ class WaveriderGUI(QMainWindow):
         return panel
     
     def create_visualization_panel(self):
-        """Create the visualization panel with tabs"""
+        """Create the visualization panel with consolidated tabs"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        
-        # Create tab widget
+
+        # Create main tab widget (reduced from 12 tabs to ~4-5)
         self.tab_widget = QTabWidget()
-        
-        # 3D view tab
-        tab_3d = QWidget()
-        layout_3d = QVBoxLayout(tab_3d)
-        
-        # Display options
-        options_layout = QHBoxLayout()
-        self.show_upper_check = QCheckBox("Upper Surface")
+
+        # ── Tab 1: Visualization (merged 3D View, Base Plane, LE, Schematic, Imported) ──
+        tab_viz = self._create_visualization_tab()
+        self.tab_widget.addTab(tab_viz, "Visualization")
+
+        # ── Tab 2: Aero Analysis ──
+        tab_analysis = self.create_analysis_tab()
+        self.tab_widget.addTab(tab_analysis, "Aero Analysis")
+
+        # ── Tab 3: Optimization (merged Optimization, Surrogate, Off-Design, Multi-Mach) ──
+        tab_opt = self._create_optimization_hub_tab()
+        self.tab_widget.addTab(tab_opt, "Optimization")
+
+        # ── Tab 4: SHADOW Waverider ──
+        if CONE_WAVERIDER_AVAILABLE:
+            self.shadow_waverider_tab = ShadowWaveriderTab(parent=self)
+            self.tab_widget.addTab(self.shadow_waverider_tab, "SHADOW Waverider")
+
+        layout.addWidget(self.tab_widget)
+        return panel
+
+    # ── Visualization tab (stacked views) ──────────────────────────────
+
+    def _create_visualization_tab(self):
+        """Single visualization tab with a view selector dropdown."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # Top bar: view selector + display options
+        top_bar = QHBoxLayout()
+
+        top_bar.addWidget(QLabel("View:"))
+        self.view_selector = QComboBox()
+        self.view_selector.addItems([
+            "3D Waverider",
+            "Base Plane",
+            "Leading Edge",
+            "Geometry Schematic",
+            "Imported Geometry",
+        ])
+        self.view_selector.currentIndexChanged.connect(self._on_view_changed)
+        top_bar.addWidget(self.view_selector)
+
+        # Display checkboxes (visible only for 3D Waverider view)
+        self.show_upper_check = QCheckBox("Upper")
         self.show_upper_check.setChecked(True)
-        self.show_lower_check = QCheckBox("Lower Surface")
+        self.show_lower_check = QCheckBox("Lower")
         self.show_lower_check.setChecked(True)
-        self.show_le_check = QCheckBox("Leading Edge")
+        self.show_le_check = QCheckBox("LE")
         self.show_le_check.setChecked(True)
         self.show_wireframe_check = QCheckBox("Wireframe")
         self.show_wireframe_check.setChecked(False)
-        
-        options_layout.addWidget(QLabel("Display:"))
-        options_layout.addWidget(self.show_upper_check)
-        options_layout.addWidget(self.show_lower_check)
-        options_layout.addWidget(self.show_le_check)
-        options_layout.addWidget(self.show_wireframe_check)
-        options_layout.addStretch()
-        
+
+        self._view_options_widgets = [
+            self.show_upper_check, self.show_lower_check,
+            self.show_le_check, self.show_wireframe_check,
+        ]
+        for w in self._view_options_widgets:
+            top_bar.addWidget(w)
+
+        top_bar.addStretch()
+
+        # Camera preset buttons
+        camera_bar = QHBoxLayout()
+        camera_bar.setSpacing(2)
+        cam_label = QLabel("Camera:")
+        camera_bar.addWidget(cam_label)
+        cam_presets = [
+            ("Top",          90,    0),
+            ("Bottom",      -90,    0),
+            ("Front",         0,  180),
+            ("Back",          0,    0),
+            ("Left",          0,   90),
+            ("Right",         0,  -90),
+            ("Perspective",  20,   45),
+        ]
+        self._cam_buttons = []
+        for name, elev, azim in cam_presets:
+            btn = QPushButton(name)
+            btn.setMaximumWidth(75)
+            btn.clicked.connect(lambda checked, e=elev, a=azim: self._set_camera(e, a))
+            camera_bar.addWidget(btn)
+            self._cam_buttons.append(btn)
+        top_bar.addLayout(camera_bar)
+
         update_view_btn = QPushButton("Update View")
         update_view_btn.clicked.connect(self.update_3d_view)
-        options_layout.addWidget(update_view_btn)
-        
-        layout_3d.addLayout(options_layout)
-        
-        # 3D canvas
-        self.canvas_3d = WaveriderCanvas()
-        self.toolbar_3d = NavigationToolbar(self.canvas_3d, tab_3d)
-        layout_3d.addWidget(self.toolbar_3d)
-        layout_3d.addWidget(self.canvas_3d)
-        
-        self.tab_widget.addTab(tab_3d, "3D View")
-        
-        # Base plane tab
-        tab_base = QWidget()
-        layout_base = QVBoxLayout(tab_base)
-        self.canvas_base = BasePlaneCanvas()
-        self.toolbar_base = NavigationToolbar(self.canvas_base, tab_base)
-        layout_base.addWidget(self.toolbar_base)
-        layout_base.addWidget(self.canvas_base)
-        self.tab_widget.addTab(tab_base, "Base Plane")
-        
-        # Leading edge tab
-        tab_le = QWidget()
-        layout_le = QVBoxLayout(tab_le)
-        self.canvas_le = LECanvas()
-        self.toolbar_le = NavigationToolbar(self.canvas_le, tab_le)
-        layout_le.addWidget(self.toolbar_le)
-        layout_le.addWidget(self.canvas_le)
-        self.tab_widget.addTab(tab_le, "Leading Edge")
-        
-        # Geometry schematic tab
-        tab_geom = QWidget()
-        layout_geom = QVBoxLayout(tab_geom)
-        self.canvas_geom = GeometrySchematicCanvas()
-        self.toolbar_geom = NavigationToolbar(self.canvas_geom, tab_geom)
-        layout_geom.addWidget(self.toolbar_geom)
-        layout_geom.addWidget(self.canvas_geom)
-        self.tab_widget.addTab(tab_geom, "Geometry Schematic")
+        top_bar.addWidget(update_view_btn)
+        self._update_view_btn = update_view_btn
 
-        # Aero Analysis tab
-        tab_analysis = self.create_analysis_tab()
-        self.tab_widget.addTab(tab_analysis, "🔬 Aero Analysis")
-        
-        # Optimization tab
+        layout.addLayout(top_bar)
+
+        # Stacked widget holding all canvases
+        self.viz_stack = QStackedWidget()
+
+        # Page 0: 3D Waverider
+        page_3d = QWidget()
+        page_3d_layout = QVBoxLayout(page_3d)
+        page_3d_layout.setContentsMargins(0, 0, 0, 0)
+        self.canvas_3d = WaveriderCanvas()
+        self.toolbar_3d = NavigationToolbar(self.canvas_3d, page_3d)
+        page_3d_layout.addWidget(self.toolbar_3d)
+        page_3d_layout.addWidget(self.canvas_3d)
+        self.viz_stack.addWidget(page_3d)
+
+        # Page 1: Base Plane
+        page_base = QWidget()
+        page_base_layout = QVBoxLayout(page_base)
+        page_base_layout.setContentsMargins(0, 0, 0, 0)
+        self.canvas_base = BasePlaneCanvas()
+        self.toolbar_base = NavigationToolbar(self.canvas_base, page_base)
+        page_base_layout.addWidget(self.toolbar_base)
+        page_base_layout.addWidget(self.canvas_base)
+        self.viz_stack.addWidget(page_base)
+
+        # Page 2: Leading Edge
+        page_le = QWidget()
+        page_le_layout = QVBoxLayout(page_le)
+        page_le_layout.setContentsMargins(0, 0, 0, 0)
+        self.canvas_le = LECanvas()
+        self.toolbar_le = NavigationToolbar(self.canvas_le, page_le)
+        page_le_layout.addWidget(self.toolbar_le)
+        page_le_layout.addWidget(self.canvas_le)
+        self.viz_stack.addWidget(page_le)
+
+        # Page 3: Geometry Schematic
+        page_geom = QWidget()
+        page_geom_layout = QVBoxLayout(page_geom)
+        page_geom_layout.setContentsMargins(0, 0, 0, 0)
+        self.canvas_geom = GeometrySchematicCanvas()
+        self.toolbar_geom = NavigationToolbar(self.canvas_geom, page_geom)
+        page_geom_layout.addWidget(self.toolbar_geom)
+        page_geom_layout.addWidget(self.canvas_geom)
+        self.viz_stack.addWidget(page_geom)
+
+        # Page 4: Imported Geometry
+        page_import = self._create_import_tab()
+        self.viz_stack.addWidget(page_import)
+
+        layout.addWidget(self.viz_stack)
+        return tab
+
+    def _on_view_changed(self, index):
+        """Switch between visualization views."""
+        self.viz_stack.setCurrentIndex(index)
+        # Show 3D display options only for 3D Waverider view
+        is_3d = (index == 0)
+        for w in self._view_options_widgets:
+            w.setVisible(is_3d)
+        self._update_view_btn.setVisible(is_3d)
+
+    def _set_camera(self, elev, azim):
+        """Set the camera angle on the active 3D canvas."""
+        idx = self.viz_stack.currentIndex()
+        if idx == 0:
+            ax = self.canvas_3d.ax
+            canvas = self.canvas_3d
+        elif idx == 4:
+            ax = self.import_canvas.ax
+            canvas = self.import_canvas
+        else:
+            return  # 2D views, ignore
+        ax.view_init(elev=elev, azim=azim)
+        canvas.draw_idle()
+
+    # ── Optimization hub tab (sub-tabs) ────────────────────────────────
+
+    def _create_optimization_hub_tab(self):
+        """Optimization tab with sub-tabs for each optimization method."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        sub_tabs = QTabWidget()
+
+        # Genetic Algorithm Optimization
         self.optimization_tab = OptimizationTab(parent=self)
-        self.tab_widget.addTab(self.optimization_tab, "🧬 Optimization")
-        
-        # Surrogate Optimization tab
+        sub_tabs.addTab(self._scrollable(self.optimization_tab), "Genetic Algorithm")
+
+        # Surrogate Optimization
         if SURROGATE_AVAILABLE:
             self.surrogate_tab = SurrogateTab(parent=self)
-            self.tab_widget.addTab(self.surrogate_tab, "🔮 Surrogate Opt")
+            sub_tabs.addTab(self._scrollable(self.surrogate_tab), "Surrogate")
         else:
-            # Create placeholder tab if surrogate not available
-            surrogate_placeholder = QWidget()
-            placeholder_layout = QVBoxLayout(surrogate_placeholder)
-            placeholder_label = QLabel(
-                "⚠️ Surrogate Optimization not available.\n\n"
-                "Required: scikit-learn\n"
-                "Install with: pip install scikit-learn"
+            sub_tabs.addTab(
+                self._placeholder_widget(
+                    "Surrogate Optimization not available.\n\n"
+                    "Required: scikit-learn\n"
+                    "Install with: pip install scikit-learn"
+                ),
+                "Surrogate",
             )
-            placeholder_label.setStyleSheet(
-                "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px; border: 1px solid #78350F;"
-                "border-radius: 5px; font-size: 12px; }"
-            )
-            placeholder_label.setAlignment(Qt.AlignCenter)
-            placeholder_layout.addWidget(placeholder_label)
-            placeholder_layout.addStretch()
-            self.tab_widget.addTab(surrogate_placeholder, "🔮 Surrogate Opt")
-            
-            
-        # Off-Design Surrogate tab
+
+        # Off-Design NN
         if OFFDESIGN_SURROGATE_AVAILABLE:
             self.offdesign_tab = OffDesignSurrogateTab(parent=self)
-            self.tab_widget.addTab(self.offdesign_tab, "🎯 Off-Design NN")
+            sub_tabs.addTab(self._scrollable(self.offdesign_tab), "Off-Design NN")
         else:
-            # Create placeholder tab if not available
-            offdesign_placeholder = QWidget()
-            offdesign_layout = QVBoxLayout(offdesign_placeholder)
-            offdesign_label = QLabel(
-                "⚠️ Off-Design Neural Network Surrogate not available.\\n\\n"
-                "Required: scikit-learn, trained model files\\n"
-                "Files needed in surrogate_model/ folder:\\n"
-                "  - ensemble_CL.pkl\\n"
-                "  - ensemble_CD.pkl\\n"
-                "  - ensemble_CL_CD.pkl\\n"
-                "  - config.json"
+            sub_tabs.addTab(
+                self._placeholder_widget(
+                    "Off-Design Neural Network Surrogate not available.\n\n"
+                    "Required: scikit-learn, trained model files\n"
+                    "Files needed in surrogate_model/ folder:\n"
+                    "  - ensemble_CL.pkl\n"
+                    "  - ensemble_CD.pkl\n"
+                    "  - ensemble_CL_CD.pkl\n"
+                    "  - config.json"
+                ),
+                "Off-Design NN",
             )
-            offdesign_label.setStyleSheet(
-                "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px; border: 1px solid #78350F;"
-                "border-radius: 5px; font-size: 12px; }"
-            )
-            offdesign_label.setAlignment(Qt.AlignCenter)
-            offdesign_layout.addWidget(offdesign_label)
-            offdesign_layout.addStretch()
-            self.tab_widget.addTab(offdesign_placeholder, "🎯 Off-Design NN")
-            
-        # Multi-Mach Hunter tab
+
+        # Multi-Mach Hunter
         if MULTIMACH_HUNTER_AVAILABLE:
             self.multimach_tab = MultiMachHunterTab(parent=self)
-            self.tab_widget.addTab(self.multimach_tab, "🌐 Multi-Mach")
-            
-        # Cone-waverider tab    
-        if CONE_WAVERIDER_AVAILABLE:
-            self.shadow_waverider_tab = ShadowWaveriderTab(parent=self)
-            self.tab_widget.addTab(self.shadow_waverider_tab, "🔷 SHADOW Waverider")
-            
-        # Claude Assistant tab
-        if CLAUDE_ASSISTANT_AVAILABLE:
-            self.claude_tab = ClaudeAssistantTab(parent=self)
-            self.tab_widget.addTab(self.claude_tab, "🤖 Claude Assistant")
-        else:
-            claude_placeholder = QWidget()
-            claude_layout = QVBoxLayout(claude_placeholder)
-            claude_label = QLabel(
-                "⚠️ Claude Assistant not available.\\n\\n"
-                "Required: pip install anthropic"
-            )
-            claude_label.setStyleSheet(
-                "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px; border: 1px solid #78350F;"
-                "border-radius: 5px; font-size: 12px; }"
-            )
-            claude_label.setAlignment(Qt.AlignCenter)
-            claude_layout.addWidget(claude_label)
-            claude_layout.addStretch()
-            self.tab_widget.addTab(claude_placeholder, "🤖 Claude Assistant")
+            sub_tabs.addTab(self._scrollable(self.multimach_tab), "Multi-Mach")
 
-        layout.addWidget(self.tab_widget)
-        
-        return panel
+        layout.addWidget(sub_tabs)
+        return tab
+
+    def _scrollable(self, widget):
+        """Wrap a widget in a QScrollArea."""
+        scroll = QScrollArea()
+        scroll.setWidget(widget)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        return scroll
+
+    def _placeholder_widget(self, message):
+        """Create a placeholder widget with a warning message."""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        label = QLabel(f"⚠️ {message}")
+        label.setStyleSheet(
+            "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px;"
+            "border: 1px solid #78350F; border-radius: 5px; font-size: 12px; }"
+        )
+        label.setAlignment(Qt.AlignCenter)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        layout.addStretch()
+        return w
     
+
+    def _create_import_tab(self):
+        """Create the Imported Geometry tab with viewer and controls."""
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        # --- Left: controls panel ---
+        controls = QWidget()
+        controls.setMaximumWidth(320)
+        ctrl_layout = QVBoxLayout(controls)
+
+        # Import button
+        import_btn = QPushButton("📂 Import Geometry...")
+        import_btn.setStyleSheet(
+            "QPushButton { background-color: #F59E0B; color: #0A0A0A;"
+            "font-weight: bold; padding: 10px; }"
+        )
+        import_btn.clicked.connect(self.import_geometry)
+        ctrl_layout.addWidget(import_btn)
+
+        # File info group
+        info_group = QGroupBox("Geometry Info")
+        info_layout = QVBoxLayout()
+        self.import_file_label = QLabel("File: -")
+        self.import_format_label = QLabel("Format: -")
+        self.import_verts_label = QLabel("Vertices: -")
+        self.import_faces_label = QLabel("Triangles: -")
+        self.import_dims_label = QLabel("Dimensions: -")
+        self.import_dims_label.setWordWrap(True)
+        self.import_bounds_label = QLabel("Bounds: -")
+        self.import_bounds_label.setWordWrap(True)
+        self.import_bounds_label.setStyleSheet("color: #888888; font-size: 10px;")
+        for lbl in [
+            self.import_file_label,
+            self.import_format_label,
+            self.import_verts_label,
+            self.import_faces_label,
+            self.import_dims_label,
+            self.import_bounds_label,
+        ]:
+            info_layout.addWidget(lbl)
+        info_group.setLayout(info_layout)
+        ctrl_layout.addWidget(info_group)
+
+        # Gmsh meshing group
+        mesh_group = QGroupBox("Gmsh Meshing")
+        mesh_layout = QGridLayout()
+        mesh_layout.addWidget(QLabel("Min size [m]:"), 0, 0)
+        self.import_mesh_min_spin = QDoubleSpinBox()
+        self.import_mesh_min_spin.setRange(0.0001, 1.0)
+        self.import_mesh_min_spin.setValue(0.005)
+        self.import_mesh_min_spin.setDecimals(4)
+        self.import_mesh_min_spin.setSingleStep(0.001)
+        mesh_layout.addWidget(self.import_mesh_min_spin, 0, 1)
+
+        mesh_layout.addWidget(QLabel("Max size [m]:"), 1, 0)
+        self.import_mesh_max_spin = QDoubleSpinBox()
+        self.import_mesh_max_spin.setRange(0.001, 10.0)
+        self.import_mesh_max_spin.setValue(0.05)
+        self.import_mesh_max_spin.setDecimals(4)
+        self.import_mesh_max_spin.setSingleStep(0.005)
+        mesh_layout.addWidget(self.import_mesh_max_spin, 1, 1)
+
+        self.import_mesh_btn = QPushButton("Mesh with Gmsh")
+        self.import_mesh_btn.setEnabled(False)
+        self.import_mesh_btn.clicked.connect(self._import_mesh_gmsh)
+        mesh_layout.addWidget(self.import_mesh_btn, 2, 0, 1, 2)
+        mesh_group.setLayout(mesh_layout)
+        ctrl_layout.addWidget(mesh_group)
+
+        # Analysis group
+        analysis_group = QGroupBox("PySAGAS Analysis")
+        analysis_layout = QGridLayout()
+
+        analysis_layout.addWidget(QLabel("Mach:"), 0, 0)
+        self.import_mach_spin = QDoubleSpinBox()
+        self.import_mach_spin.setRange(1.1, 30.0)
+        self.import_mach_spin.setValue(5.0)
+        self.import_mach_spin.setSingleStep(0.1)
+        analysis_layout.addWidget(self.import_mach_spin, 0, 1)
+
+        analysis_layout.addWidget(QLabel("AoA (deg):"), 1, 0)
+        self.import_aoa_spin = QDoubleSpinBox()
+        self.import_aoa_spin.setRange(-10.0, 30.0)
+        self.import_aoa_spin.setValue(0.0)
+        self.import_aoa_spin.setSingleStep(0.5)
+        analysis_layout.addWidget(self.import_aoa_spin, 1, 1)
+
+        analysis_layout.addWidget(QLabel("Pressure (Pa):"), 2, 0)
+        self.import_pressure_spin = QDoubleSpinBox()
+        self.import_pressure_spin.setRange(1.0, 200000.0)
+        self.import_pressure_spin.setValue(1197.0)
+        self.import_pressure_spin.setDecimals(1)
+        analysis_layout.addWidget(self.import_pressure_spin, 2, 1)
+
+        analysis_layout.addWidget(QLabel("Temperature (K):"), 3, 0)
+        self.import_temp_spin = QDoubleSpinBox()
+        self.import_temp_spin.setRange(50.0, 3000.0)
+        self.import_temp_spin.setValue(227.0)
+        self.import_temp_spin.setDecimals(1)
+        analysis_layout.addWidget(self.import_temp_spin, 3, 1)
+
+        analysis_layout.addWidget(QLabel("A_ref (m²):"), 4, 0)
+        self.import_aref_spin = QDoubleSpinBox()
+        self.import_aref_spin.setRange(0.0001, 100.0)
+        self.import_aref_spin.setValue(1.0)
+        self.import_aref_spin.setDecimals(4)
+        self.import_aref_spin.setSingleStep(0.01)
+        analysis_layout.addWidget(self.import_aref_spin, 4, 1)
+
+        self.import_analyze_btn = QPushButton("Run PySAGAS")
+        self.import_analyze_btn.setEnabled(False)
+        self.import_analyze_btn.clicked.connect(self._import_run_analysis)
+        analysis_layout.addWidget(self.import_analyze_btn, 5, 0, 1, 2)
+        analysis_group.setLayout(analysis_layout)
+        ctrl_layout.addWidget(analysis_group)
+
+        # Export button
+        self.import_export_btn = QPushButton("Export As...")
+        self.import_export_btn.setEnabled(False)
+        self.import_export_btn.clicked.connect(self._import_export_geometry)
+        ctrl_layout.addWidget(self.import_export_btn)
+
+        # Status label
+        self.import_status_label = QLabel("")
+        self.import_status_label.setStyleSheet("color: #888888; font-style: italic;")
+        ctrl_layout.addWidget(self.import_status_label)
+
+        ctrl_layout.addStretch()
+        layout.addWidget(controls)
+
+        # --- Right: 3D viewer ---
+        viewer = QWidget()
+        viewer_layout = QVBoxLayout(viewer)
+
+        self.import_canvas = MeshCanvas()
+        self.import_canvas.ax.set_title("Import a geometry to visualize")
+        import_toolbar = NavigationToolbar(self.import_canvas, viewer)
+        viewer_layout.addWidget(import_toolbar)
+        viewer_layout.addWidget(self.import_canvas)
+
+        layout.addWidget(viewer, 1)
+
+        return tab
 
     def create_analysis_tab(self):
         """Create the PySAGAS analysis tab"""
