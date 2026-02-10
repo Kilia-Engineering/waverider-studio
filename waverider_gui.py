@@ -948,16 +948,10 @@ class WaveriderGUI(QMainWindow):
 
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-        # Compute face normals to classify upper vs lower surface
-        v0 = vectors[:, 0, :]
-        v1 = vectors[:, 1, :]
-        v2 = vectors[:, 2, :]
-        normals = np.cross(v1 - v0, v2 - v0)
-        # Y-component of normal: positive = upper surface, negative = lower
-        ny = normals[:, 1]
-
-        upper_mask = ny >= 0
-        lower_mask = ~upper_mask
+        # Classify upper vs lower by triangle centroid Y relative to midpoint
+        centroids = vectors.mean(axis=1)  # (N, 3)
+        y_mid = (centroids[:, 1].min() + centroids[:, 1].max()) / 2.0
+        upper_mask = centroids[:, 1] >= y_mid
 
         # Color per face: cyan for upper, orange for lower (matching generation)
         face_colors = np.where(
@@ -986,6 +980,14 @@ class WaveriderGUI(QMainWindow):
             ax.set_box_aspect([s / max_span for s in spans])
         except Exception:
             pass
+
+        # Hide the grey 3D axis panes
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        ax.xaxis.pane.set_edgecolor((1, 1, 1, 0.1))
+        ax.yaxis.pane.set_edgecolor((1, 1, 1, 0.1))
+        ax.zaxis.pane.set_edgecolor((1, 1, 1, 0.1))
 
         name = os.path.basename(self.imported_geometry_path) if self.imported_geometry_path else "Imported"
         ax.set_title(f"{name} ({len(vectors):,} triangles)")
