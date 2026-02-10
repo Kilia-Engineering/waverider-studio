@@ -819,12 +819,22 @@ class WaveriderGUI(QMainWindow):
         import cadquery as cq
 
         shape = cq.importers.importStep(filepath)
-        # Tessellate to get triangular mesh
+
+        # Collect solids; fall back to shells/faces if no solids
+        solids = shape.solids().vals()
+        if not solids:
+            solids = shape.shells().vals()
+        if not solids:
+            solids = shape.faces().vals()
+        if not solids:
+            raise ValueError("STEP file contains no geometry (no solids, shells, or faces).")
+
         verts_list, faces_list = [], []
         offset = 0
-        for solid in shape.solids().vals():
+        for solid in solids:
             tess = solid.tessellate(tolerance=0.001)
-            v = np.array(tess[0])
+            # tess[0] is a list of cq.Vector objects – convert explicitly
+            v = np.array([(pt.x, pt.y, pt.z) for pt in tess[0]])
             f = np.array(tess[1]) + offset
             verts_list.append(v)
             faces_list.append(f)
@@ -854,7 +864,18 @@ class WaveriderGUI(QMainWindow):
                 "Install with: pip install trimesh"
             )
 
-        mesh = trimesh.load_mesh(filepath)
+        loaded = trimesh.load(filepath)
+
+        # trimesh.load can return a Scene (multiple meshes) or a single Trimesh
+        if isinstance(loaded, trimesh.Scene):
+            # Concatenate all meshes in the scene
+            meshes = [g for g in loaded.geometry.values() if isinstance(g, trimesh.Trimesh)]
+            if not meshes:
+                raise ValueError("OBJ file contains no triangle meshes.")
+            mesh = trimesh.util.concatenate(meshes)
+        else:
+            mesh = loaded
+
         vertices = np.array(mesh.vertices)
         faces = np.array(mesh.faces)
         vectors = vertices[faces]
