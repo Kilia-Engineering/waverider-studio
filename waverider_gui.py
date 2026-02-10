@@ -12,7 +12,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QGroupBox, QGridLayout, QSlider, QDoubleSpinBox,
                              QMessageBox, QTabWidget, QCheckBox, QSpinBox,
                              QProgressBar, QTextEdit, QFileDialog, QInputDialog,
-                             QMenuBar, QAction, QComboBox, QSplitter, QFrame)
+                             QMenuBar, QAction, QComboBox, QSplitter, QFrame,
+                             QStackedWidget, QDialog, QDialogButtonBox)
 from PyQt5.QtCore import Qt, pyqtSignal, QThread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -724,8 +725,9 @@ class WaveriderGUI(QMainWindow):
         self.imported_geometry_path = None  # Original file path
         self.imported_step_path = None      # Path to STEP file (if imported STEP)
         self.imported_stl_path = None       # Path to STL (imported or converted)
+        self._claude_dialog = None
         self.init_ui()
-        
+
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle('Interactive Waverider Design Tool')
@@ -772,6 +774,48 @@ class WaveriderGUI(QMainWindow):
         export_action.triggered.connect(self.export_cad)
         file_menu.addAction(export_action)
 
+        # --- View menu ---
+        view_menu = menubar.addMenu("View")
+        view_names = ["3D Waverider", "Base Plane", "Leading Edge",
+                      "Geometry Schematic", "Imported Geometry"]
+        for i, name in enumerate(view_names):
+            action = QAction(name, self)
+            action.triggered.connect(lambda checked, idx=i: self._switch_view(idx))
+            view_menu.addAction(action)
+
+        # --- Tools menu ---
+        tools_menu = menubar.addMenu("Tools")
+
+        if CLAUDE_ASSISTANT_AVAILABLE:
+            claude_action = QAction("Claude Assistant...", self)
+            claude_action.setShortcut("Ctrl+Shift+A")
+            claude_action.triggered.connect(self._open_claude_assistant)
+            tools_menu.addAction(claude_action)
+        else:
+            claude_action = QAction("Claude Assistant (not installed)", self)
+            claude_action.setEnabled(False)
+            tools_menu.addAction(claude_action)
+
+    def _switch_view(self, index):
+        """Switch to a specific visualization view from the View menu."""
+        # Make sure we're on the Visualization tab first
+        self.tab_widget.setCurrentIndex(0)
+        self.view_selector.setCurrentIndex(index)
+
+    def _open_claude_assistant(self):
+        """Open Claude Assistant in a floating dialog."""
+        if not hasattr(self, '_claude_dialog') or self._claude_dialog is None:
+            self._claude_dialog = QDialog(self)
+            self._claude_dialog.setWindowTitle("Claude Assistant")
+            self._claude_dialog.resize(700, 600)
+            dialog_layout = QVBoxLayout(self._claude_dialog)
+            dialog_layout.setContentsMargins(0, 0, 0, 0)
+            self.claude_tab = ClaudeAssistantTab(parent=self)
+            dialog_layout.addWidget(self.claude_tab)
+        self._claude_dialog.show()
+        self._claude_dialog.raise_()
+        self._claude_dialog.activateWindow()
+
     # ---- Geometry import ------------------------------------------------
 
     def import_geometry(self):
@@ -808,11 +852,9 @@ class WaveriderGUI(QMainWindow):
             self.imported_geometry_path = filepath
             name = os.path.basename(filepath)
 
-            # Switch to the imported geometry tab
-            for i in range(self.tab_widget.count()):
-                if self.tab_widget.tabText(i) == "📦 Imported Geometry":
-                    self.tab_widget.setCurrentIndex(i)
-                    break
+            # Switch to the Imported Geometry view
+            self.tab_widget.setCurrentIndex(0)  # Visualization tab
+            self.view_selector.setCurrentIndex(4)  # Imported Geometry page
 
             # Update the info panel
             self._update_import_info()
@@ -1521,170 +1563,207 @@ class WaveriderGUI(QMainWindow):
         return panel
     
     def create_visualization_panel(self):
-        """Create the visualization panel with tabs"""
+        """Create the visualization panel with consolidated tabs"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        
-        # Create tab widget
+
+        # Create main tab widget (reduced from 12 tabs to ~4-5)
         self.tab_widget = QTabWidget()
-        
-        # 3D view tab
-        tab_3d = QWidget()
-        layout_3d = QVBoxLayout(tab_3d)
-        
-        # Display options
-        options_layout = QHBoxLayout()
-        self.show_upper_check = QCheckBox("Upper Surface")
+
+        # ── Tab 1: Visualization (merged 3D View, Base Plane, LE, Schematic, Imported) ──
+        tab_viz = self._create_visualization_tab()
+        self.tab_widget.addTab(tab_viz, "Visualization")
+
+        # ── Tab 2: Aero Analysis ──
+        tab_analysis = self.create_analysis_tab()
+        self.tab_widget.addTab(tab_analysis, "Aero Analysis")
+
+        # ── Tab 3: Optimization (merged Optimization, Surrogate, Off-Design, Multi-Mach) ──
+        tab_opt = self._create_optimization_hub_tab()
+        self.tab_widget.addTab(tab_opt, "Optimization")
+
+        # ── Tab 4: SHADOW Waverider ──
+        if CONE_WAVERIDER_AVAILABLE:
+            self.shadow_waverider_tab = ShadowWaveriderTab(parent=self)
+            self.tab_widget.addTab(self.shadow_waverider_tab, "SHADOW Waverider")
+
+        layout.addWidget(self.tab_widget)
+        return panel
+
+    # ── Visualization tab (stacked views) ──────────────────────────────
+
+    def _create_visualization_tab(self):
+        """Single visualization tab with a view selector dropdown."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # Top bar: view selector + display options
+        top_bar = QHBoxLayout()
+
+        top_bar.addWidget(QLabel("View:"))
+        self.view_selector = QComboBox()
+        self.view_selector.addItems([
+            "3D Waverider",
+            "Base Plane",
+            "Leading Edge",
+            "Geometry Schematic",
+            "Imported Geometry",
+        ])
+        self.view_selector.currentIndexChanged.connect(self._on_view_changed)
+        top_bar.addWidget(self.view_selector)
+
+        # Display checkboxes (visible only for 3D Waverider view)
+        self.show_upper_check = QCheckBox("Upper")
         self.show_upper_check.setChecked(True)
-        self.show_lower_check = QCheckBox("Lower Surface")
+        self.show_lower_check = QCheckBox("Lower")
         self.show_lower_check.setChecked(True)
-        self.show_le_check = QCheckBox("Leading Edge")
+        self.show_le_check = QCheckBox("LE")
         self.show_le_check.setChecked(True)
         self.show_wireframe_check = QCheckBox("Wireframe")
         self.show_wireframe_check.setChecked(False)
-        
-        options_layout.addWidget(QLabel("Display:"))
-        options_layout.addWidget(self.show_upper_check)
-        options_layout.addWidget(self.show_lower_check)
-        options_layout.addWidget(self.show_le_check)
-        options_layout.addWidget(self.show_wireframe_check)
-        options_layout.addStretch()
-        
+
+        self._view_options_widgets = [
+            self.show_upper_check, self.show_lower_check,
+            self.show_le_check, self.show_wireframe_check,
+        ]
+        for w in self._view_options_widgets:
+            top_bar.addWidget(w)
+
+        top_bar.addStretch()
+
         update_view_btn = QPushButton("Update View")
         update_view_btn.clicked.connect(self.update_3d_view)
-        options_layout.addWidget(update_view_btn)
-        
-        layout_3d.addLayout(options_layout)
-        
-        # 3D canvas
+        top_bar.addWidget(update_view_btn)
+        self._update_view_btn = update_view_btn
+
+        layout.addLayout(top_bar)
+
+        # Stacked widget holding all canvases
+        self.viz_stack = QStackedWidget()
+
+        # Page 0: 3D Waverider
+        page_3d = QWidget()
+        page_3d_layout = QVBoxLayout(page_3d)
+        page_3d_layout.setContentsMargins(0, 0, 0, 0)
         self.canvas_3d = WaveriderCanvas()
-        self.toolbar_3d = NavigationToolbar(self.canvas_3d, tab_3d)
-        layout_3d.addWidget(self.toolbar_3d)
-        layout_3d.addWidget(self.canvas_3d)
-        
-        self.tab_widget.addTab(tab_3d, "3D View")
-        
-        # Base plane tab
-        tab_base = QWidget()
-        layout_base = QVBoxLayout(tab_base)
+        self.toolbar_3d = NavigationToolbar(self.canvas_3d, page_3d)
+        page_3d_layout.addWidget(self.toolbar_3d)
+        page_3d_layout.addWidget(self.canvas_3d)
+        self.viz_stack.addWidget(page_3d)
+
+        # Page 1: Base Plane
+        page_base = QWidget()
+        page_base_layout = QVBoxLayout(page_base)
+        page_base_layout.setContentsMargins(0, 0, 0, 0)
         self.canvas_base = BasePlaneCanvas()
-        self.toolbar_base = NavigationToolbar(self.canvas_base, tab_base)
-        layout_base.addWidget(self.toolbar_base)
-        layout_base.addWidget(self.canvas_base)
-        self.tab_widget.addTab(tab_base, "Base Plane")
-        
-        # Leading edge tab
-        tab_le = QWidget()
-        layout_le = QVBoxLayout(tab_le)
+        self.toolbar_base = NavigationToolbar(self.canvas_base, page_base)
+        page_base_layout.addWidget(self.toolbar_base)
+        page_base_layout.addWidget(self.canvas_base)
+        self.viz_stack.addWidget(page_base)
+
+        # Page 2: Leading Edge
+        page_le = QWidget()
+        page_le_layout = QVBoxLayout(page_le)
+        page_le_layout.setContentsMargins(0, 0, 0, 0)
         self.canvas_le = LECanvas()
-        self.toolbar_le = NavigationToolbar(self.canvas_le, tab_le)
-        layout_le.addWidget(self.toolbar_le)
-        layout_le.addWidget(self.canvas_le)
-        self.tab_widget.addTab(tab_le, "Leading Edge")
-        
-        # Geometry schematic tab
-        tab_geom = QWidget()
-        layout_geom = QVBoxLayout(tab_geom)
+        self.toolbar_le = NavigationToolbar(self.canvas_le, page_le)
+        page_le_layout.addWidget(self.toolbar_le)
+        page_le_layout.addWidget(self.canvas_le)
+        self.viz_stack.addWidget(page_le)
+
+        # Page 3: Geometry Schematic
+        page_geom = QWidget()
+        page_geom_layout = QVBoxLayout(page_geom)
+        page_geom_layout.setContentsMargins(0, 0, 0, 0)
         self.canvas_geom = GeometrySchematicCanvas()
-        self.toolbar_geom = NavigationToolbar(self.canvas_geom, tab_geom)
-        layout_geom.addWidget(self.toolbar_geom)
-        layout_geom.addWidget(self.canvas_geom)
-        self.tab_widget.addTab(tab_geom, "Geometry Schematic")
+        self.toolbar_geom = NavigationToolbar(self.canvas_geom, page_geom)
+        page_geom_layout.addWidget(self.toolbar_geom)
+        page_geom_layout.addWidget(self.canvas_geom)
+        self.viz_stack.addWidget(page_geom)
 
-        # Imported Geometry tab
-        tab_import = self._create_import_tab()
-        self.tab_widget.addTab(tab_import, "📦 Imported Geometry")
+        # Page 4: Imported Geometry
+        page_import = self._create_import_tab()
+        self.viz_stack.addWidget(page_import)
 
-        # Aero Analysis tab
-        tab_analysis = self.create_analysis_tab()
-        self.tab_widget.addTab(tab_analysis, "🔬 Aero Analysis")
-        
-        # Optimization tab
+        layout.addWidget(self.viz_stack)
+        return tab
+
+    def _on_view_changed(self, index):
+        """Switch between visualization views."""
+        self.viz_stack.setCurrentIndex(index)
+        # Show 3D display options only for 3D Waverider view
+        is_3d = (index == 0)
+        for w in self._view_options_widgets:
+            w.setVisible(is_3d)
+        self._update_view_btn.setVisible(is_3d)
+
+    # ── Optimization hub tab (sub-tabs) ────────────────────────────────
+
+    def _create_optimization_hub_tab(self):
+        """Optimization tab with sub-tabs for each optimization method."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        sub_tabs = QTabWidget()
+
+        # Genetic Algorithm Optimization
         self.optimization_tab = OptimizationTab(parent=self)
-        self.tab_widget.addTab(self.optimization_tab, "🧬 Optimization")
-        
-        # Surrogate Optimization tab
+        sub_tabs.addTab(self.optimization_tab, "Genetic Algorithm")
+
+        # Surrogate Optimization
         if SURROGATE_AVAILABLE:
             self.surrogate_tab = SurrogateTab(parent=self)
-            self.tab_widget.addTab(self.surrogate_tab, "🔮 Surrogate Opt")
+            sub_tabs.addTab(self.surrogate_tab, "Surrogate")
         else:
-            # Create placeholder tab if surrogate not available
-            surrogate_placeholder = QWidget()
-            placeholder_layout = QVBoxLayout(surrogate_placeholder)
-            placeholder_label = QLabel(
-                "⚠️ Surrogate Optimization not available.\n\n"
-                "Required: scikit-learn\n"
-                "Install with: pip install scikit-learn"
+            sub_tabs.addTab(
+                self._placeholder_widget(
+                    "Surrogate Optimization not available.\n\n"
+                    "Required: scikit-learn\n"
+                    "Install with: pip install scikit-learn"
+                ),
+                "Surrogate",
             )
-            placeholder_label.setStyleSheet(
-                "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px; border: 1px solid #78350F;"
-                "border-radius: 5px; font-size: 12px; }"
-            )
-            placeholder_label.setAlignment(Qt.AlignCenter)
-            placeholder_layout.addWidget(placeholder_label)
-            placeholder_layout.addStretch()
-            self.tab_widget.addTab(surrogate_placeholder, "🔮 Surrogate Opt")
-            
-            
-        # Off-Design Surrogate tab
+
+        # Off-Design NN
         if OFFDESIGN_SURROGATE_AVAILABLE:
             self.offdesign_tab = OffDesignSurrogateTab(parent=self)
-            self.tab_widget.addTab(self.offdesign_tab, "🎯 Off-Design NN")
+            sub_tabs.addTab(self.offdesign_tab, "Off-Design NN")
         else:
-            # Create placeholder tab if not available
-            offdesign_placeholder = QWidget()
-            offdesign_layout = QVBoxLayout(offdesign_placeholder)
-            offdesign_label = QLabel(
-                "⚠️ Off-Design Neural Network Surrogate not available.\\n\\n"
-                "Required: scikit-learn, trained model files\\n"
-                "Files needed in surrogate_model/ folder:\\n"
-                "  - ensemble_CL.pkl\\n"
-                "  - ensemble_CD.pkl\\n"
-                "  - ensemble_CL_CD.pkl\\n"
-                "  - config.json"
+            sub_tabs.addTab(
+                self._placeholder_widget(
+                    "Off-Design Neural Network Surrogate not available.\n\n"
+                    "Required: scikit-learn, trained model files\n"
+                    "Files needed in surrogate_model/ folder:\n"
+                    "  - ensemble_CL.pkl\n"
+                    "  - ensemble_CD.pkl\n"
+                    "  - ensemble_CL_CD.pkl\n"
+                    "  - config.json"
+                ),
+                "Off-Design NN",
             )
-            offdesign_label.setStyleSheet(
-                "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px; border: 1px solid #78350F;"
-                "border-radius: 5px; font-size: 12px; }"
-            )
-            offdesign_label.setAlignment(Qt.AlignCenter)
-            offdesign_layout.addWidget(offdesign_label)
-            offdesign_layout.addStretch()
-            self.tab_widget.addTab(offdesign_placeholder, "🎯 Off-Design NN")
-            
-        # Multi-Mach Hunter tab
+
+        # Multi-Mach Hunter
         if MULTIMACH_HUNTER_AVAILABLE:
             self.multimach_tab = MultiMachHunterTab(parent=self)
-            self.tab_widget.addTab(self.multimach_tab, "🌐 Multi-Mach")
-            
-        # Cone-waverider tab    
-        if CONE_WAVERIDER_AVAILABLE:
-            self.shadow_waverider_tab = ShadowWaveriderTab(parent=self)
-            self.tab_widget.addTab(self.shadow_waverider_tab, "🔷 SHADOW Waverider")
-            
-        # Claude Assistant tab
-        if CLAUDE_ASSISTANT_AVAILABLE:
-            self.claude_tab = ClaudeAssistantTab(parent=self)
-            self.tab_widget.addTab(self.claude_tab, "🤖 Claude Assistant")
-        else:
-            claude_placeholder = QWidget()
-            claude_layout = QVBoxLayout(claude_placeholder)
-            claude_label = QLabel(
-                "⚠️ Claude Assistant not available.\\n\\n"
-                "Required: pip install anthropic"
-            )
-            claude_label.setStyleSheet(
-                "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px; border: 1px solid #78350F;"
-                "border-radius: 5px; font-size: 12px; }"
-            )
-            claude_label.setAlignment(Qt.AlignCenter)
-            claude_layout.addWidget(claude_label)
-            claude_layout.addStretch()
-            self.tab_widget.addTab(claude_placeholder, "🤖 Claude Assistant")
+            sub_tabs.addTab(self.multimach_tab, "Multi-Mach")
 
-        layout.addWidget(self.tab_widget)
-        
-        return panel
+        layout.addWidget(sub_tabs)
+        return tab
+
+    def _placeholder_widget(self, message):
+        """Create a placeholder widget with a warning message."""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        label = QLabel(f"⚠️ {message}")
+        label.setStyleSheet(
+            "QLabel { background-color: #1A1A1A; color: #888888; padding: 20px;"
+            "border: 1px solid #78350F; border-radius: 5px; font-size: 12px; }"
+        )
+        label.setAlignment(Qt.AlignCenter)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        layout.addStretch()
+        return w
     
 
     def _create_import_tab(self):
