@@ -899,8 +899,21 @@ class WaveriderGUI(QMainWindow):
         name = os.path.basename(self.imported_geometry_path) if self.imported_geometry_path else "N/A"
         ext = os.path.splitext(name)[1].upper() if name else ""
 
+        # Detect if geometry is likely in millimetres (max extent > 100)
         bounds_min = verts.min(axis=0)
         bounds_max = verts.max(axis=0)
+        max_extent = (bounds_max - bounds_min).max()
+
+        if max_extent > 100:
+            # Almost certainly in mm – convert to metres
+            scale = 0.001
+            verts = verts * scale
+            vectors = geo["vectors"] * scale
+            geo["vertices"] = verts
+            geo["vectors"] = vectors
+            bounds_min = verts.min(axis=0)
+            bounds_max = verts.max(axis=0)
+
         dims = bounds_max - bounds_min
 
         self.import_file_label.setText(f"File: {name}")
@@ -938,24 +951,22 @@ class WaveriderGUI(QMainWindow):
         collection = Poly3DCollection(
             vectors,
             facecolors="#F59E0B",
-            edgecolors="#78350F",
-            alpha=0.6,
-            linewidths=0.2,
+            edgecolors="none",
+            alpha=0.8,
+            linewidths=0,
         )
         ax.add_collection3d(collection)
 
         all_pts = vectors.reshape(-1, 3)
         for dim, setter in enumerate([ax.set_xlim, ax.set_ylim, ax.set_zlim]):
             pmin, pmax = all_pts[:, dim].min(), all_pts[:, dim].max()
-            pad = max((pmax - pmin) * 0.1, 1e-6)
+            pad = max((pmax - pmin) * 0.3, 1e-3)
             setter(pmin - pad, pmax + pad)
 
         try:
-            ax.set_box_aspect([
-                np.ptp(all_pts[:, 0]),
-                np.ptp(all_pts[:, 1]),
-                np.ptp(all_pts[:, 2]),
-            ])
+            spans = [np.ptp(all_pts[:, i]) for i in range(3)]
+            max_span = max(spans) if max(spans) > 0 else 1
+            ax.set_box_aspect([s / max_span for s in spans])
         except Exception:
             pass
 
