@@ -1613,6 +1613,29 @@ class WaveriderGUI(QMainWindow):
 
         top_bar.addStretch()
 
+        # Camera preset buttons
+        camera_bar = QHBoxLayout()
+        camera_bar.setSpacing(2)
+        cam_label = QLabel("Camera:")
+        camera_bar.addWidget(cam_label)
+        cam_presets = [
+            ("Top",         90, -90),
+            ("Bottom",     -90, -90),
+            ("Front",        0,   0),
+            ("Back",         0, 180),
+            ("Left",         0, -90),
+            ("Right",        0,  90),
+            ("Perspective", 20,  45),
+        ]
+        self._cam_buttons = []
+        for name, elev, azim in cam_presets:
+            btn = QPushButton(name)
+            btn.setMaximumWidth(75)
+            btn.clicked.connect(lambda checked, e=elev, a=azim: self._set_camera(e, a))
+            camera_bar.addWidget(btn)
+            self._cam_buttons.append(btn)
+        top_bar.addLayout(camera_bar)
+
         update_view_btn = QPushButton("Update View")
         update_view_btn.clicked.connect(self.update_3d_view)
         top_bar.addWidget(update_view_btn)
@@ -1678,6 +1701,20 @@ class WaveriderGUI(QMainWindow):
         for w in self._view_options_widgets:
             w.setVisible(is_3d)
         self._update_view_btn.setVisible(is_3d)
+
+    def _set_camera(self, elev, azim):
+        """Set the camera angle on the active 3D canvas."""
+        idx = self.viz_stack.currentIndex()
+        if idx == 0:
+            ax = self.canvas_3d.ax
+            canvas = self.canvas_3d
+        elif idx == 4:
+            ax = self.import_canvas.ax
+            canvas = self.import_canvas
+        else:
+            return  # 2D views, ignore
+        ax.view_init(elev=elev, azim=azim)
+        canvas.draw_idle()
 
     # ── Optimization hub tab (sub-tabs) ────────────────────────────────
 
