@@ -986,29 +986,13 @@ class WaveriderGUI(QMainWindow):
         ax = self.import_canvas.ax
         ax.clear()
 
-        # Split into upper and lower by centroid Y relative to midpoint
-        centroids = verts[faces].mean(axis=1)  # (N_faces, 3)
-        y_mid = (centroids[:, 1].min() + centroids[:, 1].max()) / 2.0
-        upper_mask = centroids[:, 1] >= y_mid
-
-        upper_faces = faces[upper_mask]
-        lower_faces = faces[~upper_mask]
-
-        # Use plot_trisurf for proper depth sorting and smooth rendering
-        if len(upper_faces) > 0:
-            ax.plot_trisurf(
-                verts[:, 0], verts[:, 1], verts[:, 2],
-                triangles=upper_faces,
-                color='cyan', alpha=0.8, edgecolor='none',
-                shade=True, antialiased=True,
-            )
-        if len(lower_faces) > 0:
-            ax.plot_trisurf(
-                verts[:, 0], verts[:, 1], verts[:, 2],
-                triangles=lower_faces,
-                color='orange', alpha=0.8, edgecolor='none',
-                shade=True, antialiased=True,
-            )
+        # Single solid surface in Kilia amber/gold
+        ax.plot_trisurf(
+            verts[:, 0], verts[:, 1], verts[:, 2],
+            triangles=faces,
+            color='#F59E0B', alpha=1.0, edgecolor='none',
+            shade=True, antialiased=True,
+        )
 
         all_pts = verts
         for dim, setter in enumerate([ax.set_xlim, ax.set_ylim, ax.set_zlim]):
