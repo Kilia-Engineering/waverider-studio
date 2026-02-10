@@ -948,11 +948,28 @@ class WaveriderGUI(QMainWindow):
 
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+        # Compute face normals to classify upper vs lower surface
+        v0 = vectors[:, 0, :]
+        v1 = vectors[:, 1, :]
+        v2 = vectors[:, 2, :]
+        normals = np.cross(v1 - v0, v2 - v0)
+        # Y-component of normal: positive = upper surface, negative = lower
+        ny = normals[:, 1]
+
+        upper_mask = ny >= 0
+        lower_mask = ~upper_mask
+
+        # Color per face: cyan for upper, orange for lower (matching generation)
+        face_colors = np.where(
+            upper_mask[:, np.newaxis],
+            np.array([[0.0, 1.0, 1.0, 0.8]]),    # cyan, alpha=0.8
+            np.array([[1.0, 0.65, 0.0, 0.8]]),    # orange, alpha=0.8
+        )
+
         collection = Poly3DCollection(
             vectors,
-            facecolors="#F59E0B",
+            facecolors=face_colors,
             edgecolors="none",
-            alpha=0.8,
             linewidths=0,
         )
         ax.add_collection3d(collection)
