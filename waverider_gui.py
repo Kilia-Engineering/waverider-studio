@@ -983,16 +983,40 @@ class WaveriderGUI(QMainWindow):
         geo = self.imported_geometry
         verts = geo["vertices"]
         faces = geo["faces"]
+        vectors = geo["vectors"]
         ax = self.import_canvas.ax
         ax.clear()
 
-        # Single solid surface in Kilia amber/gold
-        ax.plot_trisurf(
-            verts[:, 0], verts[:, 1], verts[:, 2],
-            triangles=faces,
-            color='#F59E0B', alpha=1.0, edgecolor='none',
-            shade=True, antialiased=True,
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        from matplotlib.colors import LightSource
+
+        # Compute face normals for shading
+        v0, v1, v2 = vectors[:, 0], vectors[:, 1], vectors[:, 2]
+        normals = np.cross(v1 - v0, v2 - v0)
+        norms = np.linalg.norm(normals, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        normals = normals / norms
+
+        # Simple diffuse shading from a light source direction
+        light_dir = np.array([0.5, 1.0, 0.8])
+        light_dir = light_dir / np.linalg.norm(light_dir)
+        intensity = np.abs(normals @ light_dir)
+        intensity = 0.35 + 0.65 * intensity  # ambient + diffuse
+
+        # Base color: Kilia amber #F59E0B = (0.961, 0.620, 0.043)
+        base = np.array([0.961, 0.620, 0.043])
+        face_colors = np.zeros((len(vectors), 4))
+        face_colors[:, :3] = base[np.newaxis, :] * intensity[:, np.newaxis]
+        face_colors[:, 3] = 1.0  # fully opaque
+
+        collection = Poly3DCollection(
+            vectors,
+            facecolors=face_colors,
+            edgecolors='face',  # edges match face color = invisible
+            linewidths=0,
+            zsort='average',
         )
+        ax.add_collection3d(collection)
 
         all_pts = verts
         for dim, setter in enumerate([ax.set_xlim, ax.set_ylim, ax.set_zlim]):
