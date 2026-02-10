@@ -13,7 +13,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QMessageBox, QTabWidget, QCheckBox, QSpinBox,
                              QProgressBar, QTextEdit, QFileDialog, QInputDialog,
                              QMenuBar, QAction, QComboBox, QSplitter, QFrame,
-                             QStackedWidget, QDialog, QDialogButtonBox)
+                             QStackedWidget, QDialog, QDialogButtonBox,
+                             QScrollArea)
 from PyQt5.QtCore import Qt, pyqtSignal, QThread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -1708,12 +1709,12 @@ class WaveriderGUI(QMainWindow):
 
         # Genetic Algorithm Optimization
         self.optimization_tab = OptimizationTab(parent=self)
-        sub_tabs.addTab(self.optimization_tab, "Genetic Algorithm")
+        sub_tabs.addTab(self._scrollable(self.optimization_tab), "Genetic Algorithm")
 
         # Surrogate Optimization
         if SURROGATE_AVAILABLE:
             self.surrogate_tab = SurrogateTab(parent=self)
-            sub_tabs.addTab(self.surrogate_tab, "Surrogate")
+            sub_tabs.addTab(self._scrollable(self.surrogate_tab), "Surrogate")
         else:
             sub_tabs.addTab(
                 self._placeholder_widget(
@@ -1727,7 +1728,7 @@ class WaveriderGUI(QMainWindow):
         # Off-Design NN
         if OFFDESIGN_SURROGATE_AVAILABLE:
             self.offdesign_tab = OffDesignSurrogateTab(parent=self)
-            sub_tabs.addTab(self.offdesign_tab, "Off-Design NN")
+            sub_tabs.addTab(self._scrollable(self.offdesign_tab), "Off-Design NN")
         else:
             sub_tabs.addTab(
                 self._placeholder_widget(
@@ -1745,10 +1746,18 @@ class WaveriderGUI(QMainWindow):
         # Multi-Mach Hunter
         if MULTIMACH_HUNTER_AVAILABLE:
             self.multimach_tab = MultiMachHunterTab(parent=self)
-            sub_tabs.addTab(self.multimach_tab, "Multi-Mach")
+            sub_tabs.addTab(self._scrollable(self.multimach_tab), "Multi-Mach")
 
         layout.addWidget(sub_tabs)
         return tab
+
+    def _scrollable(self, widget):
+        """Wrap a widget in a QScrollArea."""
+        scroll = QScrollArea()
+        scroll.setWidget(widget)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        return scroll
 
     def _placeholder_widget(self, message):
         """Create a placeholder widget with a warning message."""
