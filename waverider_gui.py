@@ -1564,10 +1564,10 @@ class WaveriderGUI(QMainWindow):
         tab_opt = self._create_optimization_hub_tab()
         self.tab_widget.addTab(tab_opt, "Optimization")
 
-        # ── Tab 4: SHADOW Waverider ──
+        # ── Tab 4: Cone-derived Waverider ──
         if CONE_WAVERIDER_AVAILABLE:
             self.shadow_waverider_tab = ShadowWaveriderTab(parent=self)
-            self.tab_widget.addTab(self.shadow_waverider_tab, "SHADOW Waverider")
+            self.tab_widget.addTab(self.shadow_waverider_tab, "Cone-derived Waverider")
 
         layout.addWidget(self.tab_widget)
         return panel
