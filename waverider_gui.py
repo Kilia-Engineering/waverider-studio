@@ -7,11 +7,12 @@ Allows real-time parameter adjustment and 3D visualization
 import sys
 import os
 import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QLabel, QLineEdit, QPushButton,
                              QGroupBox, QGridLayout, QSlider, QDoubleSpinBox,
                              QMessageBox, QTabWidget, QCheckBox, QSpinBox,
-                             QProgressBar, QTextEdit, QFileDialog, QInputDialog)
+                             QProgressBar, QTextEdit, QFileDialog, QInputDialog,
+                             QMenuBar, QAction, QComboBox, QSplitter, QFrame)
 from PyQt5.QtCore import Qt, pyqtSignal, QThread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -680,29 +681,501 @@ class WaveriderGUI(QMainWindow):
         self.waverider_volume = 0.0  # Stored volume in m³
         self.analysis_worker = None
         self.last_stl_file = None
+        # Imported geometry state
+        self.imported_geometry = None       # trimesh.Trimesh or dict with vertices/faces
+        self.imported_geometry_path = None  # Original file path
+        self.imported_step_path = None      # Path to STEP file (if imported STEP)
+        self.imported_stl_path = None       # Path to STL (imported or converted)
         self.init_ui()
         
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle('Interactive Waverider Design Tool')
         self.setGeometry(100, 100, 1600, 900)
-        
+
+        # Menu bar
+        self._create_menu_bar()
+
         # Main widget and layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
-        
+
         # Left panel - Parameters
         left_panel = self.create_parameter_panel()
         main_layout.addWidget(left_panel, 1)
-        
+
         # Right panel - Visualization
         right_panel = self.create_visualization_panel()
         main_layout.addWidget(right_panel, 3)
-        
+
         # Set default values
         self.set_default_parameters()
         
+    # ---- Menu bar -------------------------------------------------------
+
+    def _create_menu_bar(self):
+        """Create the application menu bar."""
+        menubar = self.menuBar()
+
+        # --- File menu ---
+        file_menu = menubar.addMenu("File")
+
+        import_action = QAction("Import Geometry...", self)
+        import_action.setShortcut("Ctrl+I")
+        import_action.setStatusTip("Import STL, STEP, or OBJ geometry")
+        import_action.triggered.connect(self.import_geometry)
+        file_menu.addAction(import_action)
+
+        file_menu.addSeparator()
+
+        export_action = QAction("Export CAD...", self)
+        export_action.setShortcut("Ctrl+E")
+        export_action.triggered.connect(self.export_cad)
+        file_menu.addAction(export_action)
+
+    # ---- Geometry import ------------------------------------------------
+
+    def import_geometry(self):
+        """Open a file dialog and import a geometry file (STL / STEP / OBJ)."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Geometry",
+            "",
+            "All Supported (*.stl *.step *.stp *.obj);;"
+            "STL files (*.stl);;"
+            "STEP files (*.step *.stp);;"
+            "OBJ files (*.obj);;"
+            "All files (*)",
+        )
+        if not filepath:
+            return
+
+        ext = os.path.splitext(filepath)[1].lower()
+        try:
+            if ext == ".stl":
+                self._import_stl(filepath)
+            elif ext in (".step", ".stp"):
+                self._import_step(filepath)
+            elif ext == ".obj":
+                self._import_obj(filepath)
+            else:
+                QMessageBox.warning(
+                    self, "Unsupported format",
+                    f"File format '{ext}' is not supported.\n"
+                    "Supported formats: STL, STEP, OBJ",
+                )
+                return
+
+            self.imported_geometry_path = filepath
+            name = os.path.basename(filepath)
+
+            # Switch to the imported geometry tab
+            for i in range(self.tab_widget.count()):
+                if self.tab_widget.tabText(i) == "📦 Imported Geometry":
+                    self.tab_widget.setCurrentIndex(i)
+                    break
+
+            # Update the info panel
+            self._update_import_info()
+
+            QMessageBox.information(
+                self, "Import Successful",
+                f"Successfully imported: {name}\n\n"
+                f"Triangles: {len(self.imported_geometry['faces']):,}\n"
+                f"Vertices: {len(self.imported_geometry['vertices']):,}",
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Import Failed",
+                f"Could not import geometry:\n\n{str(e)}",
+            )
+
+    def _import_stl(self, filepath):
+        """Import an STL file."""
+        from stl import mesh as stl_mesh
+
+        mesh_data = stl_mesh.Mesh.from_file(filepath)
+        vectors = mesh_data.vectors  # (N, 3, 3)
+
+        # Deduplicate vertices and build face indices
+        all_verts = vectors.reshape(-1, 3)
+        unique_verts, inverse = np.unique(
+            np.round(all_verts, decimals=10), axis=0, return_inverse=True
+        )
+        faces = inverse.reshape(-1, 3)
+
+        self.imported_geometry = {
+            "vertices": unique_verts,
+            "faces": faces,
+            "vectors": vectors,  # keep raw triangles for fast plotting
+        }
+        self.imported_step_path = None
+        self.imported_stl_path = filepath
+
+    def _import_step(self, filepath):
+        """Import a STEP file via CadQuery, then tessellate to mesh."""
+        import cadquery as cq
+
+        shape = cq.importers.importStep(filepath)
+        # Tessellate to get triangular mesh
+        verts_list, faces_list = [], []
+        offset = 0
+        for solid in shape.solids().vals():
+            tess = solid.tessellate(tolerance=0.001)
+            v = np.array(tess[0])
+            f = np.array(tess[1]) + offset
+            verts_list.append(v)
+            faces_list.append(f)
+            offset += len(v)
+
+        vertices = np.vstack(verts_list)
+        faces = np.vstack(faces_list)
+
+        # Build raw triangle vectors for plotting
+        vectors = vertices[faces]
+
+        self.imported_geometry = {
+            "vertices": vertices,
+            "faces": faces,
+            "vectors": vectors,
+        }
+        self.imported_step_path = filepath
+        self.imported_stl_path = None
+
+    def _import_obj(self, filepath):
+        """Import an OBJ file via trimesh."""
+        try:
+            import trimesh
+        except ImportError:
+            raise ImportError(
+                "trimesh is required for OBJ import.\n"
+                "Install with: pip install trimesh"
+            )
+
+        mesh = trimesh.load_mesh(filepath)
+        vertices = np.array(mesh.vertices)
+        faces = np.array(mesh.faces)
+        vectors = vertices[faces]
+
+        self.imported_geometry = {
+            "vertices": vertices,
+            "faces": faces,
+            "vectors": vectors,
+        }
+        self.imported_step_path = None
+        self.imported_stl_path = None
+
+    def _update_import_info(self):
+        """Update the imported geometry info labels."""
+        if self.imported_geometry is None:
+            return
+
+        geo = self.imported_geometry
+        verts = geo["vertices"]
+        faces = geo["faces"]
+        name = os.path.basename(self.imported_geometry_path) if self.imported_geometry_path else "N/A"
+        ext = os.path.splitext(name)[1].upper() if name else ""
+
+        bounds_min = verts.min(axis=0)
+        bounds_max = verts.max(axis=0)
+        dims = bounds_max - bounds_min
+
+        self.import_file_label.setText(f"File: {name}")
+        self.import_format_label.setText(f"Format: {ext}")
+        self.import_verts_label.setText(f"Vertices: {len(verts):,}")
+        self.import_faces_label.setText(f"Triangles: {len(faces):,}")
+        self.import_dims_label.setText(
+            f"Dimensions: {dims[0]:.4f} x {dims[1]:.4f} x {dims[2]:.4f} m"
+        )
+        self.import_bounds_label.setText(
+            f"Bounds: [{bounds_min[0]:.4f}, {bounds_max[0]:.4f}] x "
+            f"[{bounds_min[1]:.4f}, {bounds_max[1]:.4f}] x "
+            f"[{bounds_min[2]:.4f}, {bounds_max[2]:.4f}]"
+        )
+
+        # Enable action buttons
+        self.import_mesh_btn.setEnabled(True)
+        self.import_analyze_btn.setEnabled(self.imported_stl_path is not None)
+        self.import_export_btn.setEnabled(True)
+
+        # Visualize
+        self._visualize_imported_geometry()
+
+    def _visualize_imported_geometry(self):
+        """Plot the imported geometry in the 3D canvas."""
+        if self.imported_geometry is None:
+            return
+
+        vectors = self.imported_geometry["vectors"]
+        ax = self.import_canvas.ax
+        ax.clear()
+
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+        collection = Poly3DCollection(
+            vectors,
+            facecolors="#F59E0B",
+            edgecolors="#78350F",
+            alpha=0.6,
+            linewidths=0.2,
+        )
+        ax.add_collection3d(collection)
+
+        all_pts = vectors.reshape(-1, 3)
+        for dim, setter in enumerate([ax.set_xlim, ax.set_ylim, ax.set_zlim]):
+            pmin, pmax = all_pts[:, dim].min(), all_pts[:, dim].max()
+            pad = max((pmax - pmin) * 0.1, 1e-6)
+            setter(pmin - pad, pmax + pad)
+
+        try:
+            ax.set_box_aspect([
+                np.ptp(all_pts[:, 0]),
+                np.ptp(all_pts[:, 1]),
+                np.ptp(all_pts[:, 2]),
+            ])
+        except Exception:
+            pass
+
+        name = os.path.basename(self.imported_geometry_path) if self.imported_geometry_path else "Imported"
+        ax.set_title(f"{name} ({len(vectors):,} triangles)")
+        ax.set_xlabel("X [m]")
+        ax.set_ylabel("Y [m]")
+        ax.set_zlabel("Z [m]")
+        ax.view_init(elev=20, azim=45)
+        self.import_canvas.fig.tight_layout()
+        self.import_canvas.draw()
+
+    # ---- Imported geometry actions ---------------------------------------
+
+    def _import_mesh_gmsh(self):
+        """Re-mesh imported geometry with Gmsh."""
+        if self.imported_geometry is None:
+            QMessageBox.warning(self, "No geometry", "Import a geometry first.")
+            return
+
+        try:
+            import gmsh
+        except ImportError:
+            QMessageBox.warning(
+                self, "Gmsh not installed",
+                "Gmsh is required for meshing.\nInstall with: pip install gmsh",
+            )
+            return
+
+        import tempfile
+
+        # We need a STEP or STL on disk to feed Gmsh
+        if self.imported_step_path and os.path.exists(self.imported_step_path):
+            input_file = self.imported_step_path
+        elif self.imported_stl_path and os.path.exists(self.imported_stl_path):
+            input_file = self.imported_stl_path
+        else:
+            # Write current mesh as temporary STL
+            input_file = tempfile.NamedTemporaryFile(suffix=".stl", delete=False).name
+            self._save_imported_as_stl(input_file)
+
+        min_size = self.import_mesh_min_spin.value()
+        max_size = self.import_mesh_max_spin.value()
+
+        out_stl, _ = QFileDialog.getSaveFileName(
+            self, "Save Meshed STL",
+            "imported_mesh.stl",
+            "STL files (*.stl);;All files (*)",
+        )
+        if not out_stl:
+            return
+
+        try:
+            self.import_status_label.setText("Meshing with Gmsh...")
+            self.import_status_label.setStyleSheet("color: #F59E0B;")
+            QApplication.processEvents()
+
+            gmsh.initialize()
+            gmsh.option.setNumber("General.Terminal", 1)
+            gmsh.merge(input_file)
+            gmsh.option.setNumber("Mesh.MeshSizeMin", min_size)
+            gmsh.option.setNumber("Mesh.MeshSizeMax", max_size)
+            gmsh.model.mesh.generate(2)
+            gmsh.write(out_stl)
+
+            # Read stats
+            node_tags, _, _ = gmsh.model.mesh.getNodes()
+            elem_types, elem_tags, _ = gmsh.model.mesh.getElements(dim=2)
+            n_triangles = sum(len(t) for t in elem_tags)
+            n_nodes = len(node_tags)
+            gmsh.finalize()
+
+            file_size = os.path.getsize(out_stl) / 1024
+
+            self.imported_stl_path = out_stl
+            self.import_analyze_btn.setEnabled(True)
+
+            self.import_status_label.setText("Meshing complete!")
+            self.import_status_label.setStyleSheet("color: #4ADE80;")
+
+            # Reload the meshed geometry for visualization
+            self._import_stl(out_stl)
+            self.imported_geometry_path = self.imported_geometry_path  # keep original name
+            self._update_import_info()
+
+            QMessageBox.information(
+                self, "Mesh Generated",
+                f"Gmsh meshing complete!\n\n"
+                f"Triangles: {n_triangles:,}\n"
+                f"Nodes: {n_nodes:,}\n"
+                f"File size: {file_size:.1f} KB\n"
+                f"Saved to: {out_stl}",
+            )
+
+        except Exception as e:
+            try:
+                gmsh.finalize()
+            except Exception:
+                pass
+            self.import_status_label.setText(f"Meshing failed: {str(e)}")
+            self.import_status_label.setStyleSheet("color: #EF4444;")
+            QMessageBox.critical(self, "Meshing Failed", str(e))
+
+    def _import_run_analysis(self):
+        """Run PySAGAS analysis on imported geometry."""
+        if not PYSAGAS_AVAILABLE:
+            QMessageBox.warning(
+                self, "PySAGAS not available",
+                "PySAGAS is required for aerodynamic analysis.\n"
+                "Install with: pip install pysagas",
+            )
+            return
+
+        if self.imported_stl_path is None or not os.path.exists(self.imported_stl_path):
+            QMessageBox.warning(
+                self, "No STL mesh",
+                "An STL mesh is required for PySAGAS analysis.\n\n"
+                "If you imported a STEP or OBJ file, please mesh it first\n"
+                "using the 'Mesh with Gmsh' button.",
+            )
+            return
+
+        # Get analysis parameters from the import panel spinboxes
+        aoa = self.import_aoa_spin.value()
+        mach = self.import_mach_spin.value()
+        pressure = self.import_pressure_spin.value()
+        temperature = self.import_temp_spin.value()
+        a_ref = self.import_aref_spin.value()
+
+        freestream_dict = {
+            "mach": mach,
+            "pressure": pressure,
+            "temperature": temperature,
+        }
+
+        self.import_analyze_btn.setEnabled(False)
+        self.import_status_label.setText("Running PySAGAS analysis...")
+        self.import_status_label.setStyleSheet("color: #F59E0B;")
+        QApplication.processEvents()
+
+        self.import_analysis_worker = AnalysisWorker(
+            self.imported_stl_path, freestream_dict, aoa, a_ref
+        )
+        self.import_analysis_worker.finished.connect(self._on_import_analysis_done)
+        self.import_analysis_worker.error.connect(self._on_import_analysis_error)
+        self.import_analysis_worker.start()
+
+    def _on_import_analysis_done(self, results):
+        """Handle completed analysis for imported geometry."""
+        self.import_analyze_btn.setEnabled(True)
+        self.import_status_label.setText("Analysis complete!")
+        self.import_status_label.setStyleSheet("color: #4ADE80;")
+
+        CL = results.get("CL", 0)
+        CD = results.get("CD", 0)
+        Cm = results.get("Cm", 0)
+        LD = CL / CD if CD != 0 else 0
+
+        text = (
+            f"PySAGAS Aerodynamic Analysis Results\n"
+            f"{'='*45}\n\n"
+            f"  Mach:           {self.import_mach_spin.value():.2f}\n"
+            f"  AoA:            {self.import_aoa_spin.value():.1f} deg\n"
+            f"  Pressure:       {self.import_pressure_spin.value():.0f} Pa\n"
+            f"  Temperature:    {self.import_temp_spin.value():.0f} K\n"
+            f"  A_ref:          {self.import_aref_spin.value():.4f} m²\n\n"
+            f"  CL:             {CL:.6f}\n"
+            f"  CD:             {CD:.6f}\n"
+            f"  Cm:             {Cm:.6f}\n"
+            f"  L/D:            {LD:.4f}\n"
+        )
+
+        QMessageBox.information(self, "Analysis Results", text)
+
+    def _on_import_analysis_error(self, error_msg):
+        """Handle analysis error for imported geometry."""
+        self.import_analyze_btn.setEnabled(True)
+        self.import_status_label.setText("Analysis failed!")
+        self.import_status_label.setStyleSheet("color: #EF4444;")
+        QMessageBox.critical(self, "Analysis Error", error_msg)
+
+    def _import_export_geometry(self):
+        """Export imported geometry to a different format."""
+        if self.imported_geometry is None:
+            QMessageBox.warning(self, "No geometry", "Import a geometry first.")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Geometry",
+            "exported_geometry.stl",
+            "STL files (*.stl);;"
+            "OBJ files (*.obj);;"
+            "All files (*)",
+        )
+        if not filepath:
+            return
+
+        ext = os.path.splitext(filepath)[1].lower()
+        try:
+            if ext == ".stl":
+                self._save_imported_as_stl(filepath)
+            elif ext == ".obj":
+                self._save_imported_as_obj(filepath)
+            else:
+                # Default to STL
+                self._save_imported_as_stl(filepath)
+
+            QMessageBox.information(
+                self, "Export Successful",
+                f"Geometry exported to:\n{filepath}",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", str(e))
+
+    def _save_imported_as_stl(self, filepath):
+        """Save imported geometry as STL."""
+        from stl import mesh as stl_mesh
+
+        geo = self.imported_geometry
+        vectors = geo["vectors"]
+        mesh_data = stl_mesh.Mesh(np.zeros(len(vectors), dtype=stl_mesh.Mesh.dtype))
+        mesh_data.vectors = vectors
+        mesh_data.save(filepath)
+
+    def _save_imported_as_obj(self, filepath):
+        """Save imported geometry as OBJ."""
+        geo = self.imported_geometry
+        verts = geo["vertices"]
+        faces = geo["faces"]
+
+        with open(filepath, "w") as f:
+            f.write("# Exported from Waverider Design Tool\n")
+            for v in verts:
+                f.write(f"v {v[0]:.8f} {v[1]:.8f} {v[2]:.8f}\n")
+            for face in faces:
+                # OBJ faces are 1-indexed
+                f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+
+    # ---- End geometry import section -------------------------------------
+
     def create_parameter_panel(self):
         """Create the parameter input panel"""
         panel = QWidget()
@@ -1025,6 +1498,10 @@ class WaveriderGUI(QMainWindow):
         layout_geom.addWidget(self.canvas_geom)
         self.tab_widget.addTab(tab_geom, "Geometry Schematic")
 
+        # Imported Geometry tab
+        tab_import = self._create_import_tab()
+        self.tab_widget.addTab(tab_import, "📦 Imported Geometry")
+
         # Aero Analysis tab
         tab_analysis = self.create_analysis_tab()
         self.tab_widget.addTab(tab_analysis, "🔬 Aero Analysis")
@@ -1116,6 +1593,150 @@ class WaveriderGUI(QMainWindow):
         
         return panel
     
+
+    def _create_import_tab(self):
+        """Create the Imported Geometry tab with viewer and controls."""
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        # --- Left: controls panel ---
+        controls = QWidget()
+        controls.setMaximumWidth(320)
+        ctrl_layout = QVBoxLayout(controls)
+
+        # Import button
+        import_btn = QPushButton("📂 Import Geometry...")
+        import_btn.setStyleSheet(
+            "QPushButton { background-color: #F59E0B; color: #0A0A0A;"
+            "font-weight: bold; padding: 10px; }"
+        )
+        import_btn.clicked.connect(self.import_geometry)
+        ctrl_layout.addWidget(import_btn)
+
+        # File info group
+        info_group = QGroupBox("Geometry Info")
+        info_layout = QVBoxLayout()
+        self.import_file_label = QLabel("File: -")
+        self.import_format_label = QLabel("Format: -")
+        self.import_verts_label = QLabel("Vertices: -")
+        self.import_faces_label = QLabel("Triangles: -")
+        self.import_dims_label = QLabel("Dimensions: -")
+        self.import_dims_label.setWordWrap(True)
+        self.import_bounds_label = QLabel("Bounds: -")
+        self.import_bounds_label.setWordWrap(True)
+        self.import_bounds_label.setStyleSheet("color: #888888; font-size: 10px;")
+        for lbl in [
+            self.import_file_label,
+            self.import_format_label,
+            self.import_verts_label,
+            self.import_faces_label,
+            self.import_dims_label,
+            self.import_bounds_label,
+        ]:
+            info_layout.addWidget(lbl)
+        info_group.setLayout(info_layout)
+        ctrl_layout.addWidget(info_group)
+
+        # Gmsh meshing group
+        mesh_group = QGroupBox("Gmsh Meshing")
+        mesh_layout = QGridLayout()
+        mesh_layout.addWidget(QLabel("Min size [m]:"), 0, 0)
+        self.import_mesh_min_spin = QDoubleSpinBox()
+        self.import_mesh_min_spin.setRange(0.0001, 1.0)
+        self.import_mesh_min_spin.setValue(0.005)
+        self.import_mesh_min_spin.setDecimals(4)
+        self.import_mesh_min_spin.setSingleStep(0.001)
+        mesh_layout.addWidget(self.import_mesh_min_spin, 0, 1)
+
+        mesh_layout.addWidget(QLabel("Max size [m]:"), 1, 0)
+        self.import_mesh_max_spin = QDoubleSpinBox()
+        self.import_mesh_max_spin.setRange(0.001, 10.0)
+        self.import_mesh_max_spin.setValue(0.05)
+        self.import_mesh_max_spin.setDecimals(4)
+        self.import_mesh_max_spin.setSingleStep(0.005)
+        mesh_layout.addWidget(self.import_mesh_max_spin, 1, 1)
+
+        self.import_mesh_btn = QPushButton("Mesh with Gmsh")
+        self.import_mesh_btn.setEnabled(False)
+        self.import_mesh_btn.clicked.connect(self._import_mesh_gmsh)
+        mesh_layout.addWidget(self.import_mesh_btn, 2, 0, 1, 2)
+        mesh_group.setLayout(mesh_layout)
+        ctrl_layout.addWidget(mesh_group)
+
+        # Analysis group
+        analysis_group = QGroupBox("PySAGAS Analysis")
+        analysis_layout = QGridLayout()
+
+        analysis_layout.addWidget(QLabel("Mach:"), 0, 0)
+        self.import_mach_spin = QDoubleSpinBox()
+        self.import_mach_spin.setRange(1.1, 30.0)
+        self.import_mach_spin.setValue(5.0)
+        self.import_mach_spin.setSingleStep(0.1)
+        analysis_layout.addWidget(self.import_mach_spin, 0, 1)
+
+        analysis_layout.addWidget(QLabel("AoA (deg):"), 1, 0)
+        self.import_aoa_spin = QDoubleSpinBox()
+        self.import_aoa_spin.setRange(-10.0, 30.0)
+        self.import_aoa_spin.setValue(0.0)
+        self.import_aoa_spin.setSingleStep(0.5)
+        analysis_layout.addWidget(self.import_aoa_spin, 1, 1)
+
+        analysis_layout.addWidget(QLabel("Pressure (Pa):"), 2, 0)
+        self.import_pressure_spin = QDoubleSpinBox()
+        self.import_pressure_spin.setRange(1.0, 200000.0)
+        self.import_pressure_spin.setValue(1197.0)
+        self.import_pressure_spin.setDecimals(1)
+        analysis_layout.addWidget(self.import_pressure_spin, 2, 1)
+
+        analysis_layout.addWidget(QLabel("Temperature (K):"), 3, 0)
+        self.import_temp_spin = QDoubleSpinBox()
+        self.import_temp_spin.setRange(50.0, 3000.0)
+        self.import_temp_spin.setValue(227.0)
+        self.import_temp_spin.setDecimals(1)
+        analysis_layout.addWidget(self.import_temp_spin, 3, 1)
+
+        analysis_layout.addWidget(QLabel("A_ref (m²):"), 4, 0)
+        self.import_aref_spin = QDoubleSpinBox()
+        self.import_aref_spin.setRange(0.0001, 100.0)
+        self.import_aref_spin.setValue(1.0)
+        self.import_aref_spin.setDecimals(4)
+        self.import_aref_spin.setSingleStep(0.01)
+        analysis_layout.addWidget(self.import_aref_spin, 4, 1)
+
+        self.import_analyze_btn = QPushButton("Run PySAGAS")
+        self.import_analyze_btn.setEnabled(False)
+        self.import_analyze_btn.clicked.connect(self._import_run_analysis)
+        analysis_layout.addWidget(self.import_analyze_btn, 5, 0, 1, 2)
+        analysis_group.setLayout(analysis_layout)
+        ctrl_layout.addWidget(analysis_group)
+
+        # Export button
+        self.import_export_btn = QPushButton("Export As...")
+        self.import_export_btn.setEnabled(False)
+        self.import_export_btn.clicked.connect(self._import_export_geometry)
+        ctrl_layout.addWidget(self.import_export_btn)
+
+        # Status label
+        self.import_status_label = QLabel("")
+        self.import_status_label.setStyleSheet("color: #888888; font-style: italic;")
+        ctrl_layout.addWidget(self.import_status_label)
+
+        ctrl_layout.addStretch()
+        layout.addWidget(controls)
+
+        # --- Right: 3D viewer ---
+        viewer = QWidget()
+        viewer_layout = QVBoxLayout(viewer)
+
+        self.import_canvas = MeshCanvas()
+        self.import_canvas.ax.set_title("Import a geometry to visualize")
+        import_toolbar = NavigationToolbar(self.import_canvas, viewer)
+        viewer_layout.addWidget(import_toolbar)
+        viewer_layout.addWidget(self.import_canvas)
+
+        layout.addWidget(viewer, 1)
+
+        return tab
 
     def create_analysis_tab(self):
         """Create the PySAGAS analysis tab"""

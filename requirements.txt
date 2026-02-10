@@ -8,6 +8,7 @@ PyQt5
 # CAD and geometry
 cadquery
 numpy-stl
+trimesh
 
 # Optimization
 pymoo
