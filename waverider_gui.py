@@ -1619,13 +1619,13 @@ class WaveriderGUI(QMainWindow):
         cam_label = QLabel("Camera:")
         camera_bar.addWidget(cam_label)
         cam_presets = [
-            ("Top",         90, -90),
-            ("Bottom",     -90, -90),
-            ("Front",        0,   0),
-            ("Back",         0, 180),
-            ("Left",         0, -90),
-            ("Right",        0,  90),
-            ("Perspective", 20,  45),
+            ("Top",          90,    0),
+            ("Bottom",      -90,    0),
+            ("Front",         0,  180),
+            ("Back",          0,    0),
+            ("Left",          0,   90),
+            ("Right",         0,  -90),
+            ("Perspective",  20,   45),
         ]
         self._cam_buttons = []
         for name, elev, azim in cam_presets:
