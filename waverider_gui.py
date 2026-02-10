@@ -195,11 +195,30 @@ class WaveriderCanvas(FigureCanvas):
         super().__init__(self.fig)
         self.setParent(parent)
 
+        # Mouse-wheel zoom
+        self.mpl_connect('scroll_event', self._on_scroll)
+
         # Initialize plot
         self.ax.set_xlabel('X (Streamwise) [m]')
         self.ax.set_ylabel('Y (Vertical) [m]')
         self.ax.set_zlabel('Z (Spanwise) [m]')
         self.ax.set_title('Waverider 3D Visualization')
+
+    def _on_scroll(self, event):
+        """Zoom in/out on mouse wheel scroll."""
+        if event.inaxes != self.ax:
+            return
+        factor = 0.9 if event.button == 'up' else 1.1
+        for getter, setter in [
+            (self.ax.get_xlim, self.ax.set_xlim),
+            (self.ax.get_ylim, self.ax.set_ylim),
+            (self.ax.get_zlim, self.ax.set_zlim),
+        ]:
+            lo, hi = getter()
+            mid = (lo + hi) / 2
+            half = (hi - lo) / 2 * factor
+            setter(mid - half, mid + half)
+        self.draw_idle()
         
     def plot_waverider(self, waverider_obj, show_upper=True, show_lower=True, 
                       show_le=True, show_wireframe=False):
@@ -595,11 +614,30 @@ class MeshCanvas(FigureCanvas):
         # Enable mouse interaction
         self.ax.mouse_init()
 
+        # Mouse-wheel zoom
+        self.mpl_connect('scroll_event', self._on_scroll)
+
         # Show axes (reverted from previous change)
         self.ax.set_xlabel('X [m]')
         self.ax.set_ylabel('Y [m]')
         self.ax.set_zlabel('Z [m]')
         self.ax.set_title('STL Mesh Preview')
+
+    def _on_scroll(self, event):
+        """Zoom in/out on mouse wheel scroll."""
+        if event.inaxes != self.ax:
+            return
+        factor = 0.9 if event.button == 'up' else 1.1
+        for getter, setter in [
+            (self.ax.get_xlim, self.ax.set_xlim),
+            (self.ax.get_ylim, self.ax.set_ylim),
+            (self.ax.get_zlim, self.ax.set_zlim),
+        ]:
+            lo, hi = getter()
+            mid = (lo + hi) / 2
+            half = (hi - lo) / 2 * factor
+            setter(mid - half, mid + half)
+        self.draw_idle()
 
     def plot_stl_mesh(self, stl_file):
         """Load and plot an STL file"""
