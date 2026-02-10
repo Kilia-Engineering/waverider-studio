@@ -832,7 +832,7 @@ class WaveriderGUI(QMainWindow):
         verts_list, faces_list = [], []
         offset = 0
         for solid in solids:
-            tess = solid.tessellate(tolerance=0.001)
+            tess = solid.tessellate(tolerance=0.0001, angularTolerance=0.1)
             # tess[0] is a list of cq.Vector objects – convert explicitly
             v = np.array([(pt.x, pt.y, pt.z) for pt in tess[0]])
             f = np.array(tess[1]) + offset
@@ -942,33 +942,37 @@ class WaveriderGUI(QMainWindow):
         if self.imported_geometry is None:
             return
 
-        vectors = self.imported_geometry["vectors"]
+        geo = self.imported_geometry
+        verts = geo["vertices"]
+        faces = geo["faces"]
         ax = self.import_canvas.ax
         ax.clear()
 
-        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-
-        # Classify upper vs lower by triangle centroid Y relative to midpoint
-        centroids = vectors.mean(axis=1)  # (N, 3)
+        # Split into upper and lower by centroid Y relative to midpoint
+        centroids = verts[faces].mean(axis=1)  # (N_faces, 3)
         y_mid = (centroids[:, 1].min() + centroids[:, 1].max()) / 2.0
         upper_mask = centroids[:, 1] >= y_mid
 
-        # Color per face: cyan for upper, orange for lower (matching generation)
-        face_colors = np.where(
-            upper_mask[:, np.newaxis],
-            np.array([[0.0, 1.0, 1.0, 0.8]]),    # cyan, alpha=0.8
-            np.array([[1.0, 0.65, 0.0, 0.8]]),    # orange, alpha=0.8
-        )
+        upper_faces = faces[upper_mask]
+        lower_faces = faces[~upper_mask]
 
-        collection = Poly3DCollection(
-            vectors,
-            facecolors=face_colors,
-            edgecolors="none",
-            linewidths=0,
-        )
-        ax.add_collection3d(collection)
+        # Use plot_trisurf for proper depth sorting and smooth rendering
+        if len(upper_faces) > 0:
+            ax.plot_trisurf(
+                verts[:, 0], verts[:, 1], verts[:, 2],
+                triangles=upper_faces,
+                color='cyan', alpha=0.8, edgecolor='none',
+                shade=True, antialiased=True,
+            )
+        if len(lower_faces) > 0:
+            ax.plot_trisurf(
+                verts[:, 0], verts[:, 1], verts[:, 2],
+                triangles=lower_faces,
+                color='orange', alpha=0.8, edgecolor='none',
+                shade=True, antialiased=True,
+            )
 
-        all_pts = vectors.reshape(-1, 3)
+        all_pts = verts
         for dim, setter in enumerate([ax.set_xlim, ax.set_ylim, ax.set_zlim]):
             pmin, pmax = all_pts[:, dim].min(), all_pts[:, dim].max()
             pad = max((pmax - pmin) * 0.3, 1e-3)
@@ -981,16 +985,8 @@ class WaveriderGUI(QMainWindow):
         except Exception:
             pass
 
-        # Hide the grey 3D axis panes
-        ax.xaxis.pane.fill = False
-        ax.yaxis.pane.fill = False
-        ax.zaxis.pane.fill = False
-        ax.xaxis.pane.set_edgecolor((1, 1, 1, 0.1))
-        ax.yaxis.pane.set_edgecolor((1, 1, 1, 0.1))
-        ax.zaxis.pane.set_edgecolor((1, 1, 1, 0.1))
-
         name = os.path.basename(self.imported_geometry_path) if self.imported_geometry_path else "Imported"
-        ax.set_title(f"{name} ({len(vectors):,} triangles)")
+        ax.set_title(f"{name} ({len(faces):,} triangles)")
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
         ax.set_zlabel("Z [m]")
