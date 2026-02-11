@@ -111,7 +111,7 @@ Son, J., Son, C., & Yee, K. (2022). A Novel Direct Optimization Framework for Hy
 
 Weaver, A. S. (2025). Investigating Stability of Cone-Derived Hypersonic Waverider Vehicles via Design Space Exploration. Master's Thesis, Utah State University. [digitalcommons.usu.edu/etd2023/485](https://digitalcommons.usu.edu/etd2023/485)
 
-
+Mackle, Kieran & Jahn, Ingo. (2024). Efficient and Flexible Methodology for the Aerodynamic Shape Optimisation of Hypersonic Vehicle Concepts in a High-Dimensional Design Space. AIAA SCITECH 2024 Forum. p. 2838. [doi:10.2514/6.2024-2838](https://doi.org/10.2514/6.2024-2838)
 ## License
 
 [MIT](LICENSE)
