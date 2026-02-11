@@ -420,6 +420,7 @@ class ShadowWaveriderTab(QWidget):
         left_layout.addWidget(self._create_flow_group())
         left_layout.addWidget(self._create_poly_group())
         left_layout.addWidget(self._create_mesh_group())
+        left_layout.addWidget(self._create_blunting_group())
         left_layout.addWidget(self._create_generate_group())
         left_layout.addWidget(self._create_export_group())
         left_layout.addWidget(self._create_analysis_group())
@@ -591,6 +592,139 @@ class ShadowWaveriderTab(QWidget):
         group.setLayout(layout)
         return group
     
+    def _create_blunting_group(self):
+        group = QGroupBox("Leading Edge Blunting")
+        layout = QGridLayout()
+
+        self.blunting_check = QCheckBox("Enable LE blunting")
+        self.blunting_check.setToolTip("Apply circular arc blunting to the sharp leading edge")
+        self.blunting_check.stateChanged.connect(self._on_blunting_toggled)
+        layout.addWidget(self.blunting_check, 0, 0, 1, 2)
+
+        layout.addWidget(QLabel("Radius (m):"), 1, 0)
+        self.blunting_radius_spin = QDoubleSpinBox()
+        self.blunting_radius_spin.setRange(0.0001, 1.0)
+        self.blunting_radius_spin.setValue(0.005)
+        self.blunting_radius_spin.setSingleStep(0.001)
+        self.blunting_radius_spin.setDecimals(4)
+        self.blunting_radius_spin.setEnabled(False)
+        layout.addWidget(self.blunting_radius_spin, 1, 1)
+
+        self.blunting_preview_btn = QPushButton("Preview Blunting")
+        self.blunting_preview_btn.clicked.connect(self._preview_blunting)
+        self.blunting_preview_btn.setEnabled(False)
+        self.blunting_preview_btn.setStyleSheet(
+            "QPushButton { background-color: #1A1A1A; color: #F59E0B; border: 1px solid #78350F; padding: 5px; }"
+            "QPushButton:hover { background-color: #78350F; color: #FFFFFF; }"
+            "QPushButton:disabled { color: #555555; border-color: #333333; }"
+        )
+        layout.addWidget(self.blunting_preview_btn, 2, 0, 1, 2)
+
+        group.setLayout(layout)
+        return group
+
+    def _on_blunting_toggled(self, state):
+        enabled = bool(state)
+        self.blunting_radius_spin.setEnabled(enabled)
+        self.blunting_preview_btn.setEnabled(enabled and self.waverider is not None)
+
+    def _preview_blunting(self):
+        """Show blunted LE preview on the 3D view."""
+        if self.waverider is None:
+            QMessageBox.warning(self, "No waverider", "Generate a waverider first.")
+            return
+
+        radius = self.blunting_radius_spin.value()
+        if radius <= 0:
+            return
+
+        try:
+            wr = self.waverider
+            # ConeWaverider has upper_surface/lower_surface as (n_span, n_stream, 3) arrays
+            # Leading edge is at streamwise index 0
+            original_le = wr.leading_edge  # (n_le, 3)
+
+            # Compute blunted LE points using local tangent information
+            n_le = wr.upper_surface.shape[0]
+            blunted_points = []
+
+            for i in range(n_le):
+                le_pt = wr.upper_surface[i, 0, :]
+                # Upper tangent (downstream from LE)
+                if wr.upper_surface.shape[1] >= 2:
+                    t_u = wr.upper_surface[i, 1, :] - wr.upper_surface[i, 0, :]
+                    n = np.linalg.norm(t_u)
+                    t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
+                else:
+                    t_u = np.array([1, 0, 0], dtype=float)
+
+                if wr.lower_surface.shape[1] >= 2:
+                    t_l = wr.lower_surface[i, 1, :] - wr.lower_surface[i, 0, :]
+                    n = np.linalg.norm(t_l)
+                    t_l = t_l / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
+                else:
+                    t_l = np.array([1, 0, 0], dtype=float)
+
+                bisector = t_u + t_l
+                b_norm = np.linalg.norm(bisector)
+                if b_norm > 1e-12:
+                    bisector = bisector / b_norm
+                else:
+                    bisector = np.array([1, 0, 0], dtype=float)
+
+                cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
+                half_angle = np.arccos(cos_half) / 2.0
+
+                if half_angle < 1e-6:
+                    blunted_points.append(le_pt)
+                    continue
+
+                d_center = radius / np.sin(half_angle)
+                center = le_pt + d_center * bisector
+
+                tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
+                tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
+
+                v_up = tp_upper - center
+                v_lo = tp_lower - center
+                v_up_hat = v_up / (np.linalg.norm(v_up) + 1e-12)
+                v_lo_hat = v_lo / (np.linalg.norm(v_lo) + 1e-12)
+                v_mid = v_up_hat + v_lo_hat
+                v_mid_norm = np.linalg.norm(v_mid)
+                if v_mid_norm > 1e-12:
+                    v_mid = v_mid / v_mid_norm
+                arc_mid = center + radius * v_mid
+                blunted_points.append(arc_mid)
+
+            blunted_le = np.array(blunted_points)
+
+            # Draw on 3D canvas
+            ax = self.canvas_3d.ax
+            for line in list(ax.lines):
+                if hasattr(line, '_blunting_preview'):
+                    line.remove()
+
+            line_orig, = ax.plot(
+                original_le[:, 0], original_le[:, 1], original_le[:, 2],
+                'r--', linewidth=1.5, label='Original LE')
+            line_orig._blunting_preview = True
+
+            line_blunt, = ax.plot(
+                blunted_le[:, 0], blunted_le[:, 1], blunted_le[:, 2],
+                color='#4ADE80', linewidth=2.5, label='Blunted LE')
+            line_blunt._blunting_preview = True
+
+            ax.legend(loc='upper right', fontsize=8)
+            self.canvas_3d.draw()
+
+            self.info_label.setText(
+                f"LE blunting preview: r = {radius:.4f} m | "
+                f"Original (red) vs Blunted (green)")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Preview error",
+                                 f"Failed to preview blunting:\n\n{str(e)}")
+
     def _create_generate_group(self):
         group = QGroupBox("Generate")
         layout = QVBoxLayout()
@@ -844,6 +978,8 @@ class ShadowWaveriderTab(QWidget):
             self.update_view()
             self.update_results()
             self.info_label.setText(f"✓ θc={self.waverider.cone_angle_deg:.1f}°, Area={self.waverider.planform_area:.4f}, L={length:.2f}m")
+            if self.blunting_check.isChecked():
+                self.blunting_preview_btn.setEnabled(True)
             self.waverider_generated.emit(self.waverider)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
@@ -916,8 +1052,11 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         if fn:
             try:
                 scale = self.scale_spin.value()
+                blunting_radius = 0.0
+                if self.blunting_check.isChecked():
+                    blunting_radius = self.blunting_radius_spin.value()
                 if method == methods[0]:
-                    self._export_step_nurbs(fn, scale)
+                    self._export_step_nurbs(fn, scale, blunting_radius=blunting_radius)
                 else:
                     self._export_step_faces(fn, scale)
                 QMessageBox.information(self, "Success", f"Saved: {fn}")
@@ -926,12 +1065,12 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 traceback.print_exc()
                 QMessageBox.critical(self, "Error", f"STEP export failed:\n{str(e)}")
     
-    def _export_step_nurbs(self, filename, scale):
+    def _export_step_nurbs(self, filename, scale, blunting_radius=0.0):
         """
         Export STEP with smooth NURBS surfaces using interpPlate.
         Now that shadow waverider uses same coords as cad_export.py:
         X = streamwise, Y = vertical, Z = span
-        
+
         We build one half (positive Z / right side), then mirror.
         """
         import cadquery as cq
@@ -1027,13 +1166,26 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             sym_face
         ])
         right_side = cq.Solid.makeSolid(shell)
-        
+
+        # Apply leading edge blunting if requested
+        if blunting_radius > 0:
+            try:
+                from waverider_generator.leading_edge_blunting import fillet_leading_edge
+                right_side = fillet_leading_edge(right_side, blunting_radius * scale)
+                if hasattr(right_side, 'val'):
+                    right_side = right_side.val()
+                elif hasattr(right_side, 'objects') and len(right_side.objects) > 0:
+                    right_side = right_side.objects[0]
+                print(f"LE blunting applied (fillet, r={blunting_radius * scale:.4f})")
+            except Exception as e:
+                print(f"LE blunting failed: {e}, exporting with sharp LE")
+
         # Mirror across XY plane (Z=0) to get left side
         left_side = right_side.mirror(mirrorPlane='XY')
-        
+
         # Union both halves
         result = cq.Workplane("XY").newObject([right_side]).union(left_side)
-        
+
         cq.exporters.export(result, filename)
     
     def _export_step_faces(self, filename, scale):

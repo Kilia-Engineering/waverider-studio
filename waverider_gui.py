@@ -2937,7 +2937,7 @@ class WaveriderGUI(QMainWindow):
                 self.waverider, radius)
 
             # Draw on the 3D canvas
-            ax = self.canvas_3d.axes
+            ax = self.canvas_3d.ax
             # Remove previous blunting preview lines if any
             for line in list(ax.lines):
                 if hasattr(line, '_blunting_preview'):
