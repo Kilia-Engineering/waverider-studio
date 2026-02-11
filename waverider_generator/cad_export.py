@@ -2,6 +2,9 @@ from waverider_generator.generator import waverider
 import cadquery as cq
 from cadquery import exporters
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
@@ -11,6 +14,10 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
             raise ValueError("scale must be a float or int greater than 0")
     else:
         scale=1.0 # SI units (meters)
+
+    # Leading edge blunting parameters
+    blunting_radius = kwargs.get("blunting_radius", 0.0)
+    blunting_method = kwargs.get("blunting_method", "auto")
 
     # extract streams from waverider object
     us_streams=waverider.upper_surface_streams
@@ -86,18 +93,40 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     # create solid
     # by convention, +ve z is left so this produces the left side
     left_side= cq.Solid.makeSolid(cq.Shell.makeShell([upper_surface.objects[0], lower_surface.objects[0], back,sym])).scale(scale)
+
+    # Apply leading edge blunting if requested
+    blunting_method_used = 'none'
+    if blunting_radius > 0:
+        from waverider_generator.leading_edge_blunting import apply_blunting
+        try:
+            left_side, blunting_method_used = apply_blunting(
+                waverider=waverider,
+                solid=left_side,
+                radius=blunting_radius * scale,
+                method=blunting_method
+            )
+            # Extract solid if result is a Workplane
+            if hasattr(left_side, 'val'):
+                left_side = left_side.val()
+            elif hasattr(left_side, 'objects') and len(left_side.objects) > 0:
+                left_side = left_side.objects[0]
+            logger.info(f"LE blunting applied using method: {blunting_method_used}")
+        except Exception as e:
+            logger.warning(f"LE blunting failed ({e}), exporting with sharp LE")
+            blunting_method_used = 'failed'
+
     right_side= left_side.mirror(mirrorPlane='XY')
 
     if sides=="left":
         if export==True:
             cq.exporters.export(left_side, filename)
         return left_side
-    
+
     elif sides=="right":
         if export==True:
             cq.exporters.export(right_side, filename)
         return right_side
-    
+
     elif sides=="both":
 
         waverider_solid = (
@@ -108,7 +137,7 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
         if export==True:
             cq.exporters.export(waverider_solid, filename)
         return waverider_solid
-    
+
     else:
         return ValueError("sides is either 'left', 'right' or 'both'")
 

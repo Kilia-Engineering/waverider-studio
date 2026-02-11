@@ -1518,7 +1518,52 @@ class WaveriderGUI(QMainWindow):
         
         mesh_group.setLayout(mesh_layout)
         layout.addWidget(mesh_group)
-        
+
+        # Leading edge blunting group
+        blunt_group = QGroupBox("Leading Edge Blunting")
+        blunt_layout = QGridLayout()
+
+        self.blunting_check = QCheckBox("Enable LE blunting")
+        self.blunting_check.setToolTip("Apply a circular arc blunting to the sharp leading edge")
+        self.blunting_check.stateChanged.connect(self._on_blunting_toggled)
+        blunt_layout.addWidget(self.blunting_check, 0, 0, 1, 2)
+
+        blunt_layout.addWidget(QLabel("Radius (m):"), 1, 0)
+        self.blunting_radius_spin = QDoubleSpinBox()
+        self.blunting_radius_spin.setRange(0.0001, 1.0)
+        self.blunting_radius_spin.setValue(0.005)
+        self.blunting_radius_spin.setSingleStep(0.001)
+        self.blunting_radius_spin.setDecimals(4)
+        self.blunting_radius_spin.setToolTip("Blunting radius in meters")
+        self.blunting_radius_spin.setEnabled(False)
+        blunt_layout.addWidget(self.blunting_radius_spin, 1, 1)
+
+        blunt_layout.addWidget(QLabel("Method:"), 2, 0)
+        self.blunting_method_combo = QComboBox()
+        self.blunting_method_combo.addItems(["Auto (A→C→B)", "Fillet (A)", "Loft (C)", "Point-level (B)"])
+        self.blunting_method_combo.setToolTip(
+            "Auto: tries fillet first, falls back to loft, then point-level\n"
+            "Fillet (A): CAD-level fillet on the solid\n"
+            "Loft (C): Boolean cut + lofted circular arc replacement\n"
+            "Point-level (B): Modifies geometry points before CAD creation"
+        )
+        self.blunting_method_combo.setEnabled(False)
+        blunt_layout.addWidget(self.blunting_method_combo, 2, 1)
+
+        self.blunting_preview_btn = QPushButton("Preview Blunting")
+        self.blunting_preview_btn.setToolTip("Show blunted LE preview on the 3D view")
+        self.blunting_preview_btn.clicked.connect(self._preview_blunting)
+        self.blunting_preview_btn.setEnabled(False)
+        self.blunting_preview_btn.setStyleSheet(
+            "QPushButton { background-color: #1A1A1A; color: #F59E0B; border: 1px solid #78350F; padding: 5px; }"
+            "QPushButton:hover { background-color: #78350F; color: #FFFFFF; }"
+            "QPushButton:disabled { color: #555555; border-color: #333333; }"
+        )
+        blunt_layout.addWidget(self.blunting_preview_btn, 3, 0, 1, 2)
+
+        blunt_group.setLayout(blunt_layout)
+        layout.addWidget(blunt_group)
+
         # Buttons
         button_layout = QHBoxLayout()
         
@@ -2741,6 +2786,10 @@ class WaveriderGUI(QMainWindow):
             self.mesh_gen_info.setText("✓ Ready to generate mesh")
             self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
 
+            # Enable blunting preview if blunting is checked
+            if self.blunting_check.isChecked():
+                self.blunting_preview_btn.setEnabled(True)
+
             self.info_label.setText(
                 "✓ Waverider generated successfully.\n\n"
                 f"Length: {self.waverider.length:.3f} m\n"
@@ -2812,17 +2861,42 @@ class WaveriderGUI(QMainWindow):
             self.info_label.setText("Exporting STEP file...")
             QApplication.processEvents()
 
+            # Blunting parameters
+            blunting_radius = 0.0
+            blunting_method = "auto"
+            if self.blunting_check.isChecked():
+                blunting_radius = self.blunting_radius_spin.value()
+                method_map = {
+                    "Auto (A→C→B)": "auto",
+                    "Fillet (A)": "fillet",
+                    "Loft (C)": "loft",
+                    "Point-level (B)": "points",
+                }
+                blunting_method = method_map.get(
+                    self.blunting_method_combo.currentText(), "auto")
+                self.info_label.setText(
+                    f"Exporting STEP with LE blunting (r={blunting_radius:.4f} m)...")
+                QApplication.processEvents()
+
             to_CAD(
                 waverider=self.waverider,
                 sides=sides,
                 export=True,
                 filename=filename,
-                scale=1.0
+                scale=1.0,
+                blunting_radius=blunting_radius,
+                blunting_method=blunting_method
             )
+
+            blunt_msg = ""
+            if blunting_radius > 0:
+                blunt_msg = f"\nLE Blunting: radius = {blunting_radius:.4f} m\n"
+
             QMessageBox.information(
                 self, "Export successful",
                 f"STEP file exported to:\n{filename}\n\n"
-                f"Units: METERS (SI)\n\n"
+                f"Units: METERS (SI)\n"
+                f"{blunt_msg}\n"
                 f"To create STL mesh for analysis:\n"
                 f"1. Go to 'Aerodynamic Analysis' tab\n"
                 f"2. Set mesh parameters\n"
@@ -2837,6 +2911,71 @@ class WaveriderGUI(QMainWindow):
                 f"Failed to export CAD file:\n\n{str(e)}"
             )
             self.info_label.setText(f"Export error: {str(e)}")
+
+    def _on_blunting_toggled(self, state):
+        """Enable/disable blunting controls based on checkbox."""
+        enabled = bool(state)
+        self.blunting_radius_spin.setEnabled(enabled)
+        self.blunting_method_combo.setEnabled(enabled)
+        self.blunting_preview_btn.setEnabled(enabled and self.waverider is not None)
+
+    def _preview_blunting(self):
+        """Show a preview of the blunted leading edge on the 3D view."""
+        if self.waverider is None:
+            QMessageBox.warning(self, "No waverider",
+                                "Generate a waverider first.")
+            return
+
+        radius = self.blunting_radius_spin.value()
+        if radius <= 0:
+            return
+
+        try:
+            from waverider_generator.leading_edge_blunting import compute_blunted_le_preview
+
+            blunted_le, original_le = compute_blunted_le_preview(
+                self.waverider, radius)
+
+            # Draw on the 3D canvas
+            ax = self.canvas_3d.axes
+            # Remove previous blunting preview lines if any
+            for line in list(ax.lines):
+                if hasattr(line, '_blunting_preview'):
+                    line.remove()
+
+            # Plot original LE in red (dashed)
+            line_orig, = ax.plot(
+                original_le[:, 0], original_le[:, 1], original_le[:, 2],
+                'r--', linewidth=1.5, label='Original LE')
+            line_orig._blunting_preview = True
+
+            # Plot blunted LE in green (solid)
+            line_blunt, = ax.plot(
+                blunted_le[:, 0], blunted_le[:, 1], blunted_le[:, 2],
+                color='#4ADE80', linewidth=2.5, label='Blunted LE')
+            line_blunt._blunting_preview = True
+
+            # Mirror for the right side
+            line_orig_r, = ax.plot(
+                original_le[:, 0], original_le[:, 1], -original_le[:, 2],
+                'r--', linewidth=1.5)
+            line_orig_r._blunting_preview = True
+
+            line_blunt_r, = ax.plot(
+                blunted_le[:, 0], blunted_le[:, 1], -blunted_le[:, 2],
+                color='#4ADE80', linewidth=2.5)
+            line_blunt_r._blunting_preview = True
+
+            ax.legend(loc='upper right', fontsize=8)
+            self.canvas_3d.draw()
+
+            self.info_label.setText(
+                f"LE blunting preview: radius = {radius:.4f} m | "
+                f"Showing original (red) vs blunted (green)")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Preview error",
+                                 f"Failed to preview blunting:\n\n{str(e)}")
 
     def set_mesh_preset(self, min_size, max_size):
         """Set mesh size preset"""
