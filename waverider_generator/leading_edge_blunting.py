@@ -194,6 +194,10 @@ def fillet_leading_edge(solid, radius, tolerance=0.01):
     Uses CadQuery/OpenCascade to fillet the sharp edges where
     upper and lower surfaces meet at the leading edge.
 
+    The leading edge is identified as the edge shared between two faces
+    whose normals point in opposite Y directions (upper surface normal
+    has +Y component, lower surface normal has -Y component).
+
     Parameters
     ----------
     solid : cq.Solid or cq.Workplane
@@ -209,6 +213,13 @@ def fillet_leading_edge(solid, radius, tolerance=0.01):
         The filleted waverider solid.
     """
     import cadquery as cq
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE
+    from OCP.BRep import BRep_Tool
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from OCP.TopExp import TopExp
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.gp import gp_Pnt
 
     try:
         # If it's a Workplane, extract the solid
@@ -219,100 +230,95 @@ def fillet_leading_edge(solid, radius, tolerance=0.01):
         else:
             the_solid = solid
 
-        # Find leading edge edges
-        # The LE is at the front of the waverider (minimum x values)
-        # Strategy: find edges where the minimum x coordinate is small
-        # (near the nose) or edges that are shared between upper and lower faces
+        # Get the underlying OCC shape
+        occ_shape = the_solid.wrapped
+
+        # Build edge-to-face adjacency map
+        edge_face_map = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(occ_shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map)
 
         all_edges = the_solid.Edges()
         if not all_edges:
             logger.warning("No edges found in solid, returning unchanged")
             return solid
 
-        # Get bounding box to understand scale
         bb = the_solid.BoundingBox()
-        x_min = bb.xmin
         x_max = bb.xmax
-        length = x_max - x_min
+        z_max = bb.zmax
 
-        # Leading edge edges: those whose midpoint x < some threshold
-        # and that are at the front boundary between upper and lower surfaces
         le_edges = []
-        # The LE runs from tip (x=0) to the wingtip (x=length, z=width)
-        # We identify LE edges by checking: midpoint is at the boundary
-        # where y is near the maximum y for that x position (upper surface)
-        # and the edge connects upper and lower surfaces
 
         for edge in all_edges:
-            # Get edge midpoint
-            mid = edge.Center()
-            # Get edge endpoints
-            vertices = edge.Vertices()
-            if len(vertices) < 2:
+            occ_edge = edge.wrapped
+
+            # Get adjacent faces for this edge
+            if not edge_face_map.Contains(occ_edge):
                 continue
 
-            v1 = vertices[0].Center()
-            v2 = vertices[1].Center()
+            adj_face_list = edge_face_map.FindFromKey(occ_edge)
+            if adj_face_list.Size() != 2:
+                continue  # LE edge must be shared by exactly 2 faces
 
-            # LE edges typically have both endpoints with similar z coordinates
-            # and span the front of the vehicle
-            # For a waverider, the LE is where the upper surface (y ~= 0 near sym)
-            # meets the lower surface
+            # Get normals of the two adjacent faces at the edge midpoint
+            mid = edge.Center()
+            face_normals_y = []
 
-            # Heuristic: LE edges have endpoints at the front (low x relative to length)
-            # and the edge connects two faces with different normal y-components
-            avg_x = (v1.x + v2.x) / 2
-            min_y = min(v1.y, v2.y)
+            it = adj_face_list.begin()
+            faces_occ = []
+            while it != adj_face_list.end():
+                faces_occ.append(it.Value())
+                it.Next()
 
-            # Check if edge is near the leading edge region
-            # The LE connects tip to wingtip along the front
-            # Simple approach: find edges where both vertices are close
-            # to the LE curve (roughly where upper and lower surfaces meet)
+            for face_shape in faces_occ:
+                try:
+                    adaptor = BRepAdaptor_Surface(face_shape)
+                    # Get UV parameters at the midpoint (approximate)
+                    u_mid = (adaptor.FirstUParameter() + adaptor.LastUParameter()) / 2.0
+                    v_mid = (adaptor.FirstVParameter() + adaptor.LastVParameter()) / 2.0
+                    pnt = gp_Pnt()
+                    from OCP.gp import gp_Vec
+                    d1u = gp_Vec()
+                    d1v = gp_Vec()
+                    adaptor.D1(u_mid, v_mid, pnt, d1u, d1v)
+                    normal = d1u.Crossed(d1v)
+                    if normal.Magnitude() > 1e-12:
+                        normal.Normalize()
+                        face_normals_y.append(normal.Y())
+                    else:
+                        face_normals_y.append(0.0)
+                except Exception:
+                    face_normals_y.append(0.0)
 
-            # Get adjacent faces
-            try:
-                faces = the_solid.facesIntersectedByLine(
-                    (mid.x, mid.y, mid.z),
-                    (mid.x, mid.y + 0.001, mid.z)
-                )
-            except Exception:
-                faces = []
+            if len(face_normals_y) != 2:
+                continue
 
-            # Alternative: check if edge length is significant and
-            # the edge runs roughly in the x-z plane
-            edge_vec = np.array([v2.x - v1.x, v2.y - v1.y, v2.z - v1.z])
-            edge_len = np.linalg.norm(edge_vec)
+            # LE edge criterion: the two adjacent faces have normals
+            # pointing in opposite Y directions (one up, one down)
+            n1_y, n2_y = face_normals_y
+            if n1_y * n2_y < 0:
+                # Faces have opposing Y-normals → this is a LE edge
+                # Additional check: exclude trailing edge (at x_max)
+                # and back/symmetry edges
+                vertices = edge.Vertices()
+                if len(vertices) >= 2:
+                    v1 = vertices[0].Center()
+                    v2 = vertices[1].Center()
 
-            if edge_len < tolerance * length:
-                continue  # skip tiny edges
+                    # Exclude edges at the trailing edge (both vertices at x_max)
+                    if v1.x > x_max * 0.95 and v2.x > x_max * 0.95:
+                        continue
 
-            # LE edges: primarily in x-z plane (small y component relative to length)
-            # and the y-component change should be small
-            y_range = abs(v2.y - v1.y)
-            xz_range = np.sqrt((v2.x - v1.x)**2 + (v2.z - v1.z)**2)
+                    # Exclude edges on the symmetry plane (both z ≈ 0)
+                    if abs(v1.z) < 1e-6 and abs(v2.z) < 1e-6:
+                        continue
 
-            if xz_range > 0 and y_range / xz_range < 0.3:
-                # This edge is mostly in the x-z plane
-                # Check if it's at the leading edge (front boundary)
-                # The LE has the property that x increases with z
-                if v1.x < x_max * 0.99 or v2.x < x_max * 0.99:
-                    # Not a trailing edge
-                    le_edges.append(edge)
-
-        if not le_edges:
-            logger.warning("Could not identify leading edge edges for filleting. "
-                           "Trying to fillet all front edges.")
-            # Fallback: try all edges with small x midpoints
-            for edge in all_edges:
-                mid = edge.Center()
-                if mid.x < x_min + 0.5 * length:
-                    le_edges.append(edge)
+                le_edges.append(edge)
 
         if not le_edges:
             raise RuntimeError("No leading edge edges found for filleting")
 
         # Apply fillet
-        logger.info(f"Applying fillet with radius={radius} to {len(le_edges)} edges")
+        logger.info(f"Applying fillet with radius={radius} to {len(le_edges)} LE edges")
         filleted = cq.Workplane("XY").newObject([the_solid])
         filleted = filleted.newObject([the_solid.fillet(radius, le_edges)])
 
