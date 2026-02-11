@@ -409,12 +409,13 @@ class ShadowWaveriderTab(QWidget):
         
     def init_ui(self):
         main_layout = QHBoxLayout(self)
-        
-        # Left panel (scrollable)
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        
+
+        # Left panel (scrollable) — stored as attribute so parent GUI
+        # can move it into a QStackedWidget for tab-based switching.
+        self.left_scroll = QScrollArea()
+        self.left_scroll.setWidgetResizable(True)
+        self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.addWidget(self._create_flow_group())
@@ -425,18 +426,18 @@ class ShadowWaveriderTab(QWidget):
         left_layout.addWidget(self._create_export_group())
         left_layout.addWidget(self._create_analysis_group())
         left_layout.addStretch()
-        
-        left_scroll.setWidget(left_panel)
-        left_scroll.setMinimumWidth(320)
-        left_scroll.setMaximumWidth(400)
-        
+
+        self.left_scroll.setWidget(left_panel)
+        self.left_scroll.setMinimumWidth(320)
+        self.left_scroll.setMaximumWidth(400)
+
         # Right panel (tabs)
         right_panel = QTabWidget()
-        
+
         # 3D View tab
         view_widget = QWidget()
         view_layout = QVBoxLayout(view_widget)
-        
+
         opts = QHBoxLayout()
         self.show_upper = QCheckBox("Upper"); self.show_upper.setChecked(True)
         self.show_lower = QCheckBox("Lower"); self.show_lower.setChecked(True)
@@ -449,17 +450,17 @@ class ShadowWaveriderTab(QWidget):
         update_btn.clicked.connect(self.update_view)
         opts.addWidget(update_btn)
         view_layout.addLayout(opts)
-        
+
         self.canvas_3d = ShadowWaveriderCanvas()
         self.toolbar_3d = NavigationToolbar(self.canvas_3d, view_widget)
         view_layout.addWidget(self.toolbar_3d)
         view_layout.addWidget(self.canvas_3d)
-        right_panel.addTab(view_widget, "🔷 3D View")
-        
+        right_panel.addTab(view_widget, "3D View")
+
         # Design Space tab
         ds_widget = self._create_design_space_widget()
-        right_panel.addTab(ds_widget, "🔍 Design Space")
-        
+        right_panel.addTab(ds_widget, "Design Space")
+
         # Results tab
         results_widget = QWidget()
         results_layout = QVBoxLayout(results_widget)
@@ -467,15 +468,20 @@ class ShadowWaveriderTab(QWidget):
         self.results_text.setReadOnly(True)
         self.results_text.setFont(QFont("Courier", 10))
         results_layout.addWidget(self.results_text)
-        right_panel.addTab(results_widget, "📊 Results")
-        
-        # Splitter
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_scroll)
-        splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(splitter)
+        right_panel.addTab(results_widget, "Results")
+
+        # If embedded in parent GUI, left panel is managed by parent's
+        # QStackedWidget. Only add it locally if running standalone.
+        if self.parent_gui is None:
+            splitter = QSplitter(Qt.Horizontal)
+            splitter.addWidget(self.left_scroll)
+            splitter.addWidget(right_panel)
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 2)
+            main_layout.addWidget(splitter)
+        else:
+            # Parent will reparent left_scroll into its param_stack
+            main_layout.addWidget(right_panel)
     
     def _create_flow_group(self):
         group = QGroupBox("Flow Conditions")

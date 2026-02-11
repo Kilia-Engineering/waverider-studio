@@ -99,18 +99,26 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     if blunting_radius > 0:
         from waverider_generator.leading_edge_blunting import apply_blunting
         try:
-            left_side, blunting_method_used = apply_blunting(
+            result, blunting_method_used = apply_blunting(
                 waverider=waverider,
                 solid=left_side,
                 radius=blunting_radius * scale,
                 method=blunting_method
             )
-            # Extract solid if result is a Workplane
-            if hasattr(left_side, 'val'):
-                left_side = left_side.val()
-            elif hasattr(left_side, 'objects') and len(left_side.objects) > 0:
-                left_side = left_side.objects[0]
-            logger.info(f"LE blunting applied using method: {blunting_method_used}")
+            if blunting_method_used == 'points':
+                # Point-level method returns stream data, not a solid.
+                # Cannot use it after solid creation — skip blunting.
+                logger.warning("Point-level blunting not applicable after solid creation, skipping")
+                blunting_method_used = 'skipped'
+            else:
+                # Extract solid if result is a Workplane
+                if hasattr(result, 'val'):
+                    left_side = result.val()
+                elif hasattr(result, 'objects') and len(result.objects) > 0:
+                    left_side = result.objects[0]
+                else:
+                    left_side = result
+                logger.info(f"LE blunting applied using method: {blunting_method_used}")
         except Exception as e:
             logger.warning(f"LE blunting failed ({e}), exporting with sharp LE")
             blunting_method_used = 'failed'
