@@ -213,13 +213,6 @@ def fillet_leading_edge(solid, radius, tolerance=0.01):
         The filleted waverider solid.
     """
     import cadquery as cq
-    from OCP.TopExp import TopExp_Explorer
-    from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE
-    from OCP.BRep import BRep_Tool
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
-    from OCP.TopExp import TopExp
-    from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.gp import gp_Pnt
 
     try:
         # If it's a Workplane, extract the solid
@@ -230,97 +223,72 @@ def fillet_leading_edge(solid, radius, tolerance=0.01):
         else:
             the_solid = solid
 
-        # Get the underlying OCC shape
-        occ_shape = the_solid.wrapped
-
-        # Build edge-to-face adjacency map
-        edge_face_map = TopTools_IndexedDataMapOfShapeListOfShape()
-        TopExp.MapShapesAndAncestors_s(occ_shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map)
-
         all_edges = the_solid.Edges()
-        if not all_edges:
-            logger.warning("No edges found in solid, returning unchanged")
+        all_faces = the_solid.Faces()
+        if not all_edges or not all_faces:
+            logger.warning("No edges/faces found in solid, returning unchanged")
             return solid
 
         bb = the_solid.BoundingBox()
         x_max = bb.xmax
-        z_max = bb.zmax
+
+        # Build a map of edge → adjacent faces using CadQuery API
+        # For each face, find its edges and record the association
+        from collections import defaultdict
+        edge_to_faces = defaultdict(list)
+
+        for face in all_faces:
+            # Get the face normal at its center
+            center = face.Center()
+            normal = face.normalAt(center)
+            normal_y = normal.y
+
+            face_edges = face.Edges()
+            for fe in face_edges:
+                # Use edge hash to match edges across faces
+                edge_hash = fe.HashCode(2147483647)
+                edge_to_faces[edge_hash].append((fe, normal_y))
 
         le_edges = []
 
         for edge in all_edges:
-            occ_edge = edge.wrapped
+            edge_hash = edge.HashCode(2147483647)
 
-            # Get adjacent faces for this edge
-            if not edge_face_map.Contains(occ_edge):
+            if edge_hash not in edge_to_faces:
                 continue
 
-            adj_face_list = edge_face_map.FindFromKey(occ_edge)
-            if adj_face_list.Size() != 2:
-                continue  # LE edge must be shared by exactly 2 faces
-
-            # Get normals of the two adjacent faces at the edge midpoint
-            mid = edge.Center()
-            face_normals_y = []
-
-            it = adj_face_list.begin()
-            faces_occ = []
-            while it != adj_face_list.end():
-                faces_occ.append(it.Value())
-                it.Next()
-
-            for face_shape in faces_occ:
-                try:
-                    adaptor = BRepAdaptor_Surface(face_shape)
-                    # Get UV parameters at the midpoint (approximate)
-                    u_mid = (adaptor.FirstUParameter() + adaptor.LastUParameter()) / 2.0
-                    v_mid = (adaptor.FirstVParameter() + adaptor.LastVParameter()) / 2.0
-                    pnt = gp_Pnt()
-                    from OCP.gp import gp_Vec
-                    d1u = gp_Vec()
-                    d1v = gp_Vec()
-                    adaptor.D1(u_mid, v_mid, pnt, d1u, d1v)
-                    normal = d1u.Crossed(d1v)
-                    if normal.Magnitude() > 1e-12:
-                        normal.Normalize()
-                        face_normals_y.append(normal.Y())
-                    else:
-                        face_normals_y.append(0.0)
-                except Exception:
-                    face_normals_y.append(0.0)
-
-            if len(face_normals_y) != 2:
+            face_entries = edge_to_faces[edge_hash]
+            if len(face_entries) != 2:
                 continue
 
-            # LE edge criterion: the two adjacent faces have normals
-            # pointing in opposite Y directions (one up, one down)
-            n1_y, n2_y = face_normals_y
-            if n1_y * n2_y < 0:
-                # Faces have opposing Y-normals → this is a LE edge
-                # Additional check: exclude trailing edge (at x_max)
-                # and back/symmetry edges
-                vertices = edge.Vertices()
-                if len(vertices) >= 2:
-                    v1 = vertices[0].Center()
-                    v2 = vertices[1].Center()
+            n1_y = face_entries[0][1]
+            n2_y = face_entries[1][1]
 
-                    # Exclude edges at the trailing edge (both vertices at x_max)
-                    if v1.x > x_max * 0.95 and v2.x > x_max * 0.95:
-                        continue
+            # LE criterion: adjacent faces have opposing Y normals
+            if n1_y * n2_y >= 0:
+                continue
 
-                    # Exclude edges on the symmetry plane (both z ≈ 0)
-                    if abs(v1.z) < 1e-6 and abs(v2.z) < 1e-6:
-                        continue
+            # Exclude trailing edge and symmetry plane edges
+            vertices = edge.Vertices()
+            if len(vertices) >= 2:
+                v1 = vertices[0].Center()
+                v2 = vertices[1].Center()
 
-                le_edges.append(edge)
+                # Exclude trailing edge (both vertices near x_max)
+                if v1.x > x_max * 0.95 and v2.x > x_max * 0.95:
+                    continue
+
+                # Exclude symmetry plane edges (both z ≈ 0)
+                if abs(v1.z) < 1e-6 and abs(v2.z) < 1e-6:
+                    continue
+
+            le_edges.append(edge)
 
         if not le_edges:
             raise RuntimeError("No leading edge edges found for filleting")
 
-        # Apply fillet
         logger.info(f"Applying fillet with radius={radius} to {len(le_edges)} LE edges")
-        filleted = cq.Workplane("XY").newObject([the_solid])
-        filleted = filleted.newObject([the_solid.fillet(radius, le_edges)])
+        filleted = the_solid.fillet(radius, le_edges)
 
         return filleted
 

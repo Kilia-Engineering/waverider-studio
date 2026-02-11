@@ -1617,10 +1617,12 @@ class WaveriderGUI(QMainWindow):
         self.tab_widget.addTab(tab_opt, "Optimization")
 
         # ── Tab 4: Cone-derived Waverider ──
+        self._cone_tab_index = -1
         if CONE_WAVERIDER_AVAILABLE:
             self.shadow_waverider_tab = ShadowWaveriderTab(parent=self)
+            self._cone_tab_index = self.tab_widget.count()
             self.tab_widget.addTab(self.shadow_waverider_tab, "Cone-derived Waverider")
-            # Extract cone-derived left panel for the stacked parameter widget
+            # Move cone-derived left panel into the stacked parameter widget
             if hasattr(self.shadow_waverider_tab, 'left_scroll'):
                 self.param_stack.addWidget(self.shadow_waverider_tab.left_scroll)  # index 1
 
@@ -2314,8 +2316,7 @@ class WaveriderGUI(QMainWindow):
 
     def _on_main_tab_changed(self, index):
         """Switch the left parameter panel based on active tab."""
-        tab_text = self.tab_widget.tabText(index)
-        if "Cone-derived" in tab_text and self.param_stack.count() > 1:
+        if index == self._cone_tab_index and self.param_stack.count() > 1:
             self.param_stack.setCurrentIndex(1)
         else:
             self.param_stack.setCurrentIndex(0)
