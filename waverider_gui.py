@@ -742,13 +742,20 @@ class WaveriderGUI(QMainWindow):
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
 
-        # Left panel - Parameters
-        left_panel = self.create_parameter_panel()
-        main_layout.addWidget(left_panel, 1)
+        # Left panel - Stacked parameter panels (switch by active tab)
+        self.param_stack = QStackedWidget()
+        oc_panel = self.create_parameter_panel()
+        self.param_stack.addWidget(oc_panel)  # index 0: OC Waverider params
+        # Cone-derived params are added after visualization panel is created
+        self.param_stack.setMaximumWidth(380)
+        main_layout.addWidget(self.param_stack, 1)
 
         # Right panel - Visualization
         right_panel = self.create_visualization_panel()
         main_layout.addWidget(right_panel, 3)
+
+        # Connect tab switching to parameter panel swapping
+        self.tab_widget.currentChanged.connect(self._on_main_tab_changed)
 
         # Set default values
         self.set_default_parameters()
@@ -1597,9 +1604,9 @@ class WaveriderGUI(QMainWindow):
         # Create main tab widget (reduced from 12 tabs to ~4-5)
         self.tab_widget = QTabWidget()
 
-        # ── Tab 1: Visualization (merged 3D View, Base Plane, LE, Schematic, Imported) ──
+        # ── Tab 1: OC Waverider (merged 3D View, Base Plane, LE, Schematic, Imported) ──
         tab_viz = self._create_visualization_tab()
-        self.tab_widget.addTab(tab_viz, "Visualization")
+        self.tab_widget.addTab(tab_viz, "OC Waverider")
 
         # ── Tab 2: Aero Analysis ──
         tab_analysis = self.create_analysis_tab()
@@ -1613,6 +1620,9 @@ class WaveriderGUI(QMainWindow):
         if CONE_WAVERIDER_AVAILABLE:
             self.shadow_waverider_tab = ShadowWaveriderTab(parent=self)
             self.tab_widget.addTab(self.shadow_waverider_tab, "Cone-derived Waverider")
+            # Extract cone-derived left panel for the stacked parameter widget
+            if hasattr(self.shadow_waverider_tab, 'left_scroll'):
+                self.param_stack.addWidget(self.shadow_waverider_tab.left_scroll)  # index 1
 
         layout.addWidget(self.tab_widget)
         return panel
@@ -2301,6 +2311,14 @@ class WaveriderGUI(QMainWindow):
         layout.addWidget(results_group)
 
         return tab
+
+    def _on_main_tab_changed(self, index):
+        """Switch the left parameter panel based on active tab."""
+        tab_text = self.tab_widget.tabText(index)
+        if "Cone-derived" in tab_text and self.param_stack.count() > 1:
+            self.param_stack.setCurrentIndex(1)
+        else:
+            self.param_stack.setCurrentIndex(0)
 
     def set_default_parameters(self):
         """Set default parameters from example"""
