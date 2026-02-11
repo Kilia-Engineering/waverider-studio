@@ -108,7 +108,7 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
             if blunting_method_used == 'points':
                 # Point-level method returns stream data, not a solid.
                 # Cannot use it after solid creation — skip blunting.
-                logger.warning("Point-level blunting not applicable after solid creation, skipping")
+                print("[Blunting] Point-level method not applicable after solid creation, skipping")
                 blunting_method_used = 'skipped'
             else:
                 # Extract solid if result is a Workplane
@@ -118,9 +118,11 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
                     left_side = result.objects[0]
                 else:
                     left_side = result
-                logger.info(f"LE blunting applied using method: {blunting_method_used}")
+                print(f"[Blunting] LE blunting applied using method: {blunting_method_used}")
         except Exception as e:
-            logger.warning(f"LE blunting failed ({e}), exporting with sharp LE")
+            import traceback
+            traceback.print_exc()
+            print(f"[Blunting] LE blunting failed ({e}), exporting with sharp LE")
             blunting_method_used = 'failed'
 
     right_side= left_side.mirror(mirrorPlane='XY')
