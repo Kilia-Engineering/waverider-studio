@@ -410,11 +410,10 @@ class ShadowWaveriderTab(QWidget):
     def init_ui(self):
         main_layout = QHBoxLayout(self)
 
-        # Left panel (scrollable) — stored as attribute so parent GUI
-        # can move it into a QStackedWidget for tab-based switching.
-        self.left_scroll = QScrollArea()
-        self.left_scroll.setWidgetResizable(True)
-        self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Left panel (scrollable)
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
@@ -427,9 +426,9 @@ class ShadowWaveriderTab(QWidget):
         left_layout.addWidget(self._create_analysis_group())
         left_layout.addStretch()
 
-        self.left_scroll.setWidget(left_panel)
-        self.left_scroll.setMinimumWidth(320)
-        self.left_scroll.setMaximumWidth(400)
+        left_scroll.setWidget(left_panel)
+        left_scroll.setMinimumWidth(320)
+        left_scroll.setMaximumWidth(400)
 
         # Right panel (tabs)
         right_panel = QTabWidget()
@@ -470,18 +469,13 @@ class ShadowWaveriderTab(QWidget):
         results_layout.addWidget(self.results_text)
         right_panel.addTab(results_widget, "Results")
 
-        # If embedded in parent GUI, left panel is managed by parent's
-        # QStackedWidget. Only add it locally if running standalone.
-        if self.parent_gui is None:
-            splitter = QSplitter(Qt.Horizontal)
-            splitter.addWidget(self.left_scroll)
-            splitter.addWidget(right_panel)
-            splitter.setStretchFactor(0, 1)
-            splitter.setStretchFactor(1, 2)
-            main_layout.addWidget(splitter)
-        else:
-            # Parent will reparent left_scroll into its param_stack
-            main_layout.addWidget(right_panel)
+        # Splitter
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_scroll)
+        splitter.addWidget(right_panel)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        main_layout.addWidget(splitter)
     
     def _create_flow_group(self):
         group = QGroupBox("Flow Conditions")
@@ -603,7 +597,7 @@ class ShadowWaveriderTab(QWidget):
         layout = QGridLayout()
 
         self.blunting_check = QCheckBox("Enable LE blunting")
-        self.blunting_check.setToolTip("Apply circular arc blunting to the sharp leading edge")
+        self.blunting_check.setToolTip("Apply circular arc blunting to the sharp LE during STEP export")
         self.blunting_check.stateChanged.connect(self._on_blunting_toggled)
         layout.addWidget(self.blunting_check, 0, 0, 1, 2)
 
@@ -616,7 +610,8 @@ class ShadowWaveriderTab(QWidget):
         self.blunting_radius_spin.setEnabled(False)
         layout.addWidget(self.blunting_radius_spin, 1, 1)
 
-        self.blunting_preview_btn = QPushButton("Preview Blunting")
+        self.blunting_preview_btn = QPushButton("Show LE Preview")
+        self.blunting_preview_btn.setToolTip("Visualize blunted vs original LE on the 3D view.\nBlunting is applied automatically during STEP export.")
         self.blunting_preview_btn.clicked.connect(self._preview_blunting)
         self.blunting_preview_btn.setEnabled(False)
         self.blunting_preview_btn.setStyleSheet(
@@ -1091,9 +1086,47 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         # After transform: Z is span, so right half has positive Z values
         upper_half = wr.upper_surface[center_idx:, :, :] * scale
         lower_half = wr.lower_surface[center_idx:, :, :] * scale
-        
+
         n_half = upper_half.shape[0]
-        
+
+        # Apply point-level LE blunting BEFORE building CAD surfaces
+        if blunting_radius > 0:
+            blunting_r = blunting_radius * scale
+            n_blunted = 0
+            for i in range(n_half):
+                le_pt = upper_half[i, 0, :].copy()
+                # Upper surface tangent (downstream from LE)
+                t_u = upper_half[i, 1, :] - upper_half[i, 0, :]
+                t_u_norm = np.linalg.norm(t_u)
+                t_u = t_u / t_u_norm if t_u_norm > 1e-12 else np.array([1, 0, 0], dtype=float)
+                # Lower surface tangent
+                t_l = lower_half[i, 1, :] - lower_half[i, 0, :]
+                t_l_norm = np.linalg.norm(t_l)
+                t_l = t_l / t_l_norm if t_l_norm > 1e-12 else np.array([1, 0, 0], dtype=float)
+
+                bisector = t_u + t_l
+                b_norm = np.linalg.norm(bisector)
+                if b_norm < 1e-12:
+                    continue
+                bisector = bisector / b_norm
+
+                cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
+                half_angle = np.arccos(cos_half) / 2.0
+                if half_angle < 1e-6:
+                    continue
+
+                d_center = blunting_r / np.sin(half_angle)
+                center = le_pt + d_center * bisector
+
+                # Tangent points where the blunting arc meets each surface
+                tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
+                tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
+
+                upper_half[i, 0, :] = tp_upper
+                lower_half[i, 0, :] = tp_lower
+                n_blunted += 1
+            print(f"[Blunting] Applied point-level LE blunting to {n_blunted}/{n_half} span stations (r={blunting_r:.4f})")
+
         # Extract key curves
         # Leading edge: j=0 (first streamwise station)
         le_upper = upper_half[:, 0, :]   # (n_half, 3)
@@ -1172,19 +1205,6 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             sym_face
         ])
         right_side = cq.Solid.makeSolid(shell)
-
-        # Apply leading edge blunting if requested
-        if blunting_radius > 0:
-            try:
-                from waverider_generator.leading_edge_blunting import fillet_leading_edge
-                right_side = fillet_leading_edge(right_side, blunting_radius * scale)
-                if hasattr(right_side, 'val'):
-                    right_side = right_side.val()
-                elif hasattr(right_side, 'objects') and len(right_side.objects) > 0:
-                    right_side = right_side.objects[0]
-                print(f"LE blunting applied (fillet, r={blunting_radius * scale:.4f})")
-            except Exception as e:
-                print(f"LE blunting failed: {e}, exporting with sharp LE")
 
         # Mirror across XY plane (Z=0) to get left side
         left_side = right_side.mirror(mirrorPlane='XY')
