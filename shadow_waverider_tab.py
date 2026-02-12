@@ -660,24 +660,22 @@ class ShadowWaveriderTab(QWidget):
 
             # Compute blunted LE points using local tangent information
             n_le = wr.upper_surface.shape[0]
+            n_stream = wr.upper_surface.shape[1]
             blunted_points = []
+
+            # Use a point further downstream for more robust tangent estimation
+            j_tan = min(2, n_stream - 1)
 
             for i in range(n_le):
                 le_pt = wr.upper_surface[i, 0, :]
                 # Upper tangent (downstream from LE)
-                if wr.upper_surface.shape[1] >= 2:
-                    t_u = wr.upper_surface[i, 1, :] - wr.upper_surface[i, 0, :]
-                    n = np.linalg.norm(t_u)
-                    t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
-                else:
-                    t_u = np.array([1, 0, 0], dtype=float)
+                t_u = wr.upper_surface[i, j_tan, :] - wr.upper_surface[i, 0, :]
+                n = np.linalg.norm(t_u)
+                t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
 
-                if wr.lower_surface.shape[1] >= 2:
-                    t_l = wr.lower_surface[i, 1, :] - wr.lower_surface[i, 0, :]
-                    n = np.linalg.norm(t_l)
-                    t_l = t_l / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
-                else:
-                    t_l = np.array([1, 0, 0], dtype=float)
+                t_l = wr.lower_surface[i, j_tan, :] - wr.lower_surface[i, 0, :]
+                n = np.linalg.norm(t_l)
+                t_l = t_l / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
 
                 bisector = t_u + t_l
                 b_norm = np.linalg.norm(bisector)
@@ -689,11 +687,14 @@ class ShadowWaveriderTab(QWidget):
                 cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
                 half_angle = np.arccos(cos_half) / 2.0
 
-                if half_angle < 1e-6:
+                # Skip if surfaces are nearly tangent (no meaningful blunting)
+                if half_angle < 0.05:  # ~3 degrees
                     blunted_points.append(le_pt)
                     continue
 
                 d_center = radius / np.sin(half_angle)
+                # Cap offset to prevent huge displacements
+                d_center = min(d_center, radius * 5)
                 center = le_pt + d_center * bisector
 
                 tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
