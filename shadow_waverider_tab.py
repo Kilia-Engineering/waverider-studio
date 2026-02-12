@@ -610,6 +610,18 @@ class ShadowWaveriderTab(QWidget):
         self.blunting_radius_spin.setEnabled(False)
         layout.addWidget(self.blunting_radius_spin, 1, 1)
 
+        layout.addWidget(QLabel("Method:"), 2, 0)
+        self.blunting_method_combo = QComboBox()
+        self.blunting_method_combo.addItems(["Auto (A→C→B)", "Fillet (A)", "Loft (C)", "Point-level (B)"])
+        self.blunting_method_combo.setToolTip(
+            "Auto: tries fillet first, falls back to loft, then point-level\n"
+            "Fillet (A): CAD-level fillet on the solid\n"
+            "Loft (C): Boolean cut + lofted circular arc replacement\n"
+            "Point-level (B): Modifies geometry points before CAD creation"
+        )
+        self.blunting_method_combo.setEnabled(False)
+        layout.addWidget(self.blunting_method_combo, 2, 1)
+
         self.blunting_preview_btn = QPushButton("Show LE Preview")
         self.blunting_preview_btn.setToolTip("Visualize blunted vs original LE on the 3D view.\nBlunting is applied automatically during STEP export.")
         self.blunting_preview_btn.clicked.connect(self._preview_blunting)
@@ -619,7 +631,7 @@ class ShadowWaveriderTab(QWidget):
             "QPushButton:hover { background-color: #78350F; color: #FFFFFF; }"
             "QPushButton:disabled { color: #555555; border-color: #333333; }"
         )
-        layout.addWidget(self.blunting_preview_btn, 2, 0, 1, 2)
+        layout.addWidget(self.blunting_preview_btn, 3, 0, 1, 2)
 
         group.setLayout(layout)
         return group
@@ -627,6 +639,7 @@ class ShadowWaveriderTab(QWidget):
     def _on_blunting_toggled(self, state):
         enabled = bool(state)
         self.blunting_radius_spin.setEnabled(enabled)
+        self.blunting_method_combo.setEnabled(enabled)
         self.blunting_preview_btn.setEnabled(enabled and self.waverider is not None)
 
     def _preview_blunting(self):
@@ -699,19 +712,20 @@ class ShadowWaveriderTab(QWidget):
 
             blunted_le = np.array(blunted_points)
 
-            # Draw on 3D canvas
+            # Draw on 3D canvas using same axis mapping as plot_waverider:
+            # Z(span) -> plot X, X(streamwise) -> plot Y, Y(vertical) -> plot Z
             ax = self.canvas_3d.ax
             for line in list(ax.lines):
                 if hasattr(line, '_blunting_preview'):
                     line.remove()
 
             line_orig, = ax.plot(
-                original_le[:, 0], original_le[:, 1], original_le[:, 2],
+                original_le[:, 2], original_le[:, 0], original_le[:, 1],
                 'r--', linewidth=1.5, label='Original LE')
             line_orig._blunting_preview = True
 
             line_blunt, = ax.plot(
-                blunted_le[:, 0], blunted_le[:, 1], blunted_le[:, 2],
+                blunted_le[:, 2], blunted_le[:, 0], blunted_le[:, 1],
                 color='#4ADE80', linewidth=2.5, label='Blunted LE')
             line_blunt._blunting_preview = True
 
@@ -1056,6 +1070,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 blunting_radius = 0.0
                 if self.blunting_check.isChecked():
                     blunting_radius = self.blunting_radius_spin.value()
+                print(f"[Cone-derived Export] method='{method}', blunting_radius={blunting_radius}, scale={scale}")
                 if method == methods[0]:
                     self._export_step_nurbs(fn, scale, blunting_radius=blunting_radius)
                 else:
@@ -1169,6 +1184,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         right_side = cq.Solid.makeSolid(shell)
 
         # Apply LE blunting via post-solid fillet
+        print(f"[Cone-derived STEP] blunting_radius={blunting_radius}, scale={scale}")
         if blunting_radius > 0:
             from waverider_generator.cad_export import _apply_le_fillet
             le_pts = le_upper  # LE points already at scale
