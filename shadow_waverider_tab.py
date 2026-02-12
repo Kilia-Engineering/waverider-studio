@@ -1090,8 +1090,10 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         n_half = upper_half.shape[0]
 
         # Apply point-level LE blunting BEFORE building CAD surfaces
+        blunted_span_indices = set()
         if blunting_radius > 0:
             blunting_r = blunting_radius * scale
+            max_offset = 5.0 * blunting_r
             n_blunted = 0
             for i in range(n_half):
                 le_pt = upper_half[i, 0, :].copy()
@@ -1112,44 +1114,56 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
 
                 cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
                 half_angle = np.arccos(cos_half) / 2.0
-                if half_angle < 1e-6:
+                if half_angle < 0.05:  # ~3 degrees minimum opening angle
                     continue
 
                 d_center = blunting_r / np.sin(half_angle)
                 center = le_pt + d_center * bisector
 
-                # Tangent points where the blunting arc meets each surface
                 tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
                 tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
 
+                # Skip if offset too large (nearly-flat LE sections)
+                offset = np.linalg.norm(tp_upper - le_pt)
+                if offset > max_offset:
+                    continue
+
                 upper_half[i, 0, :] = tp_upper
                 lower_half[i, 0, :] = tp_lower
+                blunted_span_indices.add(i)
                 n_blunted += 1
-            print(f"[Blunting] Applied point-level LE blunting to {n_blunted}/{n_half} span stations (r={blunting_r:.4f})")
+            print(f"[Blunting] Applied LE blunting to {n_blunted}/{n_half} span stations (r={blunting_r:.4f})")
 
         # Extract key curves
         # Leading edge: j=0 (first streamwise station)
         le_upper = upper_half[:, 0, :]   # (n_half, 3)
         le_lower = lower_half[:, 0, :]
-        
-        # Trailing edge: j=-1 (last streamwise station)  
+
+        # Trailing edge: j=-1 (last streamwise station)
         te_upper = upper_half[:, -1, :]
         te_lower = lower_half[:, -1, :]
-        
+
         # Centerline: i=0 (Z≈0)
         centerline_upper = upper_half[0, :, :]  # (n_stream, 3)
         centerline_lower = lower_half[0, :, :]
-        
+
         # Interior points for upper surface (exclude boundaries)
+        # Skip first 2 streamwise points near LE for blunted span stations
         us_points = []
         for i in range(1, n_half - 1):
-            for j in range(1, n_stream - 1):
+            start_j = 1
+            if i in blunted_span_indices:
+                start_j = min(3, n_stream - 1)
+            for j in range(start_j, n_stream - 1):
                 us_points.append(tuple(upper_half[i, j, :]))
         
-        # Interior points for lower surface
+        # Interior points for lower surface (same skip logic near LE)
         ls_points = []
         for i in range(1, n_half - 1):
-            for j in range(1, n_stream - 1):
+            start_j = 1
+            if i in blunted_span_indices:
+                start_j = min(3, n_stream - 1)
+            for j in range(start_j, n_stream - 1):
                 ls_points.append(tuple(lower_half[i, j, :]))
         
         # Build boundary for upper surface
