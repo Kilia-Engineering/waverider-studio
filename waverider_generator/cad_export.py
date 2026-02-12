@@ -24,13 +24,17 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     ls_streams=waverider.lower_surface_streams
 
     # Apply LE blunting BEFORE solid creation by moving LE points to the tangent
-    # points of a blunting circle. This preserves stream structure (no extra points)
-    # so interpPlate/makeShell work correctly.
+    # points of a blunting circle. Only the upper streams' first point (index [0])
+    # is modified, since both surfaces share the same LE boundary spline.
+    # Interior points near the LE are skipped for blunted streams to prevent
+    # interpPlate distortion from boundary/interior inconsistency.
     blunting_method_used = 'none'
+    blunted_stream_indices = set()
     if blunting_radius > 0 and blunting_method in ('auto', 'points'):
         us_streams = [s.copy() for s in us_streams]
         ls_streams = [s.copy() for s in ls_streams]
         n_blunted = 0
+        max_offset = 5.0 * blunting_radius  # cap to prevent huge setbacks
         for i in range(len(us_streams)):
             le_pt = us_streams[i][0].copy()
             # Upper surface tangent (downstream from LE)
@@ -56,18 +60,22 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
             cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
             half_angle = np.arccos(cos_half) / 2.0
-            if half_angle < 1e-6:
+            if half_angle < 0.05:  # ~3 degrees minimum opening angle
                 continue
 
             d_center = blunting_radius / np.sin(half_angle)
             center = le_pt + d_center * bisector
 
-            # Tangent points where the blunting arc meets each surface
+            # Tangent point on the upper surface (used as new shared LE)
             tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
-            tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
+
+            # Skip if offset too large (nearly-flat LE sections)
+            offset = np.linalg.norm(tp_upper - le_pt)
+            if offset > max_offset:
+                continue
 
             us_streams[i][0] = tp_upper
-            ls_streams[i][0] = tp_lower
+            blunted_stream_indices.add(i)
             n_blunted += 1
 
         blunting_method_used = 'points'
@@ -75,7 +83,7 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
     # compute LE
     le = np.vstack([x[0] for x in us_streams])
-    
+
     # compute TE upper surface
     te_upper_surface=np.vstack([x[-1] for x in us_streams])
 
@@ -83,15 +91,23 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     te_lower_surface=np.vstack([x[-1] for x in ls_streams])
 
     # add interior points for upper surface
+    # Skip the first 2 interior points near LE for blunted streams to
+    # avoid interpPlate distortion from boundary/interior mismatch
     us_points=[]
     for i in range(len(us_streams)):
-        for j in range(1, us_streams[i].shape[0]-1):
+        start_j = 1
+        if i in blunted_stream_indices:
+            start_j = min(3, us_streams[i].shape[0] - 1)
+        for j in range(start_j, us_streams[i].shape[0]-1):
             us_points.append(tuple(us_streams[i][j]))
-    
+
     # add interior points for lower surface
     ls_points=[]
     for i in range(len(ls_streams)):
-        for j in range(1, ls_streams[i].shape[0]-1):
+        start_j = 1
+        if i in blunted_stream_indices:
+            start_j = min(3, ls_streams[i].shape[0] - 1)
+        for j in range(start_j, ls_streams[i].shape[0]-1):
             ls_points.append(tuple(ls_streams[i][j]))
 
     # create boundaries
