@@ -584,9 +584,14 @@ def compute_blunted_le_preview(waverider, radius, n_points=50):
 
         le_pt = us[0]
 
-        # Taper radius: stream 0 is the tip (nose), last stream is wingtip
-        # Linear taper from near-zero at tip to full at wingtip
-        taper = i / max(n_streams - 1, 1)
+        # Taper: full radius everywhere, quick taper only near nose tip
+        # Stream 0 = tip (nose), last stream = wingtip
+        frac = i / max(n_streams - 1, 1)
+        taper_zone = 0.15
+        if frac < taper_zone:
+            taper = frac / taper_zone  # 0→1 within taper zone
+        else:
+            taper = 1.0
         local_radius = radius * taper
 
         if local_radius < 1e-6:

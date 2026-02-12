@@ -671,10 +671,16 @@ class ShadowWaveriderTab(QWidget):
             for i in range(n_le):
                 le_pt = wr.upper_surface[i, 0, :]
 
-                # Taper: distance from center as fraction of half-span
+                # Taper: full radius everywhere, quick taper only near nose
                 dist_from_center = abs(i - center_idx)
                 max_dist = max(center_idx, n_le - 1 - center_idx)
-                taper = dist_from_center / max_dist if max_dist > 0 else 1.0
+                frac = dist_from_center / max_dist if max_dist > 0 else 1.0
+                # Full radius for 85%+ of the LE, taper in last 15% near nose
+                taper_zone = 0.15
+                if frac < taper_zone:
+                    taper = frac / taper_zone  # 0→1 within taper zone
+                else:
+                    taper = 1.0
                 local_radius = radius * taper
 
                 if local_radius < 1e-6:
