@@ -23,64 +23,6 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     us_streams=waverider.upper_surface_streams
     ls_streams=waverider.lower_surface_streams
 
-    # Apply LE blunting BEFORE solid creation by moving LE points to the tangent
-    # points of a blunting circle. Only the upper streams' first point (index [0])
-    # is modified, since both surfaces share the same LE boundary spline.
-    # Interior points near the LE are skipped for blunted streams to prevent
-    # interpPlate distortion from boundary/interior inconsistency.
-    blunting_method_used = 'none'
-    blunted_stream_indices = set()
-    if blunting_radius > 0 and blunting_method in ('auto', 'points'):
-        us_streams = [s.copy() for s in us_streams]
-        ls_streams = [s.copy() for s in ls_streams]
-        n_blunted = 0
-        max_offset = 5.0 * blunting_radius  # cap to prevent huge setbacks
-        for i in range(len(us_streams)):
-            le_pt = us_streams[i][0].copy()
-            # Upper surface tangent (downstream from LE)
-            if us_streams[i].shape[0] >= 2:
-                t_u = us_streams[i][1] - us_streams[i][0]
-                t_u_norm = np.linalg.norm(t_u)
-                t_u = t_u / t_u_norm if t_u_norm > 1e-12 else np.array([1.0, 0.0, 0.0])
-            else:
-                t_u = np.array([1.0, 0.0, 0.0])
-            # Lower surface tangent
-            if ls_streams[i].shape[0] >= 2:
-                t_l = ls_streams[i][1] - ls_streams[i][0]
-                t_l_norm = np.linalg.norm(t_l)
-                t_l = t_l / t_l_norm if t_l_norm > 1e-12 else np.array([1.0, 0.0, 0.0])
-            else:
-                t_l = np.array([1.0, 0.0, 0.0])
-
-            bisector = t_u + t_l
-            b_norm = np.linalg.norm(bisector)
-            if b_norm < 1e-12:
-                continue
-            bisector = bisector / b_norm
-
-            cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
-            half_angle = np.arccos(cos_half) / 2.0
-            if half_angle < 0.05:  # ~3 degrees minimum opening angle
-                continue
-
-            d_center = blunting_radius / np.sin(half_angle)
-            center = le_pt + d_center * bisector
-
-            # Tangent point on the upper surface (used as new shared LE)
-            tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
-
-            # Skip if offset too large (nearly-flat LE sections)
-            offset = np.linalg.norm(tp_upper - le_pt)
-            if offset > max_offset:
-                continue
-
-            us_streams[i][0] = tp_upper
-            blunted_stream_indices.add(i)
-            n_blunted += 1
-
-        blunting_method_used = 'points'
-        print(f"[Blunting] LE blunting applied to {n_blunted}/{len(us_streams)} streams (r={blunting_radius:.4f} m)")
-
     # compute LE
     le = np.vstack([x[0] for x in us_streams])
 
@@ -91,23 +33,15 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     te_lower_surface=np.vstack([x[-1] for x in ls_streams])
 
     # add interior points for upper surface
-    # Skip the first 2 interior points near LE for blunted streams to
-    # avoid interpPlate distortion from boundary/interior mismatch
     us_points=[]
     for i in range(len(us_streams)):
-        start_j = 1
-        if i in blunted_stream_indices:
-            start_j = min(3, us_streams[i].shape[0] - 1)
-        for j in range(start_j, us_streams[i].shape[0]-1):
+        for j in range(1, us_streams[i].shape[0]-1):
             us_points.append(tuple(us_streams[i][j]))
 
     # add interior points for lower surface
     ls_points=[]
     for i in range(len(ls_streams)):
-        start_j = 1
-        if i in blunted_stream_indices:
-            start_j = min(3, ls_streams[i].shape[0] - 1)
-        for j in range(start_j, ls_streams[i].shape[0]-1):
+        for j in range(1, ls_streams[i].shape[0]-1):
             ls_points.append(tuple(ls_streams[i][j]))
 
     # create boundaries
@@ -129,13 +63,13 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     edge_wire_te_lower_surface = edge_wire_te_lower_surface.add(cq.Workplane("XY").spline([tuple(x) for x in le]))
     edge_wire_te_upper_surface = edge_wire_te_upper_surface.add(cq.Workplane("XY").spline([tuple(x) for x in te_upper_surface]))
     edge_wire_te_lower_surface = edge_wire_te_lower_surface.add(cq.Workplane("XY").spline([tuple(x) for x in te_lower_surface]))
-    
+
     # create upper surface
     upper_surface= cq.Workplane("XY").interpPlate(edge_wire_te_upper_surface, us_points, 0)
 
     # create lower surface
     lower_surface= cq.Workplane("XY").interpPlate(edge_wire_te_lower_surface, ls_points, 0)
-    
+
     # add back as a plane
     e1 =cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_lower_surface])
     e2=cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_upper_surface])
@@ -144,7 +78,7 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     v2 = cq.Vector(*sym_edge[1])
     e3 = cq.Edge.makeLine(v1, v2)
     back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2,e3]))
-    
+
     # add symmetry plane as face
     length_edge=np.vstack(((0, 0, 0),(waverider.length,0,0)))
     v1 = cq.Vector(*length_edge[0])
@@ -160,35 +94,10 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     # by convention, +ve z is left so this produces the left side
     left_side= cq.Solid.makeSolid(cq.Shell.makeShell([upper_surface.objects[0], lower_surface.objects[0], back,sym])).scale(scale)
 
-    # Post-solid blunting for explicitly requested 'fillet' or 'loft' methods only.
-    # (For 'auto'/'points', blunting was already applied above before solid creation.)
-    if blunting_radius > 0 and blunting_method_used == 'none':
-        from waverider_generator.leading_edge_blunting import apply_blunting
+    # Apply leading edge blunting via post-solid fillet
+    if blunting_radius > 0:
         le_scaled = le * scale
-        try:
-            result, blunting_method_used = apply_blunting(
-                waverider=waverider,
-                solid=left_side,
-                radius=blunting_radius * scale,
-                method=blunting_method,
-                le_points=le_scaled
-            )
-            if blunting_method_used == 'points':
-                print("[Blunting] Point-level method not applicable after solid creation, skipping")
-                blunting_method_used = 'skipped'
-            else:
-                if hasattr(result, 'val'):
-                    left_side = result.val()
-                elif hasattr(result, 'objects') and len(result.objects) > 0:
-                    left_side = result.objects[0]
-                else:
-                    left_side = result
-                print(f"[Blunting] LE blunting applied using method: {blunting_method_used}")
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"[Blunting] LE blunting failed ({e}), exporting with sharp LE")
-            blunting_method_used = 'failed'
+        left_side = _apply_le_fillet(left_side, blunting_radius * scale, le_scaled)
 
     right_side= left_side.mirror(mirrorPlane='XY')
 
@@ -217,5 +126,72 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
         return ValueError("sides is either 'left', 'right' or 'both'")
 
 
+def _apply_le_fillet(solid, radius, le_points):
+    """
+    Apply fillet to leading edge of a waverider solid.
 
+    Identifies LE edges by proximity to known LE points, then applies
+    fillet with radius reduction fallback and per-edge fallback.
+    """
+    all_edges = solid.Edges()
+    bb = solid.BoundingBox()
+    length = bb.xmax - bb.xmin
 
+    # Proximity tolerance for matching edges to LE curve
+    prox_tol = max(length * 0.02, radius * 3)
+
+    # Find LE edges by proximity to known LE points
+    le_edges = []
+    for edge in all_edges:
+        mid = edge.Center()
+        mid_pt = np.array([mid.x, mid.y, mid.z])
+
+        dists = np.linalg.norm(le_points - mid_pt, axis=1)
+        min_dist = np.min(dists)
+
+        if min_dist < prox_tol:
+            # Skip edges on the symmetry plane (z ≈ 0 for both endpoints)
+            vertices = edge.Vertices()
+            if len(vertices) >= 2:
+                v1 = vertices[0].Center()
+                v2 = vertices[1].Center()
+                if abs(v1.z) < 1e-6 and abs(v2.z) < 1e-6:
+                    continue
+            le_edges.append(edge)
+
+    print(f"[Blunting] Solid has {len(all_edges)} edges total, {len(le_edges)} identified as LE")
+
+    if not le_edges:
+        print("[Blunting] No LE edges found — exporting sharp LE")
+        return solid
+
+    # Try fillet with decreasing radius
+    for factor in [1.0, 0.5, 0.25]:
+        r = radius * factor
+        try:
+            result = solid.fillet(r, le_edges)
+            print(f"[Blunting] Fillet OK on {len(le_edges)} LE edges (r={r:.5f}m, factor={factor})")
+            return result
+        except Exception as e:
+            print(f"[Blunting] Batch fillet failed (r={r:.5f}, factor={factor}): {e}")
+
+    # Last resort: fillet edges one at a time
+    print("[Blunting] Trying per-edge fillet...")
+    current = solid
+    n_ok = 0
+    for i, edge in enumerate(le_edges):
+        for factor in [1.0, 0.5, 0.25]:
+            r = radius * factor
+            try:
+                current = current.fillet(r, [edge])
+                n_ok += 1
+                break
+            except:
+                pass
+
+    if n_ok > 0:
+        print(f"[Blunting] Filleted {n_ok}/{len(le_edges)} LE edges individually")
+        return current
+
+    print("[Blunting] All fillet attempts failed — exporting sharp LE")
+    return solid
