@@ -128,17 +128,15 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
 def _apply_le_fillet(solid, radius, le_points):
     """
-    Apply fillet to leading edge and nose of a waverider solid in a
-    single OCC fillet operation.
+    Apply leading edge blunting + nose cap to a waverider solid.
 
-    Uses BRepFilletAPI_MakeFillet to add ALL edges (LE + nose symmetry)
-    with per-edge radii in one Build() call. This avoids topology changes
-    between operations that cause the two-step approach to fail.
+    Strategy:
+    1. Fillet the LE edge only (constant radius, no nose edges)
+    2. Cut off the sharp nose tip at a station near the tip
+    3. Fillet the edges created by the cut to form a smooth nose cap
 
-    Edge classification:
-    - Symmetry edges: both vertices z ≈ 0
-    - Back edges: both vertices x ≈ x_max
-    - LE edge: z-extent + one vertex at tip (x_min, z≈0)
+    This avoids the broken OCP variable-fillet API and the topology
+    issues that prevent two-step filleting of nose edges.
     """
     all_edges = solid.Edges()
     bb = solid.BoundingBox()
@@ -151,7 +149,6 @@ def _apply_le_fillet(solid, radius, le_points):
     print(f"[Blunting] Solid has {len(all_edges)} edges, radius={radius:.5f}m")
 
     le_edges = []
-    sym_nose_edges = []
     for i, edge in enumerate(all_edges):
         vertices = edge.Vertices()
         if len(vertices) < 2:
@@ -163,7 +160,6 @@ def _apply_le_fillet(solid, radius, le_points):
         p1 = np.array([v1.x, v1.y, v1.z])
         p2 = np.array([v2.x, v2.y, v2.z])
 
-        # Classify edge by vertex positions
         on_sym = abs(p1[2]) < tol and abs(p2[2]) < tol
         on_back = abs(p1[0] - x_max) < tol and abs(p2[0] - x_max) < tol
         has_z = abs(p1[2]) > tol or abs(p2[2]) > tol
@@ -173,10 +169,7 @@ def _apply_le_fillet(solid, radius, le_points):
 
         label = "?"
         if on_sym and not on_back:
-            label = "symmetry"
-            if has_tip:
-                label = "symmetry (nose)"
-                sym_nose_edges.append(edge)
+            label = "symmetry (nose)" if has_tip else "symmetry"
         elif on_back:
             label = "back"
         elif has_z and has_tip:
@@ -188,87 +181,109 @@ def _apply_le_fillet(solid, radius, le_points):
         print(f"  Edge {i}: ({p1[0]:.4f},{p1[1]:.4f},{p1[2]:.4f})->"
               f"({p2[0]:.4f},{p2[1]:.4f},{p2[2]:.4f})  [{label}]")
 
-    print(f"[Blunting] {len(le_edges)} LE edge(s), {len(sym_nose_edges)} nose edge(s)")
+    print(f"[Blunting] {len(le_edges)} LE edge(s)")
 
     if not le_edges:
         print("[Blunting] No LE edges found — exporting sharp LE")
         return solid
 
-    # Try combined fillet (LE + nose) in a single operation first,
-    # then fall back to LE-only if the combined approach fails.
-    if sym_nose_edges:
-        result = _fillet_combined(solid, radius, le_edges, sym_nose_edges)
-        if result is not None:
-            return result
-
-    # Fallback: LE-only fillet via CadQuery
-    print("[Blunting] Falling back to LE-only fillet")
+    # Step 1: LE-only fillet
+    current = None
+    le_r_used = 0
     for factor in [1.0, 0.75, 0.5, 0.25, 0.1]:
         r = radius * factor
         try:
-            result = solid.fillet(r, le_edges)
-            print(f"[Blunting] LE-only fillet OK (r={r:.6f}m, factor={factor})")
-            return result
+            current = solid.fillet(r, le_edges)
+            le_r_used = r
+            print(f"[Blunting] LE fillet OK (r={r:.6f}m, factor={factor})")
+            break
         except Exception as e:
-            print(f"[Blunting] LE-only fillet failed (r={r:.6f}): {e}")
+            print(f"[Blunting] LE fillet failed (r={r:.6f}): {e}")
 
-    print("[Blunting] All fillet attempts failed — exporting sharp LE")
-    return solid
+    if current is None:
+        print("[Blunting] All LE fillet attempts failed — exporting sharp LE")
+        return solid
+
+    # Step 2: Nose cap — cut the nose tip off and fillet the cut edges
+    capped = _cap_nose(current, le_r_used)
+    if capped is not None:
+        return capped
+
+    return current
 
 
-def _fillet_combined(solid, radius, le_edges, nose_edges):
+def _cap_nose(solid, radius):
     """
-    Single-operation fillet: LE edges at full radius, nose symmetry edges
-    at a smaller radius. Uses BRepFilletAPI_MakeFillet with Add(radius, edge)
-    per edge so each can have its own constant radius.
+    Replace the sharp nose tip with a smooth rounded cap.
 
-    Returns filleted solid, or None if all attempts fail.
+    1. Cut the solid at x = x_min + cut_dist to remove the sharp tip
+    2. Find the new edges created on the cut face
+    3. Fillet those edges to create a smooth, rounded nose cap
+
+    The fillet on clean planar-intersection edges produces G2-continuous
+    blending with the original waverider surfaces.
     """
-    try:
-        from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
-    except ImportError:
+    bb = solid.BoundingBox()
+    x_min = bb.xmin
+    x_max = bb.xmax
+    length = x_max - x_min
+
+    # Try increasing cut distances — farther from tip = larger cross-section
+    # = more room for the fillet to succeed
+    for cut_mult in [6, 10, 15, 20]:
+        cut_dist = min(radius * cut_mult, length * 0.08)
+        cut_x = x_min + cut_dist
+
+        # Create a box that covers everything with x < cut_x
+        y_span = bb.ymax - bb.ymin
+        z_span = bb.zmax - bb.zmin
+        margin = max(y_span, z_span, length * 0.1) * 3
+        eps = length * 0.0001
+
         try:
-            from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
-        except ImportError:
-            print("[Combined] OCC API not available")
-            return None
+            cutter = cq.Solid.makeBox(
+                cut_dist + eps,
+                margin,
+                margin,
+                pnt=cq.Vector(x_min - eps, bb.ymin - margin / 3, bb.zmin - margin / 3)
+            )
+            trimmed = solid.cut(cutter)
+        except Exception as e:
+            print(f"[NoseCap] Boolean cut failed (cut_x={cut_x:.4f}): {e}")
+            continue
 
-    # Try combined LE + nose with different nose radius fractions
-    nose_fractions = [0.5, 0.3, 0.15]
-    le_factors = [1.0, 0.75, 0.5, 0.25, 0.1]
+        # Find edges on the cut face: both vertices at x ≈ cut_x
+        cut_tol = cut_dist * 0.15
+        cut_edges = []
+        for edge in trimmed.Edges():
+            verts = edge.Vertices()
+            if len(verts) < 2:
+                continue
+            c1 = verts[0].Center()
+            c2 = verts[-1].Center()
+            if abs(c1.x - cut_x) < cut_tol and abs(c2.x - cut_x) < cut_tol:
+                cut_edges.append(edge)
 
-    for le_factor in le_factors:
-        r_le = radius * le_factor
+        if not cut_edges:
+            print(f"[NoseCap] No edges found at cut plane x={cut_x:.4f}")
+            continue
 
-        for nose_frac in nose_fractions:
-            r_nose = r_le * nose_frac
+        print(f"[NoseCap] Cut at x={cut_x:.4f}: found {len(cut_edges)} edge(s), "
+              f"trying fillet...")
+
+        # Fillet the cut edges — use radius up to a fraction of cut_dist
+        # so the fillet fits within the cross-section
+        max_fillet_r = cut_dist * 0.45
+        for frac in [1.0, 0.7, 0.5, 0.3, 0.2, 0.1]:
+            r = min(radius * frac, max_fillet_r)
+            if r < 1e-6:
+                continue
             try:
-                fillet_builder = BRepFilletAPI_MakeFillet(solid.wrapped)
-                for e in le_edges:
-                    fillet_builder.Add(float(r_le), e.wrapped)
-                for e in nose_edges:
-                    fillet_builder.Add(float(r_nose), e.wrapped)
-                fillet_builder.Build()
-                if fillet_builder.IsDone():
-                    result = cq.Solid(fillet_builder.Shape())
-                    print(f"[Combined] Fillet OK (r_le={r_le:.6f}, r_nose={r_nose:.6f})")
-                    return result
-                else:
-                    print(f"[Combined] Not done (r_le={r_le:.6f}, r_nose={r_nose:.6f})")
-            except Exception as e:
-                print(f"[Combined] Failed (r_le={r_le:.6f}, r_nose={r_nose:.6f}): {e}")
-
-        # Try LE-only via OCC API at this factor (no nose)
-        try:
-            fillet_builder = BRepFilletAPI_MakeFillet(solid.wrapped)
-            for e in le_edges:
-                fillet_builder.Add(float(r_le), e.wrapped)
-            fillet_builder.Build()
-            if fillet_builder.IsDone():
-                result = cq.Solid(fillet_builder.Shape())
-                print(f"[Combined] LE-only via OCC OK (r_le={r_le:.6f}), nose skipped")
+                result = trimmed.fillet(r, cut_edges)
+                print(f"[NoseCap] Nose cap OK (r={r:.6f}, cut_x={cut_x:.4f})")
                 return result
-        except Exception as e:
-            print(f"[Combined] LE-only via OCC failed (r_le={r_le:.6f}): {e}")
+            except Exception as e:
+                print(f"[NoseCap] Fillet failed (r={r:.6f}): {e}")
 
+    print("[NoseCap] All nose cap attempts failed — keeping LE-only fillet")
     return None
