@@ -138,8 +138,9 @@ def _apply_le_fillet(solid, radius, le_points):
     """
     all_edges = solid.Edges()
     bb = solid.BoundingBox()
+    x_min = bb.xmin
     x_max = bb.xmax
-    tol = max((bb.xmax - bb.xmin) * 0.01, 1e-4)
+    tol = max((x_max - x_min) * 0.01, 1e-4)
 
     print(f"[Blunting] Solid bounding box: x=[{bb.xmin:.4f}, {bb.xmax:.4f}], "
           f"y=[{bb.ymin:.4f}, {bb.ymax:.4f}], z=[{bb.zmin:.4f}, {bb.zmax:.4f}]")
@@ -157,34 +158,25 @@ def _apply_le_fillet(solid, radius, le_points):
         p1 = np.array([v1.x, v1.y, v1.z])
         p2 = np.array([v2.x, v2.y, v2.z])
 
-        # Classify edge
+        # Classify edge by vertex positions
         on_sym = abs(p1[2]) < tol and abs(p2[2]) < tol
         on_back = abs(p1[0] - x_max) < tol and abs(p2[0] - x_max) < tol
-        has_tip = (np.linalg.norm(p1) < tol) or (np.linalg.norm(p2) < tol)
         has_z = abs(p1[2]) > tol or abs(p2[2]) > tol
+        # Tip = vertex at x_min on the symmetry plane (z ≈ 0)
+        at_tip_1 = abs(p1[0] - x_min) < tol and abs(p1[2]) < tol
+        at_tip_2 = abs(p2[0] - x_min) < tol and abs(p2[2]) < tol
+        has_tip = at_tip_1 or at_tip_2
 
         label = "?"
         if on_sym:
             label = "symmetry"
         elif on_back:
             label = "back"
-        elif has_tip and has_z:
+        elif has_z and has_tip:
             label = "LEADING EDGE"
             le_edges.append(edge)
         elif has_z:
-            # Edge with z-extent but not starting at tip — could be TE spline
-            # Check if it's a TE edge (both endpoints at x ≈ x_max or along TE curve)
-            on_te = abs(p1[0] - x_max) < tol or abs(p2[0] - x_max) < tol
-            if on_te:
-                label = "trailing edge"
-            else:
-                # Might still be LE if one vertex is near origin area
-                near_origin = min(np.linalg.norm(p1), np.linalg.norm(p2))
-                if near_origin < tol * 10:
-                    label = "LEADING EDGE (near-tip)"
-                    le_edges.append(edge)
-                else:
-                    label = "other (z-extent)"
+            label = "trailing edge"
 
         print(f"  Edge {i}: ({p1[0]:.4f},{p1[1]:.4f},{p1[2]:.4f})->"
               f"({p2[0]:.4f},{p2[1]:.4f},{p2[2]:.4f})  [{label}]")
