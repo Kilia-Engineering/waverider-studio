@@ -128,16 +128,16 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
 def _apply_le_fillet(solid, radius, le_points):
     """
-    Apply variable-radius fillet to leading edge of a waverider solid.
+    Apply fillet to leading edge and nose of a waverider solid.
 
-    Uses OCC's BRepFilletAPI_MakeFillet with linearly varying radius:
-    full radius at the wingtip, tapering to near-zero at the nose tip.
-    This preserves the nose shape while blunting the outer LE.
+    Step 1: Fillet the LE edge (constant radius)
+    Step 2: Fillet the symmetry edges near the nose to create a
+            rounded "duck nose" cap
 
-    Identifies LE edges by geometry-based classification:
-    - Exclude edges on the symmetry plane (both vertices z ≈ 0)
-    - Exclude edges on the back face (both vertices x ≈ x_max)
-    - Remaining edge(s) with one vertex near the tip are LE
+    Identifies edges by geometry-based classification:
+    - Symmetry edges: both vertices z ≈ 0
+    - Back edges: both vertices x ≈ x_max
+    - LE edge: z-extent + one vertex at tip (x_min, z≈0)
     """
     all_edges = solid.Edges()
     bb = solid.BoundingBox()
@@ -150,6 +150,7 @@ def _apply_le_fillet(solid, radius, le_points):
     print(f"[Blunting] Solid has {len(all_edges)} edges, radius={radius:.5f}m")
 
     le_edges = []
+    sym_nose_edges = []
     for i, edge in enumerate(all_edges):
         vertices = edge.Vertices()
         if len(vertices) < 2:
@@ -170,8 +171,12 @@ def _apply_le_fillet(solid, radius, le_points):
         has_tip = at_tip_1 or at_tip_2
 
         label = "?"
-        if on_sym:
+        if on_sym and not on_back:
             label = "symmetry"
+            # Symmetry edges touching the nose tip — candidates for nose rounding
+            if has_tip:
+                label = "symmetry (nose)"
+                sym_nose_edges.append(edge)
         elif on_back:
             label = "back"
         elif has_z and has_tip:
@@ -183,146 +188,134 @@ def _apply_le_fillet(solid, radius, le_points):
         print(f"  Edge {i}: ({p1[0]:.4f},{p1[1]:.4f},{p1[2]:.4f})->"
               f"({p2[0]:.4f},{p2[1]:.4f},{p2[2]:.4f})  [{label}]")
 
-    print(f"[Blunting] {len(le_edges)} LE edge(s) identified")
+    print(f"[Blunting] {len(le_edges)} LE edge(s), {len(sym_nose_edges)} nose edge(s)")
 
     if not le_edges:
         print("[Blunting] No LE edges found — exporting sharp LE")
         return solid
 
-    # Try variable-radius fillet first (preserves nose)
-    result = _try_variable_fillet(solid, radius, le_edges, x_min, tol)
-    if result is not None:
-        return result
-
-    # Fallback: constant-radius fillet with decreasing radius
-    print("[Blunting] Variable fillet failed, trying constant radius...")
-    for factor in [0.5, 0.25, 0.1]:
+    # Step 1: Fillet the LE edge with constant radius
+    current = solid
+    le_filleted = False
+    for factor in [1.0, 0.75, 0.5, 0.25, 0.1]:
         r = radius * factor
         try:
-            result = solid.fillet(r, le_edges)
-            print(f"[Blunting] Constant fillet OK (r={r:.6f}m, factor={factor})")
-            return result
+            current = current.fillet(r, le_edges)
+            print(f"[Blunting] LE fillet OK (r={r:.6f}m, factor={factor})")
+            le_filleted = True
+            break
         except Exception as e:
-            print(f"[Blunting] Constant fillet failed (r={r:.6f}): {e}")
+            print(f"[Blunting] LE fillet failed (r={r:.6f}): {e}")
 
-    print("[Blunting] All fillet attempts failed — exporting sharp LE")
-    return solid
+    if not le_filleted:
+        print("[Blunting] All LE fillet attempts failed — exporting sharp LE")
+        return solid
+
+    # Step 2: Round the nose by filleting symmetry edges near the tip
+    if sym_nose_edges:
+        current = _round_nose(current, radius, x_min, x_max, tol)
+
+    return current
 
 
-def _try_variable_fillet(solid, radius, le_edges, x_min, tol):
+def _round_nose(solid, radius, x_min, x_max, tol):
     """
-    Apply variable-radius fillet via OCC BRepFilletAPI_MakeFillet.
+    Round the nose tip by applying a variable-radius fillet to the
+    symmetry-plane edges near the nose.
 
-    Uses a radius profile that is constant (full radius) along most of the
-    LE, then quickly tapers to near-zero in the last ~15% near the nose tip.
-    This preserves the duck-nose shape while blunting the rest of the LE.
+    After the LE fillet, the solid has new edges. We re-identify the
+    symmetry edges that touch the nose region, then apply a variable
+    fillet: full radius at the nose vertex, tapering to zero toward the back.
     """
     try:
         from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
         from OCP.BRep import BRep_Tool
-        from OCP.TColgp import TColgp_Array1OfPnt2d
-        from OCP.gp import gp_Pnt2d
-        has_profile_api = True
     except ImportError:
-        has_profile_api = False
-
-    if not has_profile_api:
         try:
             from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
             from OCC.Core.BRep import BRep_Tool
-            from OCC.Core.TColgp import TColgp_Array1OfPnt2d
-            from OCC.Core.gp import gp_Pnt2d
-            has_profile_api = True
         except ImportError:
-            print("[Blunting] OCC fillet API not available for variable radius")
-            return None
+            print("[Nose] OCC API not available for nose rounding")
+            return solid
 
-    nose_fraction = 0.02  # 2% of requested radius at the very tip
-    taper_zone = 0.15     # taper in the last 15% near the nose
+    # Re-identify symmetry edges in the (now filleted) solid
+    all_edges = solid.Edges()
+    nose_edges = []
 
+    for edge in all_edges:
+        vertices = edge.Vertices()
+        if len(vertices) < 2:
+            continue
+        v1 = vertices[0].Center()
+        v2 = vertices[-1].Center()
+        p1 = np.array([v1.x, v1.y, v1.z])
+        p2 = np.array([v2.x, v2.y, v2.z])
+
+        # Symmetry edge: both z ≈ 0, not on back face
+        on_sym = abs(p1[2]) < tol and abs(p2[2]) < tol
+        on_back = abs(p1[0] - x_max) < tol and abs(p2[0] - x_max) < tol
+        at_tip_1 = abs(p1[0] - x_min) < tol and abs(p1[2]) < tol
+        at_tip_2 = abs(p2[0] - x_min) < tol and abs(p2[2]) < tol
+        has_tip = at_tip_1 or at_tip_2
+
+        if on_sym and has_tip and not on_back:
+            nose_edges.append(edge)
+
+    if not nose_edges:
+        print("[Nose] No symmetry nose edges found after LE fillet")
+        return solid
+
+    print(f"[Nose] Found {len(nose_edges)} symmetry edge(s) at nose, applying variable fillet")
+
+    # Apply variable-radius fillet: full at nose, taper to zero toward back
+    nose_radius = radius  # same as LE radius for smooth transition
     for factor in [1.0, 0.75, 0.5, 0.25]:
-        r_full = radius * factor
-        r_nose = max(radius * nose_fraction * factor, 1e-6)
+        r_nose = nose_radius * factor
+        r_back = max(nose_radius * 0.01 * factor, 1e-6)
 
         try:
             fillet_builder = BRepFilletAPI_MakeFillet(solid.wrapped)
 
-            for edge in le_edges:
-                # Get edge curve and parametric range
+            for edge in nose_edges:
+                # Determine which end is the nose (x ≈ x_min)
                 curve_data = BRep_Tool.Curve_s(edge.wrapped)
                 curve = curve_data[0]
                 u_first = curve_data[1]
                 u_last = curve_data[2]
-                u_range = u_last - u_first
 
-                # Determine which parametric end is the nose
                 p_first = curve.Value(u_first)
                 p_last = curve.Value(u_last)
-                # Distance to nose = distance to (x_min, *, z≈0)
-                d_first = abs(p_first.X() - x_min) + abs(p_first.Z())
-                d_last = abs(p_last.X() - x_min) + abs(p_last.Z())
-                first_is_nose = d_first < d_last
 
-                # Build radius profile: constant full, quick taper at nose
-                profile = TColgp_Array1OfPnt2d(1, 4)
-                if first_is_nose:
-                    # u_first = nose, u_last = wingtip
-                    u_taper = u_first + taper_zone * u_range
-                    profile.SetValue(1, gp_Pnt2d(u_first, r_nose))
-                    profile.SetValue(2, gp_Pnt2d(u_taper, r_full))
-                    profile.SetValue(3, gp_Pnt2d(u_first + 0.5 * u_range, r_full))
-                    profile.SetValue(4, gp_Pnt2d(u_last, r_full))
-                    print(f"[Blunting] Profile: nose@u={u_first:.3f}(r={r_nose:.6f}) "
-                          f"→ full@u={u_taper:.3f}(r={r_full:.6f}) → wingtip@u={u_last:.3f}")
-                else:
-                    # u_first = wingtip, u_last = nose
-                    u_taper = u_last - taper_zone * u_range
-                    profile.SetValue(1, gp_Pnt2d(u_first, r_full))
-                    profile.SetValue(2, gp_Pnt2d(u_first + 0.5 * u_range, r_full))
-                    profile.SetValue(3, gp_Pnt2d(u_taper, r_full))
-                    profile.SetValue(4, gp_Pnt2d(u_last, r_nose))
-                    print(f"[Blunting] Profile: wingtip@u={u_first:.3f}(r={r_full:.6f}) "
-                          f"→ full@u={u_taper:.3f} → nose@u={u_last:.3f}(r={r_nose:.6f})")
-
-                fillet_builder.Add(profile, edge.wrapped)
-
-            fillet_builder.Build()
-            if fillet_builder.IsDone():
-                result = cq.Solid(fillet_builder.Shape())
-                print(f"[Blunting] Variable fillet OK (full={r_full:.6f}, nose={r_nose:.6f})")
-                return result
-            else:
-                print(f"[Blunting] Variable fillet not done (factor={factor})")
-        except Exception as e:
-            print(f"[Blunting] Variable fillet failed (factor={factor}): {e}")
-
-    # Fallback: try simple two-point variable fillet (R1, R2)
-    print("[Blunting] Profile fillet failed, trying simple two-point variable...")
-    for factor in [1.0, 0.75, 0.5, 0.25]:
-        r_full = radius * factor
-        r_nose = max(radius * nose_fraction * factor, 1e-6)
-
-        try:
-            fillet_builder = BRepFilletAPI_MakeFillet(solid.wrapped)
-            for edge in le_edges:
-                curve_data = BRep_Tool.Curve_s(edge.wrapped)
-                curve = curve_data[0]
-                p_first = curve.Value(curve_data[1])
-                p_last = curve.Value(curve_data[2])
-                d_first = abs(p_first.X() - x_min) + abs(p_first.Z())
-                d_last = abs(p_last.X() - x_min) + abs(p_last.Z())
+                d_first = abs(p_first.X() - x_min)
+                d_last = abs(p_last.X() - x_min)
 
                 if d_first < d_last:
-                    fillet_builder.Add(r_nose, r_full, edge.wrapped)
+                    # u_first = nose, u_last = toward back
+                    fillet_builder.Add(r_nose, r_back, edge.wrapped)
                 else:
-                    fillet_builder.Add(r_full, r_nose, edge.wrapped)
+                    # u_last = nose, u_first = toward back
+                    fillet_builder.Add(r_back, r_nose, edge.wrapped)
 
             fillet_builder.Build()
             if fillet_builder.IsDone():
                 result = cq.Solid(fillet_builder.Shape())
-                print(f"[Blunting] Two-point variable fillet OK (full={r_full:.6f}, nose={r_nose:.6f})")
+                print(f"[Nose] Nose rounding OK (r_nose={r_nose:.6f}, r_back={r_back:.6f})")
                 return result
+            else:
+                print(f"[Nose] Fillet not done (factor={factor})")
         except Exception as e:
-            print(f"[Blunting] Two-point fillet failed (factor={factor}): {e}")
+            print(f"[Nose] Variable fillet failed (factor={factor}): {e}")
 
-    return None
+    # Fallback: constant-radius fillet on nose edges with small radius
+    print("[Nose] Variable nose fillet failed, trying constant radius...")
+    for factor in [0.5, 0.25, 0.1]:
+        r = radius * factor
+        try:
+            result = solid.fillet(r, nose_edges)
+            print(f"[Nose] Constant nose fillet OK (r={r:.6f})")
+            return result
+        except Exception as e:
+            print(f"[Nose] Constant fillet failed (r={r:.6f}): {e}")
+
+    print("[Nose] All nose fillet attempts failed — keeping LE-only fillet")
+    return solid
