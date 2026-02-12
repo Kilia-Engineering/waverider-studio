@@ -130,64 +130,96 @@ def _apply_le_fillet(solid, radius, le_points):
     """
     Apply fillet to leading edge of a waverider solid.
 
-    Identifies LE edges by proximity to known LE points, then applies
-    fillet with radius reduction fallback and per-edge fallback.
+    Identifies LE edges by geometry-based classification:
+    - Exclude edges on the symmetry plane (both vertices z ≈ 0)
+    - Exclude edges on the back face (both vertices x ≈ x_max)
+    - Exclude short straight edges (back-sym connector)
+    - Remaining edge(s) with one vertex near the tip are LE
     """
     all_edges = solid.Edges()
     bb = solid.BoundingBox()
-    length = bb.xmax - bb.xmin
+    x_max = bb.xmax
+    tol = max((bb.xmax - bb.xmin) * 0.01, 1e-4)
 
-    # Proximity tolerance for matching edges to LE curve
-    prox_tol = max(length * 0.02, radius * 3)
+    print(f"[Blunting] Solid bounding box: x=[{bb.xmin:.4f}, {bb.xmax:.4f}], "
+          f"y=[{bb.ymin:.4f}, {bb.ymax:.4f}], z=[{bb.zmin:.4f}, {bb.zmax:.4f}]")
+    print(f"[Blunting] Solid has {len(all_edges)} edges, radius={radius:.5f}m")
 
-    # Find LE edges by proximity to known LE points
     le_edges = []
-    for edge in all_edges:
-        mid = edge.Center()
-        mid_pt = np.array([mid.x, mid.y, mid.z])
+    for i, edge in enumerate(all_edges):
+        vertices = edge.Vertices()
+        if len(vertices) < 2:
+            print(f"  Edge {i}: <2 vertices, skipping")
+            continue
 
-        dists = np.linalg.norm(le_points - mid_pt, axis=1)
-        min_dist = np.min(dists)
+        v1 = vertices[0].Center()
+        v2 = vertices[-1].Center()
+        p1 = np.array([v1.x, v1.y, v1.z])
+        p2 = np.array([v2.x, v2.y, v2.z])
 
-        if min_dist < prox_tol:
-            # Skip edges on the symmetry plane (z ≈ 0 for both endpoints)
-            vertices = edge.Vertices()
-            if len(vertices) >= 2:
-                v1 = vertices[0].Center()
-                v2 = vertices[1].Center()
-                if abs(v1.z) < 1e-6 and abs(v2.z) < 1e-6:
-                    continue
+        # Classify edge
+        on_sym = abs(p1[2]) < tol and abs(p2[2]) < tol
+        on_back = abs(p1[0] - x_max) < tol and abs(p2[0] - x_max) < tol
+        has_tip = (np.linalg.norm(p1) < tol) or (np.linalg.norm(p2) < tol)
+        has_z = abs(p1[2]) > tol or abs(p2[2]) > tol
+
+        label = "?"
+        if on_sym:
+            label = "symmetry"
+        elif on_back:
+            label = "back"
+        elif has_tip and has_z:
+            label = "LEADING EDGE"
             le_edges.append(edge)
+        elif has_z:
+            # Edge with z-extent but not starting at tip — could be TE spline
+            # Check if it's a TE edge (both endpoints at x ≈ x_max or along TE curve)
+            on_te = abs(p1[0] - x_max) < tol or abs(p2[0] - x_max) < tol
+            if on_te:
+                label = "trailing edge"
+            else:
+                # Might still be LE if one vertex is near origin area
+                near_origin = min(np.linalg.norm(p1), np.linalg.norm(p2))
+                if near_origin < tol * 10:
+                    label = "LEADING EDGE (near-tip)"
+                    le_edges.append(edge)
+                else:
+                    label = "other (z-extent)"
 
-    print(f"[Blunting] Solid has {len(all_edges)} edges total, {len(le_edges)} identified as LE")
+        print(f"  Edge {i}: ({p1[0]:.4f},{p1[1]:.4f},{p1[2]:.4f})->"
+              f"({p2[0]:.4f},{p2[1]:.4f},{p2[2]:.4f})  [{label}]")
+
+    print(f"[Blunting] {len(le_edges)} LE edge(s) identified")
 
     if not le_edges:
         print("[Blunting] No LE edges found — exporting sharp LE")
         return solid
 
     # Try fillet with decreasing radius
-    for factor in [1.0, 0.5, 0.25]:
+    for factor in [1.0, 0.75, 0.5, 0.25, 0.1]:
         r = radius * factor
         try:
             result = solid.fillet(r, le_edges)
-            print(f"[Blunting] Fillet OK on {len(le_edges)} LE edges (r={r:.5f}m, factor={factor})")
+            print(f"[Blunting] Fillet OK on {len(le_edges)} LE edges (r={r:.6f}m, factor={factor})")
             return result
         except Exception as e:
-            print(f"[Blunting] Batch fillet failed (r={r:.5f}, factor={factor}): {e}")
+            print(f"[Blunting] Batch fillet failed (r={r:.6f}, factor={factor}): {e}")
 
     # Last resort: fillet edges one at a time
     print("[Blunting] Trying per-edge fillet...")
     current = solid
     n_ok = 0
     for i, edge in enumerate(le_edges):
-        for factor in [1.0, 0.5, 0.25]:
+        for factor in [1.0, 0.75, 0.5, 0.25, 0.1]:
             r = radius * factor
             try:
                 current = current.fillet(r, [edge])
                 n_ok += 1
+                print(f"[Blunting] Edge {i} filleted (r={r:.6f}m)")
                 break
-            except:
-                pass
+            except Exception as e:
+                if factor == 0.1:
+                    print(f"[Blunting] Edge {i} fillet failed at all radii: {e}")
 
     if n_ok > 0:
         print(f"[Blunting] Filleted {n_ok}/{len(le_edges)} LE edges individually")
