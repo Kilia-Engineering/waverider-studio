@@ -23,23 +23,55 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     us_streams=waverider.upper_surface_streams
     ls_streams=waverider.lower_surface_streams
 
-    # Apply point-level LE blunting BEFORE solid creation (most reliable approach).
-    # The post-solid fillet/loft methods are unreliable on complex waverider geometry,
-    # so 'auto' and 'points' apply blunting at the stream level before CAD construction.
+    # Apply LE blunting BEFORE solid creation by moving LE points to the tangent
+    # points of a blunting circle. This preserves stream structure (no extra points)
+    # so interpPlate/makeShell work correctly.
     blunting_method_used = 'none'
     if blunting_radius > 0 and blunting_method in ('auto', 'points'):
-        from waverider_generator.leading_edge_blunting import blunt_leading_edge_points
-        try:
-            modified_upper, modified_lower, _ = blunt_leading_edge_points(
-                waverider, blunting_radius)
-            us_streams = modified_upper
-            ls_streams = modified_lower
-            blunting_method_used = 'points'
-            print(f"[Blunting] Point-level LE blunting applied (r={blunting_radius:.4f} m)")
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"[Blunting] Point-level blunting failed: {e}")
+        us_streams = [s.copy() for s in us_streams]
+        ls_streams = [s.copy() for s in ls_streams]
+        n_blunted = 0
+        for i in range(len(us_streams)):
+            le_pt = us_streams[i][0].copy()
+            # Upper surface tangent (downstream from LE)
+            if us_streams[i].shape[0] >= 2:
+                t_u = us_streams[i][1] - us_streams[i][0]
+                t_u_norm = np.linalg.norm(t_u)
+                t_u = t_u / t_u_norm if t_u_norm > 1e-12 else np.array([1.0, 0.0, 0.0])
+            else:
+                t_u = np.array([1.0, 0.0, 0.0])
+            # Lower surface tangent
+            if ls_streams[i].shape[0] >= 2:
+                t_l = ls_streams[i][1] - ls_streams[i][0]
+                t_l_norm = np.linalg.norm(t_l)
+                t_l = t_l / t_l_norm if t_l_norm > 1e-12 else np.array([1.0, 0.0, 0.0])
+            else:
+                t_l = np.array([1.0, 0.0, 0.0])
+
+            bisector = t_u + t_l
+            b_norm = np.linalg.norm(bisector)
+            if b_norm < 1e-12:
+                continue
+            bisector = bisector / b_norm
+
+            cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
+            half_angle = np.arccos(cos_half) / 2.0
+            if half_angle < 1e-6:
+                continue
+
+            d_center = blunting_radius / np.sin(half_angle)
+            center = le_pt + d_center * bisector
+
+            # Tangent points where the blunting arc meets each surface
+            tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
+            tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
+
+            us_streams[i][0] = tp_upper
+            ls_streams[i][0] = tp_lower
+            n_blunted += 1
+
+        blunting_method_used = 'points'
+        print(f"[Blunting] LE blunting applied to {n_blunted}/{len(us_streams)} streams (r={blunting_radius:.4f} m)")
 
     # compute LE
     le = np.vstack([x[0] for x in us_streams])
