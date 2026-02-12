@@ -128,12 +128,15 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
 def _apply_le_fillet(solid, radius, le_points):
     """
-    Apply fillet to leading edge of a waverider solid.
+    Apply variable-radius fillet to leading edge of a waverider solid.
+
+    Uses OCC's BRepFilletAPI_MakeFillet with linearly varying radius:
+    full radius at the wingtip, tapering to near-zero at the nose tip.
+    This preserves the nose shape while blunting the outer LE.
 
     Identifies LE edges by geometry-based classification:
     - Exclude edges on the symmetry plane (both vertices z ≈ 0)
     - Exclude edges on the back face (both vertices x ≈ x_max)
-    - Exclude short straight edges (back-sym connector)
     - Remaining edge(s) with one vertex near the tip are LE
     """
     all_edges = solid.Edges()
@@ -162,7 +165,6 @@ def _apply_le_fillet(solid, radius, le_points):
         on_sym = abs(p1[2]) < tol and abs(p2[2]) < tol
         on_back = abs(p1[0] - x_max) < tol and abs(p2[0] - x_max) < tol
         has_z = abs(p1[2]) > tol or abs(p2[2]) > tol
-        # Tip = vertex at x_min on the symmetry plane (z ≈ 0)
         at_tip_1 = abs(p1[0] - x_min) < tol and abs(p1[2]) < tol
         at_tip_2 = abs(p2[0] - x_min) < tol and abs(p2[2]) < tol
         has_tip = at_tip_1 or at_tip_2
@@ -187,35 +189,85 @@ def _apply_le_fillet(solid, radius, le_points):
         print("[Blunting] No LE edges found — exporting sharp LE")
         return solid
 
-    # Try fillet with decreasing radius
-    for factor in [1.0, 0.75, 0.5, 0.25, 0.1]:
+    # Try variable-radius fillet first (preserves nose)
+    result = _try_variable_fillet(solid, radius, le_edges, x_min, tol)
+    if result is not None:
+        return result
+
+    # Fallback: constant-radius fillet with decreasing radius
+    print("[Blunting] Variable fillet failed, trying constant radius...")
+    for factor in [0.5, 0.25, 0.1]:
         r = radius * factor
         try:
             result = solid.fillet(r, le_edges)
-            print(f"[Blunting] Fillet OK on {len(le_edges)} LE edges (r={r:.6f}m, factor={factor})")
+            print(f"[Blunting] Constant fillet OK (r={r:.6f}m, factor={factor})")
             return result
         except Exception as e:
-            print(f"[Blunting] Batch fillet failed (r={r:.6f}, factor={factor}): {e}")
-
-    # Last resort: fillet edges one at a time
-    print("[Blunting] Trying per-edge fillet...")
-    current = solid
-    n_ok = 0
-    for i, edge in enumerate(le_edges):
-        for factor in [1.0, 0.75, 0.5, 0.25, 0.1]:
-            r = radius * factor
-            try:
-                current = current.fillet(r, [edge])
-                n_ok += 1
-                print(f"[Blunting] Edge {i} filleted (r={r:.6f}m)")
-                break
-            except Exception as e:
-                if factor == 0.1:
-                    print(f"[Blunting] Edge {i} fillet failed at all radii: {e}")
-
-    if n_ok > 0:
-        print(f"[Blunting] Filleted {n_ok}/{len(le_edges)} LE edges individually")
-        return current
+            print(f"[Blunting] Constant fillet failed (r={r:.6f}): {e}")
 
     print("[Blunting] All fillet attempts failed — exporting sharp LE")
     return solid
+
+
+def _try_variable_fillet(solid, radius, le_edges, x_min, tol):
+    """
+    Apply variable-radius fillet via OCC BRepFilletAPI_MakeFillet.
+    Radius tapers from full at the wingtip to near-zero at the nose tip.
+    """
+    try:
+        from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+        from OCP.BRep import BRep_Tool
+    except ImportError:
+        try:
+            from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
+            from OCC.Core.BRep import BRep_Tool
+        except ImportError:
+            print("[Blunting] OCC fillet API not available for variable radius")
+            return None
+
+    # Nose tip gets a very small radius to preserve shape
+    nose_fraction = 0.05  # 5% of requested radius at the tip
+
+    for factor in [1.0, 0.75, 0.5, 0.25]:
+        r_wingtip = radius * factor
+        r_nose = radius * nose_fraction * factor
+        # Ensure minimum radius for OCC stability
+        r_nose = max(r_nose, 1e-6)
+
+        try:
+            fillet_builder = BRepFilletAPI_MakeFillet(solid.wrapped)
+
+            for edge in le_edges:
+                # Determine parametric direction: which end is the tip?
+                curve_data = BRep_Tool.Curve_s(edge.wrapped)
+                curve = curve_data[0]
+                u_first = curve_data[1]
+                u_last = curve_data[2]
+
+                start_pt = curve.Value(u_first)
+                p_start = np.array([start_pt.X(), start_pt.Y(), start_pt.Z()])
+
+                # Check if parametric start is near the tip (x_min, z≈0)
+                start_is_tip = (abs(p_start[0] - x_min) < tol and
+                                abs(p_start[2]) < tol)
+
+                if start_is_tip:
+                    # Parametric start = nose tip, end = wingtip
+                    fillet_builder.Add(r_nose, r_wingtip, edge.wrapped)
+                    print(f"[Blunting] Variable fillet: nose={r_nose:.6f} → wingtip={r_wingtip:.6f}")
+                else:
+                    # Parametric start = wingtip, end = nose tip
+                    fillet_builder.Add(r_wingtip, r_nose, edge.wrapped)
+                    print(f"[Blunting] Variable fillet: wingtip={r_wingtip:.6f} → nose={r_nose:.6f}")
+
+            fillet_builder.Build()
+            if fillet_builder.IsDone():
+                result = cq.Solid(fillet_builder.Shape())
+                print(f"[Blunting] Variable fillet OK (wingtip={r_wingtip:.6f}, nose={r_nose:.6f})")
+                return result
+            else:
+                print(f"[Blunting] Variable fillet not done (factor={factor})")
+        except Exception as e:
+            print(f"[Blunting] Variable fillet failed (factor={factor}): {e}")
+
+    return None
