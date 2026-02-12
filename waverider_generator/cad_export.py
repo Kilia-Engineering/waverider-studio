@@ -212,62 +212,117 @@ def _apply_le_fillet(solid, radius, le_points):
 def _try_variable_fillet(solid, radius, le_edges, x_min, tol):
     """
     Apply variable-radius fillet via OCC BRepFilletAPI_MakeFillet.
-    Radius tapers from full at the wingtip to near-zero at the nose tip.
+
+    Uses a radius profile that is constant (full radius) along most of the
+    LE, then quickly tapers to near-zero in the last ~15% near the nose tip.
+    This preserves the duck-nose shape while blunting the rest of the LE.
     """
     try:
         from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
         from OCP.BRep import BRep_Tool
+        from OCP.TColgp import TColgp_Array1OfPnt2d
+        from OCP.gp import gp_Pnt2d
+        has_profile_api = True
     except ImportError:
+        has_profile_api = False
+
+    if not has_profile_api:
         try:
             from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
             from OCC.Core.BRep import BRep_Tool
+            from OCC.Core.TColgp import TColgp_Array1OfPnt2d
+            from OCC.Core.gp import gp_Pnt2d
+            has_profile_api = True
         except ImportError:
             print("[Blunting] OCC fillet API not available for variable radius")
             return None
 
-    # Nose tip gets a very small radius to preserve shape
-    nose_fraction = 0.05  # 5% of requested radius at the tip
+    nose_fraction = 0.02  # 2% of requested radius at the very tip
+    taper_zone = 0.15     # taper in the last 15% near the nose
 
     for factor in [1.0, 0.75, 0.5, 0.25]:
-        r_wingtip = radius * factor
-        r_nose = radius * nose_fraction * factor
-        # Ensure minimum radius for OCC stability
-        r_nose = max(r_nose, 1e-6)
+        r_full = radius * factor
+        r_nose = max(radius * nose_fraction * factor, 1e-6)
 
         try:
             fillet_builder = BRepFilletAPI_MakeFillet(solid.wrapped)
 
             for edge in le_edges:
-                # Determine parametric direction: which end is the tip?
+                # Get edge curve and parametric range
                 curve_data = BRep_Tool.Curve_s(edge.wrapped)
                 curve = curve_data[0]
                 u_first = curve_data[1]
                 u_last = curve_data[2]
+                u_range = u_last - u_first
 
-                start_pt = curve.Value(u_first)
-                p_start = np.array([start_pt.X(), start_pt.Y(), start_pt.Z()])
+                # Determine which parametric end is the nose
+                p_first = curve.Value(u_first)
+                p_last = curve.Value(u_last)
+                # Distance to nose = distance to (x_min, *, z≈0)
+                d_first = abs(p_first.X() - x_min) + abs(p_first.Z())
+                d_last = abs(p_last.X() - x_min) + abs(p_last.Z())
+                first_is_nose = d_first < d_last
 
-                # Check if parametric start is near the tip (x_min, z≈0)
-                start_is_tip = (abs(p_start[0] - x_min) < tol and
-                                abs(p_start[2]) < tol)
-
-                if start_is_tip:
-                    # Parametric start = nose tip, end = wingtip
-                    fillet_builder.Add(r_nose, r_wingtip, edge.wrapped)
-                    print(f"[Blunting] Variable fillet: nose={r_nose:.6f} → wingtip={r_wingtip:.6f}")
+                # Build radius profile: constant full, quick taper at nose
+                profile = TColgp_Array1OfPnt2d(1, 4)
+                if first_is_nose:
+                    # u_first = nose, u_last = wingtip
+                    u_taper = u_first + taper_zone * u_range
+                    profile.SetValue(1, gp_Pnt2d(u_first, r_nose))
+                    profile.SetValue(2, gp_Pnt2d(u_taper, r_full))
+                    profile.SetValue(3, gp_Pnt2d(u_first + 0.5 * u_range, r_full))
+                    profile.SetValue(4, gp_Pnt2d(u_last, r_full))
+                    print(f"[Blunting] Profile: nose@u={u_first:.3f}(r={r_nose:.6f}) "
+                          f"→ full@u={u_taper:.3f}(r={r_full:.6f}) → wingtip@u={u_last:.3f}")
                 else:
-                    # Parametric start = wingtip, end = nose tip
-                    fillet_builder.Add(r_wingtip, r_nose, edge.wrapped)
-                    print(f"[Blunting] Variable fillet: wingtip={r_wingtip:.6f} → nose={r_nose:.6f}")
+                    # u_first = wingtip, u_last = nose
+                    u_taper = u_last - taper_zone * u_range
+                    profile.SetValue(1, gp_Pnt2d(u_first, r_full))
+                    profile.SetValue(2, gp_Pnt2d(u_first + 0.5 * u_range, r_full))
+                    profile.SetValue(3, gp_Pnt2d(u_taper, r_full))
+                    profile.SetValue(4, gp_Pnt2d(u_last, r_nose))
+                    print(f"[Blunting] Profile: wingtip@u={u_first:.3f}(r={r_full:.6f}) "
+                          f"→ full@u={u_taper:.3f} → nose@u={u_last:.3f}(r={r_nose:.6f})")
+
+                fillet_builder.Add(profile, edge.wrapped)
 
             fillet_builder.Build()
             if fillet_builder.IsDone():
                 result = cq.Solid(fillet_builder.Shape())
-                print(f"[Blunting] Variable fillet OK (wingtip={r_wingtip:.6f}, nose={r_nose:.6f})")
+                print(f"[Blunting] Variable fillet OK (full={r_full:.6f}, nose={r_nose:.6f})")
                 return result
             else:
                 print(f"[Blunting] Variable fillet not done (factor={factor})")
         except Exception as e:
             print(f"[Blunting] Variable fillet failed (factor={factor}): {e}")
+
+    # Fallback: try simple two-point variable fillet (R1, R2)
+    print("[Blunting] Profile fillet failed, trying simple two-point variable...")
+    for factor in [1.0, 0.75, 0.5, 0.25]:
+        r_full = radius * factor
+        r_nose = max(radius * nose_fraction * factor, 1e-6)
+
+        try:
+            fillet_builder = BRepFilletAPI_MakeFillet(solid.wrapped)
+            for edge in le_edges:
+                curve_data = BRep_Tool.Curve_s(edge.wrapped)
+                curve = curve_data[0]
+                p_first = curve.Value(curve_data[1])
+                p_last = curve.Value(curve_data[2])
+                d_first = abs(p_first.X() - x_min) + abs(p_first.Z())
+                d_last = abs(p_last.X() - x_min) + abs(p_last.Z())
+
+                if d_first < d_last:
+                    fillet_builder.Add(r_nose, r_full, edge.wrapped)
+                else:
+                    fillet_builder.Add(r_full, r_nose, edge.wrapped)
+
+            fillet_builder.Build()
+            if fillet_builder.IsDone():
+                result = cq.Solid(fillet_builder.Shape())
+                print(f"[Blunting] Two-point variable fillet OK (full={r_full:.6f}, nose={r_nose:.6f})")
+                return result
+        except Exception as e:
+            print(f"[Blunting] Two-point fillet failed (factor={factor}): {e}")
 
     return None
