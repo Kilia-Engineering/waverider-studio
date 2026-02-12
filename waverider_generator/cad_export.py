@@ -23,7 +23,25 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     us_streams=waverider.upper_surface_streams
     ls_streams=waverider.lower_surface_streams
 
-    # compute LE 
+    # Apply point-level LE blunting BEFORE solid creation (most reliable approach).
+    # The post-solid fillet/loft methods are unreliable on complex waverider geometry,
+    # so 'auto' and 'points' apply blunting at the stream level before CAD construction.
+    blunting_method_used = 'none'
+    if blunting_radius > 0 and blunting_method in ('auto', 'points'):
+        from waverider_generator.leading_edge_blunting import blunt_leading_edge_points
+        try:
+            modified_upper, modified_lower, _ = blunt_leading_edge_points(
+                waverider, blunting_radius)
+            us_streams = modified_upper
+            ls_streams = modified_lower
+            blunting_method_used = 'points'
+            print(f"[Blunting] Point-level LE blunting applied (r={blunting_radius:.4f} m)")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[Blunting] Point-level blunting failed: {e}")
+
+    # compute LE
     le = np.vstack([x[0] for x in us_streams])
     
     # compute TE upper surface
@@ -94,24 +112,23 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     # by convention, +ve z is left so this produces the left side
     left_side= cq.Solid.makeSolid(cq.Shell.makeShell([upper_surface.objects[0], lower_surface.objects[0], back,sym])).scale(scale)
 
-    # Apply leading edge blunting if requested
-    blunting_method_used = 'none'
-    if blunting_radius > 0:
+    # Post-solid blunting for explicitly requested 'fillet' or 'loft' methods only.
+    # (For 'auto'/'points', blunting was already applied above before solid creation.)
+    if blunting_radius > 0 and blunting_method_used == 'none':
         from waverider_generator.leading_edge_blunting import apply_blunting
+        le_scaled = le * scale
         try:
             result, blunting_method_used = apply_blunting(
                 waverider=waverider,
                 solid=left_side,
                 radius=blunting_radius * scale,
-                method=blunting_method
+                method=blunting_method,
+                le_points=le_scaled
             )
             if blunting_method_used == 'points':
-                # Point-level method returns stream data, not a solid.
-                # Cannot use it after solid creation — skip blunting.
                 print("[Blunting] Point-level method not applicable after solid creation, skipping")
                 blunting_method_used = 'skipped'
             else:
-                # Extract solid if result is a Workplane
                 if hasattr(result, 'val'):
                     left_side = result.val()
                 elif hasattr(result, 'objects') and len(result.objects) > 0:

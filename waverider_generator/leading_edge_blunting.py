@@ -187,16 +187,12 @@ def blunt_leading_edge_points(waverider, radius):
     return modified_upper, modified_lower, blunted_le
 
 
-def fillet_leading_edge(solid, radius, tolerance=0.01):
+def fillet_leading_edge(solid, radius, le_points=None):
     """
     Approach A (Primary): Apply CAD-level fillet to the leading edge.
 
-    Uses CadQuery/OpenCascade to fillet the sharp edges where
-    upper and lower surfaces meet at the leading edge.
-
-    The leading edge is identified as the edge shared between two faces
-    whose normals point in opposite Y directions (upper surface normal
-    has +Y component, lower surface normal has -Y component).
+    Identifies LE edges by proximity to known LE points, then applies
+    a CadQuery fillet operation.
 
     Parameters
     ----------
@@ -204,18 +200,19 @@ def fillet_leading_edge(solid, radius, tolerance=0.01):
         The waverider solid geometry (from to_CAD).
     radius : float
         Fillet radius in meters.
-    tolerance : float
-        Tolerance for identifying leading edge edges.
+    le_points : np.ndarray, optional
+        (N, 3) array of known leading edge points for proximity matching.
+        If None, falls back to geometry-based detection.
 
     Returns
     -------
-    filleted : cq.Solid or cq.Workplane
+    filleted : cq.Solid
         The filleted waverider solid.
     """
     import cadquery as cq
 
     try:
-        # If it's a Workplane, extract the solid
+        # Extract the solid
         if hasattr(solid, 'val'):
             the_solid = solid.val()
         elif hasattr(solid, 'objects') and len(solid.objects) > 0:
@@ -224,76 +221,73 @@ def fillet_leading_edge(solid, radius, tolerance=0.01):
             the_solid = solid
 
         all_edges = the_solid.Edges()
-        all_faces = the_solid.Faces()
-        if not all_edges or not all_faces:
-            logger.warning("No edges/faces found in solid, returning unchanged")
-            return solid
+        if not all_edges:
+            raise RuntimeError("No edges found in solid")
 
         bb = the_solid.BoundingBox()
-        x_max = bb.xmax
+        length = bb.xmax - bb.xmin
 
-        # Build a map of edge → adjacent faces using CadQuery API
-        # For each face, find its edges and record the association
-        from collections import defaultdict
-        edge_to_faces = defaultdict(list)
-
-        for face in all_faces:
-            # Get the face normal at its center
-            center = face.Center()
-            normal = face.normalAt(center)
-            normal_y = normal.y
-
-            face_edges = face.Edges()
-            for fe in face_edges:
-                # Use edge hash to match edges across faces
-                edge_hash = fe.HashCode(2147483647)
-                edge_to_faces[edge_hash].append((fe, normal_y))
+        # Proximity tolerance: edges within this distance of LE curve are LE edges
+        prox_tol = max(length * 0.02, radius * 3)
 
         le_edges = []
 
-        for edge in all_edges:
-            edge_hash = edge.HashCode(2147483647)
+        if le_points is not None and len(le_points) > 0:
+            # Strategy: match edges whose midpoints lie close to the LE curve
+            for edge in all_edges:
+                mid = edge.Center()
+                mid_pt = np.array([mid.x, mid.y, mid.z])
 
-            if edge_hash not in edge_to_faces:
-                continue
+                # Distance from edge midpoint to nearest LE point
+                dists = np.linalg.norm(le_points - mid_pt, axis=1)
+                min_dist = np.min(dists)
 
-            face_entries = edge_to_faces[edge_hash]
-            if len(face_entries) != 2:
-                continue
-
-            n1_y = face_entries[0][1]
-            n2_y = face_entries[1][1]
-
-            # LE criterion: adjacent faces have opposing Y normals
-            if n1_y * n2_y >= 0:
-                continue
-
-            # Exclude trailing edge and symmetry plane edges
-            vertices = edge.Vertices()
-            if len(vertices) >= 2:
+                if min_dist < prox_tol:
+                    # Also check it's not on the symmetry plane (z ≈ 0)
+                    vertices = edge.Vertices()
+                    if len(vertices) >= 2:
+                        v1 = vertices[0].Center()
+                        v2 = vertices[1].Center()
+                        if abs(v1.z) < 1e-6 and abs(v2.z) < 1e-6:
+                            continue
+                    le_edges.append(edge)
+        else:
+            # Fallback: find edges near the front of the vehicle
+            # that are not on the symmetry plane or trailing edge
+            for edge in all_edges:
+                mid = edge.Center()
+                vertices = edge.Vertices()
+                if len(vertices) < 2:
+                    continue
                 v1 = vertices[0].Center()
                 v2 = vertices[1].Center()
 
-                # Exclude trailing edge (both vertices near x_max)
-                if v1.x > x_max * 0.95 and v2.x > x_max * 0.95:
-                    continue
-
-                # Exclude symmetry plane edges (both z ≈ 0)
+                # Skip symmetry plane edges (z ≈ 0 for both endpoints)
                 if abs(v1.z) < 1e-6 and abs(v2.z) < 1e-6:
                     continue
+                # Skip trailing edge (both at x_max)
+                if v1.x > bb.xmax * 0.95 and v2.x > bb.xmax * 0.95:
+                    continue
+                # Skip back face edges (both at same x_max position)
+                if abs(v1.x - bb.xmax) < 1e-6 or abs(v2.x - bb.xmax) < 1e-6:
+                    continue
 
-            le_edges.append(edge)
+                # LE edges run in x-z plane with small y variation
+                y_range = abs(v2.y - v1.y)
+                xz_range = np.sqrt((v2.x - v1.x)**2 + (v2.z - v1.z)**2)
+                if xz_range > 0 and y_range / xz_range < 0.2:
+                    le_edges.append(edge)
 
         if not le_edges:
             raise RuntimeError("No leading edge edges found for filleting")
 
-        logger.info(f"Applying fillet with radius={radius} to {len(le_edges)} LE edges")
+        print(f"[Blunting] Applying fillet r={radius:.4f} to {len(le_edges)} LE edges")
         filleted = the_solid.fillet(radius, le_edges)
 
         return filleted
 
     except Exception as e:
-        logger.error(f"Fillet approach failed: {e}")
+        print(f"[Blunting] Fillet failed: {e}")
         raise
 
 
@@ -463,7 +457,7 @@ def loft_blunted_leading_edge(waverider, solid, radius, n_sections=20):
         raise
 
 
-def apply_blunting(waverider, solid=None, radius=0.0, method='auto'):
+def apply_blunting(waverider, solid=None, radius=0.0, method='auto', le_points=None):
     """
     Main entry point for leading edge blunting.
 
@@ -483,6 +477,8 @@ def apply_blunting(waverider, solid=None, radius=0.0, method='auto'):
         Blunting radius in meters.
     method : str
         Blunting method: 'auto', 'fillet', 'loft', or 'points'.
+    le_points : np.ndarray, optional
+        (N, 3) array of leading edge points for edge identification.
 
     Returns
     -------
@@ -504,7 +500,7 @@ def apply_blunting(waverider, solid=None, radius=0.0, method='auto'):
     if method == 'fillet':
         if solid is None:
             raise ValueError("solid is required for fillet method")
-        result = fillet_leading_edge(solid, radius)
+        result = fillet_leading_edge(solid, radius, le_points=le_points)
         return result, 'fillet'
 
     if method == 'loft':
@@ -519,27 +515,27 @@ def apply_blunting(waverider, solid=None, radius=0.0, method='auto'):
 
         # Try fillet first (Approach A)
         try:
-            result = fillet_leading_edge(solid, radius)
-            logger.info("Blunting succeeded with fillet approach (A)")
+            result = fillet_leading_edge(solid, radius, le_points=le_points)
+            print("[Blunting] Succeeded with fillet approach (A)")
             return result, 'fillet'
         except Exception as e:
-            logger.warning(f"Fillet approach failed: {e}, trying loft approach")
+            print(f"[Blunting] Fillet failed: {e}, trying loft approach")
 
         # Fallback to loft (Approach C)
         try:
             result = loft_blunted_leading_edge(waverider, solid, radius)
-            logger.info("Blunting succeeded with loft approach (C)")
+            print("[Blunting] Succeeded with loft approach (C)")
             return result, 'loft'
         except Exception as e:
-            logger.warning(f"Loft approach also failed: {e}, trying point-level approach")
+            print(f"[Blunting] Loft also failed: {e}, trying point-level approach")
 
         # Last resort: point-level (Approach B) — returns stream data, not a solid
         try:
             result = blunt_leading_edge_points(waverider, radius)
-            logger.info("Blunting succeeded with point-level approach (B)")
+            print("[Blunting] Succeeded with point-level approach (B)")
             return result, 'points'
         except Exception as e:
-            logger.error(f"All blunting approaches failed: {e}")
+            print(f"[Blunting] All approaches failed: {e}")
             raise RuntimeError(
                 f"All blunting approaches failed.\n"
                 f"Fillet: {e}\nLoft: {e}\nPoints: {e}"

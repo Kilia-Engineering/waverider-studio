@@ -742,19 +742,16 @@ class WaveriderGUI(QMainWindow):
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
 
-        # Left panel - Stacked parameter panels (switch by active tab)
-        self.param_stack = QStackedWidget()
-        oc_panel = self.create_parameter_panel()
-        self.param_stack.addWidget(oc_panel)  # index 0: OC Waverider params
-        # Cone-derived params are added after visualization panel is created
-        self.param_stack.setMaximumWidth(380)
-        main_layout.addWidget(self.param_stack, 1)
+        # Left panel - OC Waverider parameters (hidden when cone-derived tab active)
+        self.oc_param_panel = self.create_parameter_panel()
+        self.oc_param_panel.setMaximumWidth(380)
+        main_layout.addWidget(self.oc_param_panel, 1)
 
         # Right panel - Visualization
         right_panel = self.create_visualization_panel()
         main_layout.addWidget(right_panel, 3)
 
-        # Connect tab switching to parameter panel swapping
+        # Connect tab switching to show/hide OC parameter panel
         self.tab_widget.currentChanged.connect(self._on_main_tab_changed)
 
         # Set default values
@@ -1531,7 +1528,7 @@ class WaveriderGUI(QMainWindow):
         blunt_layout = QGridLayout()
 
         self.blunting_check = QCheckBox("Enable LE blunting")
-        self.blunting_check.setToolTip("Apply a circular arc blunting to the sharp leading edge")
+        self.blunting_check.setToolTip("Apply circular arc blunting to the sharp LE during STEP export")
         self.blunting_check.stateChanged.connect(self._on_blunting_toggled)
         blunt_layout.addWidget(self.blunting_check, 0, 0, 1, 2)
 
@@ -1557,8 +1554,8 @@ class WaveriderGUI(QMainWindow):
         self.blunting_method_combo.setEnabled(False)
         blunt_layout.addWidget(self.blunting_method_combo, 2, 1)
 
-        self.blunting_preview_btn = QPushButton("Preview Blunting")
-        self.blunting_preview_btn.setToolTip("Show blunted LE preview on the 3D view")
+        self.blunting_preview_btn = QPushButton("Show LE Preview")
+        self.blunting_preview_btn.setToolTip("Visualize blunted vs original LE on the 3D view.\nBlunting is applied automatically during STEP export.")
         self.blunting_preview_btn.clicked.connect(self._preview_blunting)
         self.blunting_preview_btn.setEnabled(False)
         self.blunting_preview_btn.setStyleSheet(
@@ -1616,15 +1613,12 @@ class WaveriderGUI(QMainWindow):
         tab_opt = self._create_optimization_hub_tab()
         self.tab_widget.addTab(tab_opt, "Optimization")
 
-        # ── Tab 4: Cone-derived Waverider ──
+        # ── Tab 4: Cone-derived Waverider (has its own built-in left panel) ──
         self._cone_tab_index = -1
         if CONE_WAVERIDER_AVAILABLE:
             self.shadow_waverider_tab = ShadowWaveriderTab(parent=self)
             self._cone_tab_index = self.tab_widget.count()
             self.tab_widget.addTab(self.shadow_waverider_tab, "Cone-derived Waverider")
-            # Move cone-derived left panel into the stacked parameter widget
-            if hasattr(self.shadow_waverider_tab, 'left_scroll'):
-                self.param_stack.addWidget(self.shadow_waverider_tab.left_scroll)  # index 1
 
         layout.addWidget(self.tab_widget)
         return panel
@@ -2315,11 +2309,12 @@ class WaveriderGUI(QMainWindow):
         return tab
 
     def _on_main_tab_changed(self, index):
-        """Switch the left parameter panel based on active tab."""
-        if index == self._cone_tab_index and self.param_stack.count() > 1:
-            self.param_stack.setCurrentIndex(1)
+        """Show/hide OC parameter panel based on active tab.
+        The cone-derived tab has its own built-in parameter panel."""
+        if index == self._cone_tab_index:
+            self.oc_param_panel.hide()
         else:
-            self.param_stack.setCurrentIndex(0)
+            self.oc_param_panel.show()
 
     def set_default_parameters(self):
         """Set default parameters from example"""
