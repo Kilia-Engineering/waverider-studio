@@ -659,8 +659,10 @@ class ShadowWaveriderTab(QWidget):
             original_le = wr.leading_edge  # (n_le, 3)
 
             # Compute blunted LE points using local tangent information
+            # Taper radius near nose: full at wingtip, near-zero at center
             n_le = wr.upper_surface.shape[0]
             n_stream = wr.upper_surface.shape[1]
+            center_idx = n_le // 2  # nose/center index
             blunted_points = []
 
             # Use a point further downstream for more robust tangent estimation
@@ -668,6 +670,17 @@ class ShadowWaveriderTab(QWidget):
 
             for i in range(n_le):
                 le_pt = wr.upper_surface[i, 0, :]
+
+                # Taper: distance from center as fraction of half-span
+                dist_from_center = abs(i - center_idx)
+                max_dist = max(center_idx, n_le - 1 - center_idx)
+                taper = dist_from_center / max_dist if max_dist > 0 else 1.0
+                local_radius = radius * taper
+
+                if local_radius < 1e-6:
+                    blunted_points.append(le_pt)
+                    continue
+
                 # Upper tangent (downstream from LE)
                 t_u = wr.upper_surface[i, j_tan, :] - wr.upper_surface[i, 0, :]
                 n = np.linalg.norm(t_u)
@@ -687,14 +700,13 @@ class ShadowWaveriderTab(QWidget):
                 cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
                 half_angle = np.arccos(cos_half) / 2.0
 
-                # Skip if surfaces are nearly tangent (no meaningful blunting)
-                if half_angle < 0.05:  # ~3 degrees
+                # Skip if surfaces are nearly tangent
+                if half_angle < 0.05:
                     blunted_points.append(le_pt)
                     continue
 
-                d_center = radius / np.sin(half_angle)
-                # Cap offset to prevent huge displacements
-                d_center = min(d_center, radius * 5)
+                d_center = local_radius / np.sin(half_angle)
+                d_center = min(d_center, local_radius * 5)
                 center = le_pt + d_center * bisector
 
                 tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
@@ -708,7 +720,7 @@ class ShadowWaveriderTab(QWidget):
                 v_mid_norm = np.linalg.norm(v_mid)
                 if v_mid_norm > 1e-12:
                     v_mid = v_mid / v_mid_norm
-                arc_mid = center + radius * v_mid
+                arc_mid = center + local_radius * v_mid
                 blunted_points.append(arc_mid)
 
             blunted_le = np.array(blunted_points)

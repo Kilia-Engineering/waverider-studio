@@ -576,27 +576,32 @@ def compute_blunted_le_preview(waverider, radius, n_points=50):
         return original_le, original_le
 
     blunted_points = []
+    n_streams = len(us_streams)
 
-    for i in range(len(us_streams)):
+    for i in range(n_streams):
         us = us_streams[i]
         ls = ls_streams[i]
 
         le_pt = us[0]
 
-        # Get tangent directions
-        if us.shape[0] >= 2:
-            t_u = us[1] - us[0]
-            n = np.linalg.norm(t_u)
-            t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
-        else:
-            t_u = np.array([1, 0, 0], dtype=float)
+        # Taper radius: stream 0 is the tip (nose), last stream is wingtip
+        # Linear taper from near-zero at tip to full at wingtip
+        taper = i / max(n_streams - 1, 1)
+        local_radius = radius * taper
 
-        if ls.shape[0] >= 2:
-            t_l = ls[1] - ls[0]
-            n = np.linalg.norm(t_l)
-            t_l = t_l / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
-        else:
-            t_l = np.array([1, 0, 0], dtype=float)
+        if local_radius < 1e-6:
+            blunted_points.append(le_pt)
+            continue
+
+        # Get tangent directions (use further point for stability)
+        j_tan = min(2, us.shape[0] - 1)
+        t_u = us[j_tan] - us[0]
+        n = np.linalg.norm(t_u)
+        t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
+
+        t_l = ls[j_tan] - ls[0]
+        n = np.linalg.norm(t_l)
+        t_l = t_l / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
 
         # Bisector
         bisector = t_u + t_l
@@ -610,12 +615,13 @@ def compute_blunted_le_preview(waverider, radius, n_points=50):
         cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
         half_angle = np.arccos(cos_half) / 2.0
 
-        if half_angle < 1e-6:
+        if half_angle < 0.05:
             blunted_points.append(le_pt)
             continue
 
         # Arc center and midpoint
-        d_center = radius / np.sin(half_angle)
+        d_center = local_radius / np.sin(half_angle)
+        d_center = min(d_center, local_radius * 5)
         center = le_pt + d_center * bisector
 
         # Tangent points
@@ -631,7 +637,7 @@ def compute_blunted_le_preview(waverider, radius, n_points=50):
         v_mid_norm = np.linalg.norm(v_mid)
         if v_mid_norm > 1e-12:
             v_mid = v_mid / v_mid_norm
-        arc_mid = center + radius * v_mid
+        arc_mid = center + local_radius * v_mid
 
         blunted_points.append(arc_mid)
 
