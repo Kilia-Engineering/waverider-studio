@@ -1568,6 +1568,34 @@ class WaveriderGUI(QMainWindow):
         blunt_group.setLayout(blunt_layout)
         layout.addWidget(blunt_group)
 
+        # Minimum nose thickness group
+        thick_group = QGroupBox("Minimum Nose Thickness")
+        thick_layout = QGridLayout()
+
+        self.min_thickness_check = QCheckBox("Enforce minimum thickness")
+        self.min_thickness_check.setToolTip(
+            "Ensure the nose region has a minimum thickness so that\n"
+            "the exported CAD solid is not infinitely thin at the tip.\n"
+            "Recommended when using LE blunting.")
+        self.min_thickness_check.stateChanged.connect(self._on_min_thickness_toggled)
+        thick_layout.addWidget(self.min_thickness_check, 0, 0, 1, 2)
+
+        thick_layout.addWidget(QLabel("Thickness (% L):"), 1, 0)
+        self.min_thickness_spin = QDoubleSpinBox()
+        self.min_thickness_spin.setRange(0.1, 10.0)
+        self.min_thickness_spin.setValue(1.0)
+        self.min_thickness_spin.setSingleStep(0.1)
+        self.min_thickness_spin.setDecimals(1)
+        self.min_thickness_spin.setSuffix(" %")
+        self.min_thickness_spin.setToolTip(
+            "Minimum thickness as a percentage of vehicle length.\n"
+            "Default 1% — increase if nose filleting still fails.")
+        self.min_thickness_spin.setEnabled(False)
+        thick_layout.addWidget(self.min_thickness_spin, 1, 1)
+
+        thick_group.setLayout(thick_layout)
+        layout.addWidget(thick_group)
+
         # Buttons
         button_layout = QHBoxLayout()
         
@@ -2892,6 +2920,12 @@ class WaveriderGUI(QMainWindow):
                     f"Exporting STEP with LE blunting (r={blunting_radius:.4f} m)...")
                 QApplication.processEvents()
 
+            # Minimum thickness parameter
+            min_thickness = 0.0
+            if self.min_thickness_check.isChecked():
+                pct = self.min_thickness_spin.value()
+                min_thickness = self.waverider.length * pct / 100.0
+
             to_CAD(
                 waverider=self.waverider,
                 sides=sides,
@@ -2899,10 +2933,13 @@ class WaveriderGUI(QMainWindow):
                 filename=filename,
                 scale=1.0,
                 blunting_radius=blunting_radius,
-                blunting_method=blunting_method
+                blunting_method=blunting_method,
+                min_thickness=min_thickness
             )
 
             blunt_msg = ""
+            if min_thickness > 0:
+                blunt_msg += f"Min thickness: {min_thickness:.4f} m ({self.min_thickness_spin.value():.1f}% L)\n"
             if blunting_radius > 0:
                 blunt_msg = f"\nLE Blunting: radius = {blunting_radius:.4f} m\n"
 
@@ -2925,6 +2962,10 @@ class WaveriderGUI(QMainWindow):
                 f"Failed to export CAD file:\n\n{str(e)}"
             )
             self.info_label.setText(f"Export error: {str(e)}")
+
+    def _on_min_thickness_toggled(self, state):
+        """Enable/disable min thickness spinner based on checkbox."""
+        self.min_thickness_spin.setEnabled(bool(state))
 
     def _on_blunting_toggled(self, state):
         """Enable/disable blunting controls based on checkbox."""

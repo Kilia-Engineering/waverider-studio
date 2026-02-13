@@ -421,6 +421,7 @@ class ShadowWaveriderTab(QWidget):
         left_layout.addWidget(self._create_poly_group())
         left_layout.addWidget(self._create_mesh_group())
         left_layout.addWidget(self._create_blunting_group())
+        left_layout.addWidget(self._create_min_thickness_group())
         left_layout.addWidget(self._create_generate_group())
         left_layout.addWidget(self._create_export_group())
         left_layout.addWidget(self._create_analysis_group())
@@ -635,6 +636,37 @@ class ShadowWaveriderTab(QWidget):
 
         group.setLayout(layout)
         return group
+
+    def _create_min_thickness_group(self):
+        group = QGroupBox("Minimum Nose Thickness")
+        layout = QGridLayout()
+
+        self.min_thickness_check = QCheckBox("Enforce minimum thickness")
+        self.min_thickness_check.setToolTip(
+            "Ensure the nose region has a minimum thickness so that\n"
+            "the exported CAD solid is not infinitely thin at the tip.\n"
+            "Recommended when using LE blunting.")
+        self.min_thickness_check.stateChanged.connect(self._on_min_thickness_toggled)
+        layout.addWidget(self.min_thickness_check, 0, 0, 1, 2)
+
+        layout.addWidget(QLabel("Thickness (% L):"), 1, 0)
+        self.min_thickness_spin = QDoubleSpinBox()
+        self.min_thickness_spin.setRange(0.1, 10.0)
+        self.min_thickness_spin.setValue(1.0)
+        self.min_thickness_spin.setSingleStep(0.1)
+        self.min_thickness_spin.setDecimals(1)
+        self.min_thickness_spin.setSuffix(" %")
+        self.min_thickness_spin.setToolTip(
+            "Minimum thickness as a percentage of vehicle length.\n"
+            "Default 1% — increase if nose filleting still fails.")
+        self.min_thickness_spin.setEnabled(False)
+        layout.addWidget(self.min_thickness_spin, 1, 1)
+
+        group.setLayout(layout)
+        return group
+
+    def _on_min_thickness_toggled(self, state):
+        self.min_thickness_spin.setEnabled(bool(state))
 
     def _on_blunting_toggled(self, state):
         enabled = bool(state)
@@ -1089,18 +1121,26 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 blunting_radius = 0.0
                 if self.blunting_check.isChecked():
                     blunting_radius = self.blunting_radius_spin.value()
-                print(f"[Cone-derived Export] method='{method}', blunting_radius={blunting_radius}, scale={scale}")
+                min_thickness = 0.0
+                if self.min_thickness_check.isChecked():
+                    wr = self.waverider
+                    # Estimate vehicle length from upper surface X range
+                    x_vals = wr.upper_surface[:, :, 0]
+                    veh_length = float(x_vals.max() - x_vals.min())
+                    pct = self.min_thickness_spin.value()
+                    min_thickness = veh_length * pct / 100.0
+                print(f"[Cone-derived Export] method='{method}', blunting_radius={blunting_radius}, min_thickness={min_thickness}, scale={scale}")
                 if method == methods[0]:
-                    self._export_step_nurbs(fn, scale, blunting_radius=blunting_radius)
+                    self._export_step_nurbs(fn, scale, blunting_radius=blunting_radius, min_thickness=min_thickness)
                 else:
-                    self._export_step_faces(fn, scale)
+                    self._export_step_faces(fn, scale, min_thickness=min_thickness)
                 QMessageBox.information(self, "Success", f"Saved: {fn}")
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 QMessageBox.critical(self, "Error", f"STEP export failed:\n{str(e)}")
     
-    def _export_step_nurbs(self, filename, scale, blunting_radius=0.0):
+    def _export_step_nurbs(self, filename, scale, blunting_radius=0.0, min_thickness=0.0):
         """
         Export STEP with smooth NURBS surfaces using interpPlate.
         Now that shadow waverider uses same coords as cad_export.py:
@@ -1109,17 +1149,26 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         We build one half (positive Z / right side), then mirror.
         """
         import cadquery as cq
-        
+
         wr = self.waverider
-        
-        n_le = wr.upper_surface.shape[0]
-        n_stream = wr.upper_surface.shape[1]
+
+        upper_surf = wr.upper_surface
+        lower_surf = wr.lower_surface
+
+        # Apply minimum thickness enforcement before building CAD
+        if min_thickness > 0:
+            from waverider_generator.cad_export import enforce_min_thickness_arrays
+            upper_surf, lower_surf = enforce_min_thickness_arrays(
+                upper_surf, lower_surf, min_thickness)
+
+        n_le = upper_surf.shape[0]
+        n_stream = upper_surf.shape[1]
         center_idx = n_le // 2
-        
+
         # Get right half (positive Z side) - indices from center to end
         # After transform: Z is span, so right half has positive Z values
-        upper_half = wr.upper_surface[center_idx:, :, :] * scale
-        lower_half = wr.lower_surface[center_idx:, :, :] * scale
+        upper_half = upper_surf[center_idx:, :, :] * scale
+        lower_half = lower_surf[center_idx:, :, :] * scale
 
         n_half = upper_half.shape[0]
 
@@ -1217,16 +1266,24 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
 
         cq.exporters.export(result, filename)
     
-    def _export_step_faces(self, filename, scale):
+    def _export_step_faces(self, filename, scale, min_thickness=0.0):
         """
         Export STEP by creating individual quad faces and combining them.
         This creates a surface model (not solid) but it will open correctly in CAD.
         """
         import cadquery as cq
-        
+
         wr = self.waverider
-        upper = wr.upper_surface * scale  # (n_le, n_stream, 3)
-        lower = wr.lower_surface * scale
+        upper_surf = wr.upper_surface
+        lower_surf = wr.lower_surface
+
+        if min_thickness > 0:
+            from waverider_generator.cad_export import enforce_min_thickness_arrays
+            upper_surf, lower_surf = enforce_min_thickness_arrays(
+                upper_surf, lower_surf, min_thickness)
+
+        upper = upper_surf * scale  # (n_le, n_stream, 3)
+        lower = lower_surf * scale
         
         n_le = upper.shape[0]
         n_stream = upper.shape[1]

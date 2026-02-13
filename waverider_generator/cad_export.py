@@ -3,8 +3,87 @@ import cadquery as cq
 from cadquery import exporters
 import numpy as np
 import logging
-
 logger = logging.getLogger(__name__)
+
+
+def _enforce_min_thickness(us_streams, ls_streams, min_thickness):
+    """
+    Enforce a minimum thickness between upper and lower surface streams.
+
+    At each corresponding point pair, if the vertical (Y) distance between
+    upper and lower surface is less than min_thickness, both surfaces are
+    offset symmetrically about their midpoint to achieve the minimum.
+
+    Parameters
+    ----------
+    us_streams : list of ndarray
+        Upper surface streams, each shape (n_pts, 3).
+    ls_streams : list of ndarray
+        Lower surface streams, each shape (n_pts, 3).
+    min_thickness : float
+        Minimum allowed thickness in meters (same units as geometry).
+
+    Returns
+    -------
+    us_out, ls_out : list of ndarray
+        Deep-copied streams with thickness enforced.
+    """
+    us_out = [s.copy() for s in us_streams]
+    ls_out = [s.copy() for s in ls_streams]
+
+    n_streams = min(len(us_out), len(ls_out))
+    for i in range(n_streams):
+        n_pts = min(us_out[i].shape[0], ls_out[i].shape[0])
+        for j in range(n_pts):
+            y_upper = us_out[i][j, 1]
+            y_lower = ls_out[i][j, 1]
+            thickness = y_upper - y_lower  # upper is above lower (more positive Y)
+            if thickness < min_thickness:
+                deficit = min_thickness - thickness
+                mid_y = (y_upper + y_lower) / 2.0
+                us_out[i][j, 1] = mid_y + min_thickness / 2.0
+                ls_out[i][j, 1] = mid_y - min_thickness / 2.0
+
+    print(f"[MinThickness] Enforced min_thickness={min_thickness:.6f}m "
+          f"across {n_streams} stream pairs")
+    return us_out, ls_out
+
+
+def enforce_min_thickness_arrays(upper, lower, min_thickness):
+    """
+    Enforce minimum thickness on 3D surface arrays (n_le, n_stream, 3).
+
+    Used by the cone-derived waverider tab which stores surfaces as arrays
+    rather than stream lists.
+
+    Parameters
+    ----------
+    upper, lower : ndarray, shape (n_le, n_stream, 3)
+        Upper and lower surface point arrays.
+    min_thickness : float
+        Minimum allowed thickness in meters.
+
+    Returns
+    -------
+    upper_out, lower_out : ndarray
+        Copies with thickness enforced.
+    """
+    upper_out = upper.copy()
+    lower_out = lower.copy()
+    n_le, n_stream = upper_out.shape[0], upper_out.shape[1]
+    for i in range(n_le):
+        for j in range(n_stream):
+            y_up = upper_out[i, j, 1]
+            y_lo = lower_out[i, j, 1]
+            thickness = y_up - y_lo
+            if thickness < min_thickness:
+                mid_y = (y_up + y_lo) / 2.0
+                upper_out[i, j, 1] = mid_y + min_thickness / 2.0
+                lower_out[i, j, 1] = mid_y - min_thickness / 2.0
+    print(f"[MinThickness] Enforced min_thickness={min_thickness:.6f}m "
+          f"on {n_le}x{n_stream} surface arrays")
+    return upper_out, lower_out
+
 
 def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
@@ -19,9 +98,17 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     blunting_radius = kwargs.get("blunting_radius", 0.0)
     blunting_method = kwargs.get("blunting_method", "auto")
 
+    # Minimum thickness parameter (0 = disabled)
+    min_thickness = kwargs.get("min_thickness", 0.0)
+
     # extract streams from waverider object
     us_streams=waverider.upper_surface_streams
     ls_streams=waverider.lower_surface_streams
+
+    # Apply minimum thickness enforcement if requested
+    if min_thickness > 0:
+        us_streams, ls_streams = _enforce_min_thickness(
+            us_streams, ls_streams, min_thickness)
 
     # compute LE
     le = np.vstack([x[0] for x in us_streams])
@@ -46,8 +133,13 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
     # create boundaries
     # define points to create boundary with symmetry
-    points_upper_surface = [(0, 0, 0), (waverider.length, 0, 0)]
-    points_lower_surface=[(0,0,0),(waverider.length,ls_streams[0][-1,1],0)]
+    # Use actual stream start/end values (respects min_thickness offsets)
+    us_sym_start_y = float(us_streams[0][0, 1])
+    us_sym_end_y = float(us_streams[0][-1, 1])
+    ls_sym_start_y = float(ls_streams[0][0, 1])
+    ls_sym_end_y = float(ls_streams[0][-1, 1])
+    points_upper_surface = [(0, us_sym_start_y, 0), (waverider.length, us_sym_end_y, 0)]
+    points_lower_surface=[(0, ls_sym_start_y, 0),(waverider.length, ls_sym_end_y, 0)]
     # create a workplane and draw lines between points
     workplane = cq.Workplane("XY")
     edge_wire_te_upper_surface = workplane.moveTo(points_upper_surface[0][0], points_upper_surface[0][1])
@@ -73,18 +165,18 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     # add back as a plane
     e1 =cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_lower_surface])
     e2=cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_upper_surface])
-    sym_edge=np.vstack(((waverider.length, 0, 0),(waverider.length,ls_streams[0][-1,1],0)))
+    sym_edge=np.vstack(((waverider.length, us_sym_end_y, 0),(waverider.length, ls_sym_end_y, 0)))
     v1 = cq.Vector(*sym_edge[0])
     v2 = cq.Vector(*sym_edge[1])
     e3 = cq.Edge.makeLine(v1, v2)
     back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2,e3]))
 
     # add symmetry plane as face
-    length_edge=np.vstack(((0, 0, 0),(waverider.length,0,0)))
+    length_edge=np.vstack(((0, us_sym_start_y, 0),(waverider.length, us_sym_end_y, 0)))
     v1 = cq.Vector(*length_edge[0])
     v2 = cq.Vector(*length_edge[1])
     e4 = cq.Edge.makeLine(v1, v2)
-    shockwave_edge=np.vstack(((0, 0, 0),(waverider.length,ls_streams[0][-1,1],0)))
+    shockwave_edge=np.vstack(((0, ls_sym_start_y, 0),(waverider.length, ls_sym_end_y, 0)))
     v1 = cq.Vector(*shockwave_edge[0])
     v2 = cq.Vector(*shockwave_edge[1])
     e5 = cq.Edge.makeLine(v1, v2)
