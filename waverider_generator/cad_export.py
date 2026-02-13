@@ -172,15 +172,19 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2,e3]))
 
     # add symmetry plane as face
-    length_edge=np.vstack(((0, us_sym_start_y, 0),(waverider.length, us_sym_end_y, 0)))
-    v1 = cq.Vector(*length_edge[0])
-    v2 = cq.Vector(*length_edge[1])
-    e4 = cq.Edge.makeLine(v1, v2)
-    shockwave_edge=np.vstack(((0, ls_sym_start_y, 0),(waverider.length, ls_sym_end_y, 0)))
-    v1 = cq.Vector(*shockwave_edge[0])
-    v2 = cq.Vector(*shockwave_edge[1])
-    e5 = cq.Edge.makeLine(v1, v2)
-    sym=cq.Face.makeFromWires(cq.Wire.assembleEdges([e3, e4,e5]))
+    # When min_thickness > 0, nose splits into upper/lower points → quadrilateral
+    v_nose_upper = cq.Vector(0, us_sym_start_y, 0)
+    v_nose_lower = cq.Vector(0, ls_sym_start_y, 0)
+    v_te_upper = cq.Vector(waverider.length, us_sym_end_y, 0)
+    v_te_lower = cq.Vector(waverider.length, ls_sym_end_y, 0)
+    e4 = cq.Edge.makeLine(v_nose_upper, v_te_upper)   # upper symmetry line
+    e5 = cq.Edge.makeLine(v_nose_lower, v_te_lower)   # lower symmetry line
+    sym_edges = [e3, e4, e5]
+    if abs(us_sym_start_y - ls_sym_start_y) > 1e-8:
+        # Nose has thickness — add nose closure edge
+        e6 = cq.Edge.makeLine(v_nose_lower, v_nose_upper)
+        sym_edges.append(e6)
+    sym=cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
 
     # create solid
     # by convention, +ve z is left so this produces the left side
@@ -218,17 +222,12 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
         return ValueError("sides is either 'left', 'right' or 'both'")
 
 
-def _apply_le_fillet(solid, radius, le_points):
+def _apply_le_fillet(solid, radius, le_points, nose_cap=False):
     """
-    Apply leading edge blunting + nose cap to a waverider solid.
+    Apply leading edge blunting to a waverider solid.
 
-    Strategy:
-    1. Fillet the LE edge only (constant radius, no nose edges)
-    2. Cut off the sharp nose tip at a station near the tip
-    3. Fillet the edges created by the cut to form a smooth nose cap
-
-    This avoids the broken OCP variable-fillet API and the topology
-    issues that prevent two-step filleting of nose edges.
+    For OC waverider: just fillet the LE edges (nose_cap=False).
+    For cone-derived: optionally apply nose cap after LE fillet (nose_cap=True).
     """
     all_edges = solid.Edges()
     bb = solid.BoundingBox()
@@ -279,7 +278,7 @@ def _apply_le_fillet(solid, radius, le_points):
         print("[Blunting] No LE edges found — exporting sharp LE")
         return solid
 
-    # Step 1: LE-only fillet
+    # LE-only fillet
     current = None
     le_r_used = 0
     for factor in [1.0, 0.75, 0.5, 0.25, 0.1]:
@@ -294,12 +293,18 @@ def _apply_le_fillet(solid, radius, le_points):
 
     if current is None:
         print("[Blunting] All LE fillet attempts failed — exporting sharp LE")
+        if nose_cap:
+            # For cone-derived: try nose cap on the original solid
+            capped = _cap_nose(solid, radius)
+            if capped is not None:
+                return capped
         return solid
 
-    # Step 2: Nose cap — cut the nose tip off and fillet the cut edges
-    capped = _cap_nose(current, le_r_used)
-    if capped is not None:
-        return capped
+    # Optionally apply nose cap (cone-derived only)
+    if nose_cap:
+        capped = _cap_nose(current, le_r_used)
+        if capped is not None:
+            return capped
 
     return current
 

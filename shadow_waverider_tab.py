@@ -1235,12 +1235,18 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2, e3]))
         
         # Symmetry face (at Z=0)
-        v_le = cq.Vector(*sym_start)
+        # When min_thickness > 0, nose splits into upper/lower → quadrilateral
+        v_le_upper = cq.Vector(*sym_start)
+        v_le_lower = cq.Vector(*sym_start_lower)
         v_te_upper = cq.Vector(*sym_end)
         v_te_lower = cq.Vector(*sym_end_lower)
-        e4 = cq.Edge.makeLine(v_le, v_te_upper)
-        e5 = cq.Edge.makeLine(v_le, v_te_lower)
-        sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges([e3, e4, e5]))
+        e4 = cq.Edge.makeLine(v_le_upper, v_te_upper)
+        e5 = cq.Edge.makeLine(v_le_lower, v_te_lower)
+        sym_edges = [e3, e4, e5]
+        if abs(sym_start[1] - sym_start_lower[1]) > 1e-8:
+            e6 = cq.Edge.makeLine(v_le_lower, v_le_upper)
+            sym_edges.append(e6)
+        sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
         
         # Create solid
         shell = cq.Shell.makeShell([
@@ -1256,7 +1262,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         if blunting_radius > 0:
             from waverider_generator.cad_export import _apply_le_fillet
             le_pts = le_upper  # LE points already at scale
-            right_side = _apply_le_fillet(right_side, blunting_radius * scale, le_pts)
+            right_side = _apply_le_fillet(right_side, blunting_radius * scale, le_pts, nose_cap=True)
 
         # Mirror across XY plane (Z=0) to get left side
         left_side = right_side.mirror(mirrorPlane='XY')
