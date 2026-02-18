@@ -613,8 +613,11 @@ class ShadowWaveriderTab(QWidget):
 
         layout.addWidget(QLabel("Method:"), 2, 0)
         self.blunting_method_combo = QComboBox()
-        self.blunting_method_combo.addItems(["Auto (A→C→B)", "Fillet (A)", "Loft (C)", "Point-level (B)"])
+        self.blunting_method_combo.addItems([
+            "Pre-blunted (D) (Recommended)",
+            "Auto (A→C→B)", "Fillet (A)", "Loft (C)", "Point-level (B)"])
         self.blunting_method_combo.setToolTip(
+            "Pre-blunted (D): Builds blunt LE directly into geometry (C1 continuous)\n"
             "Auto: tries fillet first, falls back to loft, then point-level\n"
             "Fillet (A): CAD-level fillet on the solid\n"
             "Loft (C): Boolean cut + lofted circular arc replacement\n"
@@ -1119,8 +1122,18 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             try:
                 scale = self.scale_spin.value()
                 blunting_radius = 0.0
+                blunting_method = "auto"
                 if self.blunting_check.isChecked():
                     blunting_radius = self.blunting_radius_spin.value()
+                    method_map = {
+                        "Pre-blunted (D) (Recommended)": "pre_blunted",
+                        "Auto (A→C→B)": "auto",
+                        "Fillet (A)": "fillet",
+                        "Loft (C)": "loft",
+                        "Point-level (B)": "points",
+                    }
+                    blunting_method = method_map.get(
+                        self.blunting_method_combo.currentText(), "auto")
                 min_thickness = 0.0
                 if self.min_thickness_check.isChecked():
                     wr = self.waverider
@@ -1129,9 +1142,9 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                     veh_length = float(x_vals.max() - x_vals.min())
                     pct = self.min_thickness_spin.value()
                     min_thickness = veh_length * pct / 100.0
-                print(f"[Cone-derived Export] method='{method}', blunting_radius={blunting_radius}, min_thickness={min_thickness}, scale={scale}")
+                print(f"[Cone-derived Export] method='{method}', blunting_radius={blunting_radius}, blunting_method={blunting_method}, min_thickness={min_thickness}, scale={scale}")
                 if method == methods[0]:
-                    self._export_step_nurbs(fn, scale, blunting_radius=blunting_radius, min_thickness=min_thickness)
+                    self._export_step_nurbs(fn, scale, blunting_radius=blunting_radius, blunting_method=blunting_method, min_thickness=min_thickness)
                 else:
                     self._export_step_faces(fn, scale, min_thickness=min_thickness)
                 QMessageBox.information(self, "Success", f"Saved: {fn}")
@@ -1140,7 +1153,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 traceback.print_exc()
                 QMessageBox.critical(self, "Error", f"STEP export failed:\n{str(e)}")
     
-    def _export_step_nurbs(self, filename, scale, blunting_radius=0.0, min_thickness=0.0):
+    def _export_step_nurbs(self, filename, scale, blunting_radius=0.0, blunting_method="auto", min_thickness=0.0):
         """
         Export STEP with smooth NURBS surfaces using interpPlate.
         Now that shadow waverider uses same coords as cad_export.py:
@@ -1166,112 +1179,209 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         center_idx = n_le // 2
 
         # Get right half (positive Z side) - indices from center to end
-        # After transform: Z is span, so right half has positive Z values
         upper_half = upper_surf[center_idx:, :, :] * scale
         lower_half = lower_surf[center_idx:, :, :] * scale
 
         n_half = upper_half.shape[0]
 
-        # Extract key curves
-        # Leading edge: j=0 (first streamwise station)
-        le_upper = upper_half[:, 0, :]   # (n_half, 3)
-        le_lower = lower_half[:, 0, :]
+        use_pre_blunted = (blunting_radius > 0 and blunting_method == "pre_blunted")
 
-        # Trailing edge: j=-1 (last streamwise station)
-        te_upper = upper_half[:, -1, :]
-        te_lower = lower_half[:, -1, :]
+        if use_pre_blunted:
+            # ===== PRE-BLUNTED PATH: 5-face solid with dedicated LE face =====
+            from waverider_generator.leading_edge_blunting import compute_pre_blunted_arrays
+            from waverider_generator.cad_export import _build_le_face
 
-        # Centerline: i=0 (Z≈0)
-        centerline_upper = upper_half[0, :, :]  # (n_stream, 3)
-        centerline_lower = lower_half[0, :, :]
+            print(f"[Cone-derived PreBlunted] Computing pre-blunted geometry "
+                  f"(r={blunting_radius * scale:.4f}m at scale)")
+            blunt_data = compute_pre_blunted_arrays(
+                upper_half, lower_half, blunting_radius * scale)
 
-        # Interior points for upper surface (exclude boundaries)
-        us_points = []
-        for i in range(1, n_half - 1):
-            for j in range(1, n_stream - 1):
-                us_points.append(tuple(upper_half[i, j, :]))
+            t_upper_streams = blunt_data['trimmed_upper']  # list of (n_stream, 3)
+            t_lower_streams = blunt_data['trimmed_lower']
+            tp_upper_curve = blunt_data['tp_upper_curve']
+            tp_lower_curve = blunt_data['tp_lower_curve']
+            arc_sections = blunt_data['arc_sections']
 
-        # Interior points for lower surface
-        ls_points = []
-        for i in range(1, n_half - 1):
-            for j in range(1, n_stream - 1):
-                ls_points.append(tuple(lower_half[i, j, :]))
-        
-        # Build boundary for upper surface with 4 edges (closed loop):
-        # centerline spline + TE spline + wingtip line + LE spline
-        workplane = cq.Workplane("XY")
+            # Centerline at symmetry (i=0)
+            centerline_upper = t_upper_streams[0]  # (n_stream, 3)
+            centerline_lower = t_lower_streams[0]
 
-        sym_start = tuple(centerline_upper[0])    # LE at centerline
-        sym_end = tuple(centerline_upper[-1])      # TE at centerline
+            # LE boundary = tangent point curves
+            le_upper = tp_upper_curve  # (n_half, 3)
+            le_lower = tp_lower_curve
 
-        # Centerline: spline through all streamwise points at symmetry
-        edge_wire_upper = cq.Workplane("XY").spline([tuple(x) for x in centerline_upper])
-        # LE spline (all spanwise points at first streamwise station)
-        edge_wire_upper = edge_wire_upper.add(cq.Workplane("XY").spline([tuple(x) for x in le_upper]))
-        # TE spline (all spanwise points at last streamwise station)
-        edge_wire_upper = edge_wire_upper.add(cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
-        # Wingtip edge (straight line — points are collinear, spline would fail)
-        wingtip_upper = upper_half[-1, :, :]
-        wt_u_edge = cq.Edge.makeLine(
-            cq.Vector(*tuple(wingtip_upper[0])),
-            cq.Vector(*tuple(wingtip_upper[-1])))
-        edge_wire_upper = edge_wire_upper.add(cq.Workplane("XY").newObject([wt_u_edge]))
+            # TE curves (unaffected by blunting)
+            te_upper = np.vstack([s[-1:] for s in t_upper_streams])
+            te_lower = np.vstack([s[-1:] for s in t_lower_streams])
 
-        # Create upper surface
-        upper_surface = cq.Workplane("XY").interpPlate(edge_wire_upper, us_points, 0)
+            # Interior points for upper surface
+            us_points = []
+            for i in range(1, n_half - 1):
+                for j in range(1, t_upper_streams[i].shape[0] - 1):
+                    us_points.append(tuple(t_upper_streams[i][j]))
 
-        # Build boundary for lower surface (same 4-edge approach)
-        sym_start_lower = tuple(centerline_lower[0])
-        sym_end_lower = tuple(centerline_lower[-1])
+            ls_points = []
+            for i in range(1, n_half - 1):
+                for j in range(1, t_lower_streams[i].shape[0] - 1):
+                    ls_points.append(tuple(t_lower_streams[i][j]))
 
-        edge_wire_lower = cq.Workplane("XY").spline([tuple(x) for x in centerline_lower])
-        edge_wire_lower = edge_wire_lower.add(cq.Workplane("XY").spline([tuple(x) for x in le_lower]))
-        edge_wire_lower = edge_wire_lower.add(cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
-        wingtip_lower = lower_half[-1, :, :]
-        wt_l_edge = cq.Edge.makeLine(
-            cq.Vector(*tuple(wingtip_lower[0])),
-            cq.Vector(*tuple(wingtip_lower[-1])))
-        edge_wire_lower = edge_wire_lower.add(cq.Workplane("XY").newObject([wt_l_edge]))
+            sym_start = tuple(centerline_upper[0])
+            sym_end = tuple(centerline_upper[-1])
+            sym_start_lower = tuple(centerline_lower[0])
+            sym_end_lower = tuple(centerline_lower[-1])
 
-        lower_surface = cq.Workplane("XY").interpPlate(edge_wire_lower, ls_points, 0)
+            # Upper surface boundary: centerline + tp_upper spline + TE + wingtip
+            edge_wire_upper = cq.Workplane("XY").spline(
+                [tuple(x) for x in centerline_upper])
+            edge_wire_upper = edge_wire_upper.add(
+                cq.Workplane("XY").spline([tuple(x) for x in le_upper]))
+            edge_wire_upper = edge_wire_upper.add(
+                cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
+            wingtip_upper = t_upper_streams[-1]
+            wt_u_edge = cq.Edge.makeLine(
+                cq.Vector(*tuple(wingtip_upper[0])),
+                cq.Vector(*tuple(wingtip_upper[-1])))
+            edge_wire_upper = edge_wire_upper.add(
+                cq.Workplane("XY").newObject([wt_u_edge]))
 
-        # Back face (trailing edge closure)
-        e1 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_lower])
-        e2 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_upper])
-        v1 = cq.Vector(*sym_end)
-        v2 = cq.Vector(*sym_end_lower)
-        e3 = cq.Edge.makeLine(v1, v2)
-        back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2, e3]))
-        
-        # Symmetry face (at Z=0)
-        # When min_thickness > 0, nose splits into upper/lower → quadrilateral
-        v_le_upper = cq.Vector(*sym_start)
-        v_le_lower = cq.Vector(*sym_start_lower)
-        v_te_upper = cq.Vector(*sym_end)
-        v_te_lower = cq.Vector(*sym_end_lower)
-        e4 = cq.Edge.makeLine(v_le_upper, v_te_upper)
-        e5 = cq.Edge.makeLine(v_le_lower, v_te_lower)
-        sym_edges = [e3, e4, e5]
-        if abs(sym_start[1] - sym_start_lower[1]) > 1e-8:
-            e6 = cq.Edge.makeLine(v_le_lower, v_le_upper)
-            sym_edges.append(e6)
-        sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
-        
-        # Create solid
-        shell = cq.Shell.makeShell([
-            upper_surface.val(),
-            lower_surface.val(),
-            back,
-            sym_face
-        ])
-        right_side = cq.Solid.makeSolid(shell)
+            upper_surface = cq.Workplane("XY").interpPlate(
+                edge_wire_upper, us_points, 0)
 
-        # Apply LE blunting via post-solid fillet
-        print(f"[Cone-derived STEP] blunting_radius={blunting_radius}, scale={scale}")
-        if blunting_radius > 0:
-            from waverider_generator.cad_export import _apply_le_fillet
-            le_pts = le_upper  # LE points already at scale
-            right_side = _apply_le_fillet(right_side, blunting_radius * scale, le_pts, nose_cap=True)
+            # Lower surface boundary
+            edge_wire_lower = cq.Workplane("XY").spline(
+                [tuple(x) for x in centerline_lower])
+            edge_wire_lower = edge_wire_lower.add(
+                cq.Workplane("XY").spline([tuple(x) for x in le_lower]))
+            edge_wire_lower = edge_wire_lower.add(
+                cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
+            wingtip_lower = t_lower_streams[-1]
+            wt_l_edge = cq.Edge.makeLine(
+                cq.Vector(*tuple(wingtip_lower[0])),
+                cq.Vector(*tuple(wingtip_lower[-1])))
+            edge_wire_lower = edge_wire_lower.add(
+                cq.Workplane("XY").newObject([wt_l_edge]))
+
+            lower_surface = cq.Workplane("XY").interpPlate(
+                edge_wire_lower, ls_points, 0)
+
+            # Build LE face (lofted through arc cross-sections)
+            le_face = _build_le_face(
+                arc_sections, tp_upper_curve, tp_lower_curve)
+
+            # Back face
+            e1 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_lower])
+            e2 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_upper])
+            e3 = cq.Edge.makeLine(
+                cq.Vector(*sym_end), cq.Vector(*sym_end_lower))
+            back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2, e3]))
+
+            # Symmetry face
+            v_le_upper = cq.Vector(*sym_start)
+            v_le_lower = cq.Vector(*sym_start_lower)
+            v_te_upper = cq.Vector(*sym_end)
+            v_te_lower = cq.Vector(*sym_end_lower)
+            e4 = cq.Edge.makeLine(v_le_upper, v_te_upper)
+            e5 = cq.Edge.makeLine(v_le_lower, v_te_lower)
+            sym_edges = [e3, e4, e5]
+            if abs(sym_start[1] - sym_start_lower[1]) > 1e-8:
+                e6 = cq.Edge.makeLine(v_le_lower, v_le_upper)
+                sym_edges.append(e6)
+            sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
+
+            # Assemble solid
+            face_list = [upper_surface.val(), lower_surface.val(),
+                         back, sym_face]
+            if le_face is not None:
+                face_list.append(le_face)
+                print("[Cone-derived PreBlunted] Building 5-face solid")
+            else:
+                print("[Cone-derived PreBlunted] LE face failed — 4-face solid")
+
+            shell = cq.Shell.makeShell(face_list)
+            right_side = cq.Solid.makeSolid(shell)
+
+        else:
+            # ===== ORIGINAL PATH: 4-face solid with optional post-solid fillet =====
+
+            # Extract key curves
+            le_upper = upper_half[:, 0, :]
+            le_lower = lower_half[:, 0, :]
+            te_upper = upper_half[:, -1, :]
+            te_lower = lower_half[:, -1, :]
+            centerline_upper = upper_half[0, :, :]
+            centerline_lower = lower_half[0, :, :]
+
+            us_points = []
+            for i in range(1, n_half - 1):
+                for j in range(1, n_stream - 1):
+                    us_points.append(tuple(upper_half[i, j, :]))
+
+            ls_points = []
+            for i in range(1, n_half - 1):
+                for j in range(1, n_stream - 1):
+                    ls_points.append(tuple(lower_half[i, j, :]))
+
+            sym_start = tuple(centerline_upper[0])
+            sym_end = tuple(centerline_upper[-1])
+
+            edge_wire_upper = cq.Workplane("XY").spline([tuple(x) for x in centerline_upper])
+            edge_wire_upper = edge_wire_upper.add(cq.Workplane("XY").spline([tuple(x) for x in le_upper]))
+            edge_wire_upper = edge_wire_upper.add(cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
+            wingtip_upper = upper_half[-1, :, :]
+            wt_u_edge = cq.Edge.makeLine(
+                cq.Vector(*tuple(wingtip_upper[0])),
+                cq.Vector(*tuple(wingtip_upper[-1])))
+            edge_wire_upper = edge_wire_upper.add(cq.Workplane("XY").newObject([wt_u_edge]))
+
+            upper_surface = cq.Workplane("XY").interpPlate(edge_wire_upper, us_points, 0)
+
+            sym_start_lower = tuple(centerline_lower[0])
+            sym_end_lower = tuple(centerline_lower[-1])
+
+            edge_wire_lower = cq.Workplane("XY").spline([tuple(x) for x in centerline_lower])
+            edge_wire_lower = edge_wire_lower.add(cq.Workplane("XY").spline([tuple(x) for x in le_lower]))
+            edge_wire_lower = edge_wire_lower.add(cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
+            wingtip_lower = lower_half[-1, :, :]
+            wt_l_edge = cq.Edge.makeLine(
+                cq.Vector(*tuple(wingtip_lower[0])),
+                cq.Vector(*tuple(wingtip_lower[-1])))
+            edge_wire_lower = edge_wire_lower.add(cq.Workplane("XY").newObject([wt_l_edge]))
+
+            lower_surface = cq.Workplane("XY").interpPlate(edge_wire_lower, ls_points, 0)
+
+            # Back face
+            e1 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_lower])
+            e2 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_upper])
+            v1 = cq.Vector(*sym_end)
+            v2 = cq.Vector(*sym_end_lower)
+            e3 = cq.Edge.makeLine(v1, v2)
+            back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2, e3]))
+
+            # Symmetry face
+            v_le_upper = cq.Vector(*sym_start)
+            v_le_lower = cq.Vector(*sym_start_lower)
+            v_te_upper = cq.Vector(*sym_end)
+            v_te_lower = cq.Vector(*sym_end_lower)
+            e4 = cq.Edge.makeLine(v_le_upper, v_te_upper)
+            e5 = cq.Edge.makeLine(v_le_lower, v_te_lower)
+            sym_edges = [e3, e4, e5]
+            if abs(sym_start[1] - sym_start_lower[1]) > 1e-8:
+                e6 = cq.Edge.makeLine(v_le_lower, v_le_upper)
+                sym_edges.append(e6)
+            sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
+
+            shell = cq.Shell.makeShell([
+                upper_surface.val(), lower_surface.val(), back, sym_face
+            ])
+            right_side = cq.Solid.makeSolid(shell)
+
+            # Apply LE blunting via post-solid fillet
+            print(f"[Cone-derived STEP] blunting_radius={blunting_radius}, scale={scale}")
+            if blunting_radius > 0:
+                from waverider_generator.cad_export import _apply_le_fillet
+                le_pts = le_upper
+                right_side = _apply_le_fillet(
+                    right_side, blunting_radius * scale, le_pts, nose_cap=True)
 
         # Mirror across XY plane (Z=0) to get left side
         left_side = right_side.mirror(mirrorPlane='XY')
