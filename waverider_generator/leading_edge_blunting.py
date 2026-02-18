@@ -544,6 +544,285 @@ def apply_blunting(waverider, solid=None, radius=0.0, method='auto', le_points=N
     raise ValueError(f"Unknown method: {method}. Use 'auto', 'fillet', 'loft', or 'points'.")
 
 
+def _compute_arc_at_station(le_pt, us_pts, ls_pts, local_radius, n_arc=8):
+    """
+    Compute circular arc blunting geometry at a single span station.
+
+    Parameters
+    ----------
+    le_pt : ndarray (3,)
+        Leading edge point (shared by upper and lower surface).
+    us_pts : ndarray (n, 3)
+        Upper surface streamwise points starting at LE.
+    ls_pts : ndarray (n, 3)
+        Lower surface streamwise points starting at LE.
+    local_radius : float
+        Blunting radius at this station.
+    n_arc : int
+        Number of arc segments (n_arc+1 points from tp_upper to tp_lower).
+
+    Returns
+    -------
+    dict with keys:
+        'tp_upper'   : ndarray (3,) — tangent point on upper surface
+        'tp_lower'   : ndarray (3,) — tangent point on lower surface
+        'arc_mid'    : ndarray (3,) — arc midpoint (the new blunted LE)
+        'arc_points' : ndarray (n_arc+1, 3) — full arc from tp_upper to tp_lower
+        'center'     : ndarray (3,) — arc center
+        'valid'      : bool — whether blunting was applied
+    """
+    # Get tangent directions (use further point for stability)
+    j_tan = min(2, us_pts.shape[0] - 1)
+
+    t_u = us_pts[j_tan] - us_pts[0]
+    n = np.linalg.norm(t_u)
+    t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
+
+    t_l = ls_pts[j_tan] - ls_pts[0]
+    n = np.linalg.norm(t_l)
+    t_l = t_l / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
+
+    # Bisector
+    bisector = t_u + t_l
+    b_norm = np.linalg.norm(bisector)
+    if b_norm > 1e-12:
+        bisector = bisector / b_norm
+    else:
+        bisector = np.array([1, 0, 0], dtype=float)
+
+    # Half-angle
+    cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
+    half_angle = np.arccos(cos_half) / 2.0
+
+    # Skip if surfaces are nearly tangent
+    if half_angle < 0.05:
+        return {
+            'tp_upper': le_pt.copy(), 'tp_lower': le_pt.copy(),
+            'arc_mid': le_pt.copy(),
+            'arc_points': np.tile(le_pt, (n_arc + 1, 1)),
+            'center': le_pt.copy(), 'valid': False
+        }
+
+    # Arc center and tangent points
+    d_center = local_radius / np.sin(half_angle)
+    d_center = min(d_center, local_radius * 5)
+    center = le_pt + d_center * bisector
+
+    tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
+    tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
+
+    # Generate arc points via slerp
+    v_upper = tp_upper - center
+    v_lower = tp_lower - center
+    v_u_norm = np.linalg.norm(v_upper)
+    v_l_norm = np.linalg.norm(v_lower)
+    v_u_hat = v_upper / v_u_norm if v_u_norm > 1e-12 else -t_u
+    v_l_hat = v_lower / v_l_norm if v_l_norm > 1e-12 else -t_l
+
+    cos_arc = np.clip(np.dot(v_u_hat, v_l_hat), -1, 1)
+    arc_angle = np.arccos(cos_arc)
+
+    arc_points = []
+    for k in range(n_arc + 1):
+        frac = k / n_arc
+        if arc_angle > 1e-6:
+            w1 = np.sin((1 - frac) * arc_angle) / np.sin(arc_angle)
+            w2 = np.sin(frac * arc_angle) / np.sin(arc_angle)
+        else:
+            w1 = 1 - frac
+            w2 = frac
+        direction = w1 * v_u_hat + w2 * v_l_hat
+        dir_norm = np.linalg.norm(direction)
+        if dir_norm > 1e-12:
+            direction = direction / dir_norm
+        arc_points.append(center + local_radius * direction)
+
+    arc_points = np.array(arc_points)
+
+    # Arc midpoint
+    v_mid = v_u_hat + v_l_hat
+    v_mid_norm = np.linalg.norm(v_mid)
+    if v_mid_norm > 1e-12:
+        v_mid = v_mid / v_mid_norm
+    arc_mid = center + local_radius * v_mid
+
+    return {
+        'tp_upper': tp_upper, 'tp_lower': tp_lower,
+        'arc_mid': arc_mid, 'arc_points': arc_points,
+        'center': center, 'valid': True
+    }
+
+
+def compute_pre_blunted_streams(us_streams, ls_streams, radius, n_arc=8):
+    """
+    Compute pre-blunted geometry for OC waverider (stream-list format).
+
+    At each span station, computes the circular arc blunting geometry
+    and trims the upper/lower streams to start at the tangent points
+    instead of the original sharp LE.
+
+    Parameters
+    ----------
+    us_streams : list of ndarray
+        Upper surface streams, each shape (n_pts, 3).
+    ls_streams : list of ndarray
+        Lower surface streams, each shape (n_pts, 3).
+    radius : float
+        Blunting radius in meters.
+    n_arc : int
+        Number of arc segments per station.
+
+    Returns
+    -------
+    dict with keys:
+        'trimmed_upper' : list of ndarray — streams starting at tp_upper
+        'trimmed_lower' : list of ndarray — streams starting at tp_lower
+        'tp_upper_curve' : ndarray (n_streams, 3) — upper tangent points
+        'tp_lower_curve' : ndarray (n_streams, 3) — lower tangent points
+        'arc_sections'   : list of ndarray (n_arc+1, 3) — arc per station
+        'blunted_le'     : ndarray (n_streams, 3) — arc midpoints
+    """
+    n_streams = len(us_streams)
+    trimmed_upper = []
+    trimmed_lower = []
+    tp_upper_list = []
+    tp_lower_list = []
+    arc_sections = []
+    blunted_le = []
+
+    for i in range(n_streams):
+        us = us_streams[i].copy()
+        ls = ls_streams[i].copy()
+        le_pt = us[0]
+
+        # Taper near nose tip (stream 0 = symmetry/tip)
+        frac = i / max(n_streams - 1, 1)
+        taper_zone = 0.15
+        taper = min(frac / taper_zone, 1.0) if frac < taper_zone else 1.0
+        local_radius = radius * taper
+
+        if local_radius < 1e-6:
+            # No blunting at this station — keep original
+            trimmed_upper.append(us)
+            trimmed_lower.append(ls)
+            tp_upper_list.append(le_pt.copy())
+            tp_lower_list.append(ls[0].copy())
+            arc_sections.append(np.tile(le_pt, (n_arc + 1, 1)))
+            blunted_le.append(le_pt.copy())
+            continue
+
+        result = _compute_arc_at_station(le_pt, us, ls, local_radius, n_arc)
+
+        if not result['valid']:
+            trimmed_upper.append(us)
+            trimmed_lower.append(ls)
+            tp_upper_list.append(le_pt.copy())
+            tp_lower_list.append(ls[0].copy())
+            arc_sections.append(result['arc_points'])
+            blunted_le.append(le_pt.copy())
+            continue
+
+        # Replace LE point with tangent point in streams
+        us[0] = result['tp_upper']
+        ls[0] = result['tp_lower']
+        trimmed_upper.append(us)
+        trimmed_lower.append(ls)
+        tp_upper_list.append(result['tp_upper'])
+        tp_lower_list.append(result['tp_lower'])
+        arc_sections.append(result['arc_points'])
+        blunted_le.append(result['arc_mid'])
+
+    return {
+        'trimmed_upper': trimmed_upper,
+        'trimmed_lower': trimmed_lower,
+        'tp_upper_curve': np.array(tp_upper_list),
+        'tp_lower_curve': np.array(tp_lower_list),
+        'arc_sections': arc_sections,
+        'blunted_le': np.array(blunted_le),
+    }
+
+
+def compute_pre_blunted_arrays(upper, lower, radius, n_arc=8):
+    """
+    Compute pre-blunted geometry for cone-derived waverider (array format).
+
+    Operates on a single half (e.g. right side, positive Z) of the surface.
+    Station 0 = symmetry/nose center, station -1 = wingtip.
+
+    Parameters
+    ----------
+    upper : ndarray (n_half, n_stream, 3)
+        Upper surface points for one half.
+    lower : ndarray (n_half, n_stream, 3)
+        Lower surface points for one half.
+    radius : float
+        Blunting radius in meters.
+    n_arc : int
+        Number of arc segments per station.
+
+    Returns
+    -------
+    dict — same structure as compute_pre_blunted_streams
+    """
+    n_half = upper.shape[0]
+    n_stream = upper.shape[1]
+    trimmed_upper = []
+    trimmed_lower = []
+    tp_upper_list = []
+    tp_lower_list = []
+    arc_sections = []
+    blunted_le = []
+
+    for i in range(n_half):
+        us = upper[i, :, :].copy()  # (n_stream, 3)
+        ls = lower[i, :, :].copy()
+        le_pt = us[0]
+
+        # Taper near nose (station 0 = center/nose for half-surface)
+        frac = i / max(n_half - 1, 1)
+        taper_zone = 0.15
+        taper = min(frac / taper_zone, 1.0) if frac < taper_zone else 1.0
+        local_radius = radius * taper
+
+        if local_radius < 1e-6:
+            trimmed_upper.append(us)
+            trimmed_lower.append(ls)
+            tp_upper_list.append(le_pt.copy())
+            tp_lower_list.append(ls[0].copy())
+            arc_sections.append(np.tile(le_pt, (n_arc + 1, 1)))
+            blunted_le.append(le_pt.copy())
+            continue
+
+        result = _compute_arc_at_station(le_pt, us, ls, local_radius, n_arc)
+
+        if not result['valid']:
+            trimmed_upper.append(us)
+            trimmed_lower.append(ls)
+            tp_upper_list.append(le_pt.copy())
+            tp_lower_list.append(ls[0].copy())
+            arc_sections.append(result['arc_points'])
+            blunted_le.append(le_pt.copy())
+            continue
+
+        us[0] = result['tp_upper']
+        ls[0] = result['tp_lower']
+        trimmed_upper.append(us)
+        trimmed_lower.append(ls)
+        tp_upper_list.append(result['tp_upper'])
+        tp_lower_list.append(result['tp_lower'])
+        arc_sections.append(result['arc_points'])
+        blunted_le.append(result['arc_mid'])
+
+    return {
+        'trimmed_upper': trimmed_upper,
+        'trimmed_lower': trimmed_lower,
+        'tp_upper_curve': np.array(tp_upper_list),
+        'tp_lower_curve': np.array(tp_lower_list),
+        'arc_sections': arc_sections,
+        'blunted_le': np.array(blunted_le),
+    }
+
+
 def compute_blunted_le_preview(waverider, radius, n_points=50):
     """
     Compute a blunted leading edge curve for 3D preview visualization.

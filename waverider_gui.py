@@ -1544,8 +1544,11 @@ class WaveriderGUI(QMainWindow):
 
         blunt_layout.addWidget(QLabel("Method:"), 2, 0)
         self.blunting_method_combo = QComboBox()
-        self.blunting_method_combo.addItems(["Auto (A→C→B)", "Fillet (A)", "Loft (C)", "Point-level (B)"])
+        self.blunting_method_combo.addItems([
+            "Pre-blunted (D) (Recommended)",
+            "Auto (A→C→B)", "Fillet (A)", "Loft (C)", "Point-level (B)"])
         self.blunting_method_combo.setToolTip(
+            "Pre-blunted (D): Builds blunt LE directly into geometry (C1 continuous)\n"
             "Auto: tries fillet first, falls back to loft, then point-level\n"
             "Fillet (A): CAD-level fillet on the solid\n"
             "Loft (C): Boolean cut + lofted circular arc replacement\n"
@@ -2909,6 +2912,7 @@ class WaveriderGUI(QMainWindow):
             if self.blunting_check.isChecked():
                 blunting_radius = self.blunting_radius_spin.value()
                 method_map = {
+                    "Pre-blunted (D) (Recommended)": "pre_blunted",
                     "Auto (A→C→B)": "auto",
                     "Fillet (A)": "fillet",
                     "Loft (C)": "loft",
