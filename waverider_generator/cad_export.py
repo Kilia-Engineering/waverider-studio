@@ -358,14 +358,19 @@ def _build_le_face(arc_sections, tp_upper_curve, tp_lower_curve):
 
     # Collect valid arc wires (skip degenerate stations at nose)
     wires = []
+    n_skipped_span = 0
+    n_skipped_collinear = 0
+    n_arc_wires = 0
+    n_line_wires = 0
     for i in range(n_stations):
         arc = arc_sections[i]
         tp_u = tp_upper_curve[i]
         tp_l = tp_lower_curve[i]
 
-        # Skip degenerate stations where all points are the same
+        # Skip degenerate stations where tangent points are identical
         span = np.linalg.norm(tp_u - tp_l)
-        if span < 1e-8:
+        if span < 1e-10:
+            n_skipped_span += 1
             continue
 
         # Arc midpoint (middle of the arc array)
@@ -383,7 +388,9 @@ def _build_le_face(arc_sections, tp_upper_curve, tp_lower_curve):
                     cq.Vector(*tp_u), cq.Vector(*tp_l))
                 wire = cq.Wire.assembleEdges([edge])
                 wires.append(wire)
+                n_line_wires += 1
             except Exception:
+                n_skipped_collinear += 1
                 continue
         else:
             try:
@@ -393,6 +400,7 @@ def _build_le_face(arc_sections, tp_upper_curve, tp_lower_curve):
                     cq.Vector(*tp_l))
                 wire = cq.Wire.assembleEdges([edge])
                 wires.append(wire)
+                n_arc_wires += 1
             except Exception as e:
                 logger.warning(f"Arc wire failed at station {i}: {e}")
                 # Fall back to line
@@ -401,8 +409,13 @@ def _build_le_face(arc_sections, tp_upper_curve, tp_lower_curve):
                         cq.Vector(*tp_u), cq.Vector(*tp_l))
                     wire = cq.Wire.assembleEdges([edge])
                     wires.append(wire)
+                    n_line_wires += 1
                 except Exception:
                     continue
+
+    print(f"[PreBlunted] LE face wire stats: {n_stations} stations, "
+          f"{n_skipped_span} skipped(span), {n_arc_wires} arcs, "
+          f"{n_line_wires} lines, {len(wires)} total wires")
 
     if len(wires) < 2:
         logger.error(f"_build_le_face: only {len(wires)} valid wires, need >=2")
