@@ -1197,35 +1197,38 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             for j in range(1, n_stream - 1):
                 ls_points.append(tuple(lower_half[i, j, :]))
         
-        # Build boundary for upper surface
-        # Need closed loop: centerline -> TE edge -> wingtip -> LE edge back to start
+        # Build boundary for upper surface with 4 edges (closed loop):
+        # centerline spline + TE spline + wingtip spline + LE spline
         workplane = cq.Workplane("XY")
-        
-        # Symmetry line (centerline from LE to TE)
+
         sym_start = tuple(centerline_upper[0])    # LE at centerline
-        sym_end = tuple(centerline_upper[-1])     # TE at centerline
-        
-        edge_wire_upper = workplane.moveTo(sym_start[0], sym_start[1])
-        edge_wire_upper = edge_wire_upper.lineTo(sym_end[0], sym_end[1])
-        
-        # Add LE spline and TE spline
+        sym_end = tuple(centerline_upper[-1])      # TE at centerline
+
+        # Centerline: spline through all streamwise points at symmetry (not a straight line)
+        edge_wire_upper = cq.Workplane("XY").spline([tuple(x) for x in centerline_upper])
+        # LE spline (all spanwise points at first streamwise station)
         edge_wire_upper = edge_wire_upper.add(cq.Workplane("XY").spline([tuple(x) for x in le_upper]))
+        # TE spline (all spanwise points at last streamwise station)
         edge_wire_upper = edge_wire_upper.add(cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
-        
+        # Wingtip spline (all streamwise points at outermost span station)
+        wingtip_upper = upper_half[-1, :, :]
+        edge_wire_upper = edge_wire_upper.add(cq.Workplane("XY").spline([tuple(x) for x in wingtip_upper]))
+
         # Create upper surface
         upper_surface = cq.Workplane("XY").interpPlate(edge_wire_upper, us_points, 0)
-        
-        # Build boundary for lower surface
+
+        # Build boundary for lower surface (same 4-edge approach)
         sym_start_lower = tuple(centerline_lower[0])
         sym_end_lower = tuple(centerline_lower[-1])
-        
-        edge_wire_lower = workplane.moveTo(sym_start_lower[0], sym_start_lower[1])
-        edge_wire_lower = edge_wire_lower.lineTo(sym_end_lower[0], sym_end_lower[1])
+
+        edge_wire_lower = cq.Workplane("XY").spline([tuple(x) for x in centerline_lower])
         edge_wire_lower = edge_wire_lower.add(cq.Workplane("XY").spline([tuple(x) for x in le_lower]))
         edge_wire_lower = edge_wire_lower.add(cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
-        
+        wingtip_lower = lower_half[-1, :, :]
+        edge_wire_lower = edge_wire_lower.add(cq.Workplane("XY").spline([tuple(x) for x in wingtip_lower]))
+
         lower_surface = cq.Workplane("XY").interpPlate(edge_wire_lower, ls_points, 0)
-        
+
         # Back face (trailing edge closure)
         e1 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_lower])
         e2 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_upper])
