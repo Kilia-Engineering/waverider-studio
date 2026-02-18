@@ -700,8 +700,9 @@ class ShadowWaveriderTab(QWidget):
             center_idx = n_le // 2  # nose/center index
             blunted_points = []
 
-            # Use a point further downstream for more robust tangent estimation
-            j_tan = min(2, n_stream - 1)
+            # Use a point well downstream for robust tangent estimation
+            # (cone-derived upper is flat, lower curves gradually)
+            j_tan = max(2, min(n_stream // 4, n_stream - 1))
 
             for i in range(n_le):
                 le_pt = wr.upper_surface[i, 0, :]

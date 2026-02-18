@@ -571,8 +571,12 @@ def _compute_arc_at_station(le_pt, us_pts, ls_pts, local_radius, n_arc=8):
         'center'     : ndarray (3,) — arc center
         'valid'      : bool — whether blunting was applied
     """
-    # Get tangent directions (use further point for stability)
-    j_tan = min(2, us_pts.shape[0] - 1)
+    # Get tangent directions using a point well downstream for stability.
+    # For cone-derived waverider, upper is flat (freestream) and lower curves
+    # gradually, so near-LE points give nearly identical tangents. Use ~20-30%
+    # of the streamwise extent for reliable dihedral angle estimation.
+    n_pts = us_pts.shape[0]
+    j_tan = max(2, min(n_pts // 4, n_pts - 1))
 
     t_u = us_pts[j_tan] - us_pts[0]
     n = np.linalg.norm(t_u)
@@ -594,8 +598,9 @@ def _compute_arc_at_station(le_pt, us_pts, ls_pts, local_radius, n_arc=8):
     cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
     half_angle = np.arccos(cos_half) / 2.0
 
-    # Skip if surfaces are nearly tangent
-    if half_angle < 0.05:
+    # Skip if surfaces are nearly tangent (< 0.3 degrees)
+    # The d_center clamp (radius*5) handles small-angle cases safely
+    if half_angle < 0.005:
         return {
             'tp_upper': le_pt.copy(), 'tp_lower': le_pt.copy(),
             'arc_mid': le_pt.copy(),
@@ -772,6 +777,7 @@ def compute_pre_blunted_arrays(upper, lower, radius, n_arc=8):
     tp_lower_list = []
     arc_sections = []
     blunted_le = []
+    n_valid = 0
 
     for i in range(n_half):
         us = upper[i, :, :].copy()  # (n_stream, 3)
@@ -804,6 +810,7 @@ def compute_pre_blunted_arrays(upper, lower, radius, n_arc=8):
             blunted_le.append(le_pt.copy())
             continue
 
+        n_valid += 1
         us[0] = result['tp_upper']
         ls[0] = result['tp_lower']
         trimmed_upper.append(us)
@@ -812,6 +819,9 @@ def compute_pre_blunted_arrays(upper, lower, radius, n_arc=8):
         tp_lower_list.append(result['tp_lower'])
         arc_sections.append(result['arc_points'])
         blunted_le.append(result['arc_mid'])
+
+    print(f"[PreBlunted arrays] {n_half} stations, {n_valid} valid arcs, "
+          f"radius={radius:.6f}")
 
     return {
         'trimmed_upper': trimmed_upper,
@@ -877,8 +887,9 @@ def compute_blunted_le_preview(waverider, radius, n_points=50):
             blunted_points.append(le_pt)
             continue
 
-        # Get tangent directions (use further point for stability)
-        j_tan = min(2, us.shape[0] - 1)
+        # Get tangent directions using well-downstream point for stability
+        n_pts = us.shape[0]
+        j_tan = max(2, min(n_pts // 4, n_pts - 1))
         t_u = us[j_tan] - us[0]
         n = np.linalg.norm(t_u)
         t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
