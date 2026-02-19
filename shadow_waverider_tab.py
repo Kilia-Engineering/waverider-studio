@@ -1190,7 +1190,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         if use_pre_blunted:
             # ===== PRE-BLUNTED PATH: 5-face solid with dedicated LE face =====
             from waverider_generator.leading_edge_blunting import compute_pre_blunted_arrays
-            from waverider_generator.cad_export import _build_le_face
+            from waverider_generator.cad_export import _build_le_face, _sew_faces_to_solid
 
             print(f"[Cone-derived PreBlunted] Computing pre-blunted geometry "
                   f"(r={blunting_radius * scale:.4f}m at scale)")
@@ -1289,17 +1289,16 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 sym_edges.append(e6)
             sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
 
-            # Assemble solid
+            # Assemble solid via sewing (handles independently-created surfaces)
             face_list = [upper_surface.val(), lower_surface.val(),
                          back, sym_face]
             if le_face is not None:
                 face_list.append(le_face)
-                print("[Cone-derived PreBlunted] Building 5-face solid")
+                print("[Cone-derived PreBlunted] Sewing 5-face solid")
             else:
-                print("[Cone-derived PreBlunted] LE face failed — 4-face solid")
+                print("[Cone-derived PreBlunted] LE face failed — sewing 4-face solid")
 
-            shell = cq.Shell.makeShell(face_list)
-            right_side = cq.Solid.makeSolid(shell)
+            right_side = _sew_faces_to_solid(face_list)
 
         else:
             # ===== ORIGINAL PATH: 4-face solid with optional post-solid fillet =====
@@ -1371,10 +1370,10 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 sym_edges.append(e6)
             sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
 
-            shell = cq.Shell.makeShell([
+            from waverider_generator.cad_export import _sew_faces_to_solid
+            right_side = _sew_faces_to_solid([
                 upper_surface.val(), lower_surface.val(), back, sym_face
             ])
-            right_side = cq.Solid.makeSolid(shell)
 
             # Apply LE blunting via post-solid fillet
             print(f"[Cone-derived STEP] blunting_radius={blunting_radius}, scale={scale}")

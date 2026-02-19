@@ -85,6 +85,61 @@ def enforce_min_thickness_arrays(upper, lower, min_thickness):
     return upper_out, lower_out
 
 
+def _sew_faces_to_solid(faces, tolerance=1e-3):
+    """
+    Sew faces into a solid using BRepBuilderAPI_Sewing.
+
+    Unlike cq.Shell.makeShell which requires topologically connected faces
+    (shared edges), sewing merges faces whose edges are geometrically close
+    but have different OCC topology. This is essential when surfaces are built
+    independently via interpPlate — each surface gets its own B-spline edges
+    even when the boundary points are identical.
+
+    Parameters
+    ----------
+    faces : list
+        CadQuery Face objects or OCC TopoDS_Face objects.
+    tolerance : float
+        Sewing tolerance in model units. Edges within this distance
+        are merged into shared topology.
+
+    Returns
+    -------
+    cq.Solid
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopoDS import TopoDS
+    from OCP.ShapeFix import ShapeFix_Solid
+
+    sewer = BRepBuilderAPI_Sewing(tolerance)
+    for face in faces:
+        if hasattr(face, 'wrapped'):
+            sewer.Add(face.wrapped)
+        else:
+            sewer.Add(face)
+    sewer.Perform()
+
+    sewn_shape = sewer.SewedShape()
+
+    # Extract shell from the sewn shape
+    explorer = TopExp_Explorer(sewn_shape, TopAbs_SHELL)
+    if not explorer.More():
+        raise RuntimeError(
+            f"Sewing produced no shell from {len(faces)} faces "
+            f"(tolerance={tolerance:.1e})")
+
+    shell = TopoDS.Shell_s(explorer.Current())
+
+    # Build solid from shell
+    fixer = ShapeFix_Solid()
+    solid_shape = fixer.SolidFromShell(shell)
+
+    print(f"[Sewing] {len(faces)} faces → solid OK (tol={tolerance:.1e})")
+    return cq.Solid(solid_shape)
+
+
 def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
     if "scale" in kwargs:
@@ -210,7 +265,7 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
         else:
             print(f"[PreBlunted] LE face failed — building 4-face solid (no LE blunting)")
 
-        left_side = cq.Solid.makeSolid(cq.Shell.makeShell(face_list)).scale(scale)
+        left_side = _sew_faces_to_solid(face_list).scale(scale)
         # No post-solid fillet needed — blunting is built into geometry
 
     else:
@@ -292,7 +347,7 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
         # create solid
         # by convention, +ve z is left so this produces the left side
-        left_side= cq.Solid.makeSolid(cq.Shell.makeShell([upper_surface.objects[0], lower_surface.objects[0], back,sym])).scale(scale)
+        left_side = _sew_faces_to_solid([upper_surface.objects[0], lower_surface.objects[0], back, sym]).scale(scale)
 
         # Apply leading edge blunting via post-solid fillet
         if blunting_radius > 0:
