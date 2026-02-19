@@ -78,7 +78,15 @@ def _solve_hermite_bezier(P0, P3, v0, v1, k0, k1):
         c = -cross_d_v1
         disc = b * b - 4 * a * c
         if disc < 0:
-            return None, None
+            # Relax curvature: use max achievable k that gives disc=0
+            if abs(c) > 1e-16:
+                k0_max = b * b / (6.0 * abs(c))
+                a = 1.5 * k0_max * 0.95  # 5% margin
+                disc = b * b - 4 * a * c
+                if disc < 0:
+                    return None, None
+            else:
+                return None, None
         delta0 = (-b + np.sqrt(disc)) / (2 * a)
         if delta0 < 0:
             delta0 = (-b - np.sqrt(disc)) / (2 * a)
@@ -93,7 +101,15 @@ def _solve_hermite_bezier(P0, P3, v0, v1, k0, k1):
         c = -cross_v0_d
         disc = b * b - 4 * a * c
         if disc < 0:
-            return None, None
+            # Relax curvature: use max achievable k that gives disc=0
+            if abs(c) > 1e-16:
+                k1_max = b * b / (6.0 * abs(c))
+                a = 1.5 * k1_max * 0.95  # 5% margin
+                disc = b * b - 4 * a * c
+                if disc < 0:
+                    return None, None
+            else:
+                return None, None
         delta1 = (-b + np.sqrt(disc)) / (2 * a)
         if delta1 < 0:
             delta1 = (-b - np.sqrt(disc)) / (2 * a)
@@ -277,26 +293,26 @@ def _compute_bezier_blunt_profile(le_pt, us_pts, ls_pts, local_radius,
         tp_lower_2d, blunt_tip_2d, v0_lower, v1_lower,
         k0=0.0, k1=1.0 / local_radius)
 
-    # --- Upper Bezier: blunt_tip → tp_upper ---
-    # Tangent at blunt_tip: same perpendicular, pointing toward upper
-    v0_upper = np.array([0.0, 1.0])
-    if np.dot(v0_upper, tp_upper_2d - blunt_tip_2d) < 0:
-        v0_upper = -v0_upper
-
+    # --- Upper Bezier: solve as tp_upper → blunt_tip (same pattern as lower) ---
     # Tangent at tp_upper: perpendicular to radius (center→tp_upper), pointing toward tip
     radius_dir_upper = tp_upper_2d - center_2d
     rd_norm = np.linalg.norm(radius_dir_upper)
     if rd_norm > 1e-12:
         radius_dir_upper = radius_dir_upper / rd_norm
-    v1_upper = np.array([-radius_dir_upper[1], radius_dir_upper[0]])
-    # Ensure v1 points from tp_upper toward blunt_tip (incoming direction)
-    if np.dot(v1_upper, blunt_tip_2d - tp_upper_2d) < 0:
-        v1_upper = -v1_upper
+    v0_upper = np.array([-radius_dir_upper[1], radius_dir_upper[0]])
+    # Ensure v0 points from tp_upper toward blunt_tip
+    if np.dot(v0_upper, blunt_tip_2d - tp_upper_2d) < 0:
+        v0_upper = -v0_upper
 
-    # Curvatures: k0=1/R at blunt tip, k1=0 at surface junction
+    # Tangent at blunt_tip: perpendicular to bisector, pointing away from tp_upper
+    v1_upper = np.array([0.0, 1.0])
+    if np.dot(v1_upper, tp_upper_2d - blunt_tip_2d) > 0:
+        v1_upper = -v1_upper  # should point away from tp_upper (toward lower side)
+
+    # Curvatures: k0=0 at surface junction (tp_upper), k1=1/R at blunt tip
     P1_upper, P2_upper = _solve_hermite_bezier(
-        blunt_tip_2d, tp_upper_2d, v0_upper, v1_upper,
-        k0=1.0 / local_radius, k1=0.0)
+        tp_upper_2d, blunt_tip_2d, v0_upper, v1_upper,
+        k0=0.0, k1=1.0 / local_radius)
 
     # Check if Bezier solutions are valid
     if P1_lower is None or P1_upper is None:
@@ -305,17 +321,19 @@ def _compute_bezier_blunt_profile(le_pt, us_pts, ls_pts, local_radius,
         return fail
 
     # Sample both Bezier curves in 2D, then convert to 3D
+    # Both are solved as surface_junction → blunt_tip
     lower_pts_2d = _sample_cubic_bezier(
         tp_lower_2d, P1_lower, P2_lower, blunt_tip_2d, n_bezier)
     upper_pts_2d = _sample_cubic_bezier(
-        blunt_tip_2d, P1_upper, P2_upper, tp_upper_2d, n_bezier)
+        tp_upper_2d, P1_upper, P2_upper, blunt_tip_2d, n_bezier)
 
     # Convert to 3D
     lower_bezier_3d = np.array([to_3d(p) for p in lower_pts_2d])
     upper_bezier_3d = np.array([to_3d(p) for p in upper_pts_2d])
 
-    # lower_bezier goes tp_lower → blunt_tip; reverse for blunt_tip → tp_lower
+    # Both go surface → blunt_tip; reverse to get blunt_tip → surface
     lower_bezier_3d = lower_bezier_3d[::-1]
+    upper_bezier_3d = upper_bezier_3d[::-1]
 
     return {
         'upper_bezier': upper_bezier_3d,   # blunt_tip → tp_upper

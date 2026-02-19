@@ -2941,12 +2941,14 @@ class WaveriderGUI(QMainWindow):
                 pct = self.min_thickness_spin.value()
                 min_thickness = self.waverider.length * pct / 100.0
 
+            # STEP files use millimeters (OCCT convention);
+            # geometry is in meters → scale by 1000
             to_CAD(
                 waverider=self.waverider,
                 sides=sides,
                 export=True,
                 filename=filename,
-                scale=1.0,
+                scale=1000.0,
                 blunting_radius=blunting_radius,
                 blunting_method=blunting_method,
                 min_thickness=min_thickness,

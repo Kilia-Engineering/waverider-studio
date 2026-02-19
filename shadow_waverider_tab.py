@@ -587,7 +587,7 @@ class ShadowWaveriderTab(QWidget):
         layout.addWidget(QLabel("Scale (1.0 = meters):"), 3, 0)
         self.scale_spin = QDoubleSpinBox()
         self.scale_spin.setRange(0.001, 10000); self.scale_spin.setValue(1.0); self.scale_spin.setDecimals(3)
-        self.scale_spin.setToolTip("Scale factor for export (1.0 = SI meters)")
+        self.scale_spin.setToolTip("Additional scale factor for export (1.0 = SI meters).\nSTEP mm conversion is applied automatically.")
         layout.addWidget(self.scale_spin, 3, 1)
         
         group.setLayout(layout)
@@ -1133,7 +1133,9 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         fn, _ = QFileDialog.getSaveFileName(self, "Save STEP", "shadow_waverider.step", "STEP (*.step)")
         if fn:
             try:
-                scale = self.scale_spin.value()
+                # STEP files use millimeters (OCCT convention);
+                # geometry is in meters → multiply by 1000
+                scale = self.scale_spin.value() * 1000.0
                 blunting_radius = 0.0
                 blunting_method = "auto"
                 if self.blunting_check.isChecked():
