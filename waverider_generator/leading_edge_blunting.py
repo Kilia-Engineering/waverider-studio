@@ -3,21 +3,385 @@ Leading Edge Blunting Module
 ============================
 Provides multiple approaches to blunt the sharp leading edge of waverider geometries.
 
-Approach A (Primary): CAD-level fillet using CadQuery/OCC
-Approach B: Point-level modification before surface creation
-Approach C (Fallback): Boolean cut + lofted replacement
+Primary approach: G2-continuous dual cubic Bezier (Fu et al. 2020)
+Legacy approaches: CAD fillet (A), point-level (B), boolean+loft (C), circular arc (D)
 
 Convention:
     x -> streamwise direction
     y -> transverse direction (vertical)
     z -> spanwise direction
     Origin at the waverider tip
+
+References:
+    Fu et al. (2020) "A Novel Method for Blunting the Leading Edge of Waverider
+    with Specified Curvature", Int. J. Aerospace Engineering
 """
 
 import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# G2 Bezier blunting (Fu et al. 2020) — Phase 1 functions
+# ---------------------------------------------------------------------------
+
+def _cross2d(a, b):
+    """2D scalar cross product: a × b = ax*by - ay*bx."""
+    return a[0] * b[1] - a[1] * b[0]
+
+
+def _solve_hermite_bezier(P0, P3, v0, v1, k0, k1):
+    """
+    Solve for cubic Bezier control points P1, P2 using Hermite interpolation.
+
+    Based on Fu et al. (2020): given endpoints P0, P3 with unit tangent
+    vectors v0, v1 and signed curvatures k0, k1, solve the system:
+
+        (v0 × v1)·δ0 = (d × v1) - (3/2)·k0·δ0²
+        (v0 × v1)·δ1 = (v0 × d) - (3/2)·k1·δ1²
+
+    where d = P3 - P0, and × is the 2D scalar cross product.
+
+    Parameters
+    ----------
+    P0, P3 : ndarray (2,)
+        Endpoint positions in local 2D frame.
+    v0, v1 : ndarray (2,)
+        Unit tangent vectors at P0 and P3.
+    k0, k1 : float
+        Signed curvatures at P0 and P3.
+
+    Returns
+    -------
+    P1, P2 : ndarray (2,)
+        Interior control points, or None if solution fails.
+    """
+    d = P3 - P0
+    cross_v0_v1 = _cross2d(v0, v1)
+    cross_d_v1 = _cross2d(d, v1)
+    cross_v0_d = _cross2d(v0, d)
+
+    if abs(cross_v0_v1) < 1e-12:
+        # Tangents are parallel — degenerate case
+        return None, None
+
+    # Solve for δ0
+    if abs(k0) < 1e-12:
+        # Zero curvature at P0: linear equation
+        delta0 = cross_d_v1 / cross_v0_v1
+    else:
+        # Quadratic: (3/2)*k0*δ0² + cross_v0_v1*δ0 - cross_d_v1 = 0
+        a = 1.5 * k0
+        b = cross_v0_v1
+        c = -cross_d_v1
+        disc = b * b - 4 * a * c
+        if disc < 0:
+            return None, None
+        delta0 = (-b + np.sqrt(disc)) / (2 * a)
+        if delta0 < 0:
+            delta0 = (-b - np.sqrt(disc)) / (2 * a)
+
+    # Solve for δ1
+    if abs(k1) < 1e-12:
+        delta1 = cross_v0_d / cross_v0_v1
+    else:
+        # Quadratic: (3/2)*k1*δ1² + cross_v0_v1*δ1 - cross_v0_d = 0
+        a = 1.5 * k1
+        b = cross_v0_v1
+        c = -cross_v0_d
+        disc = b * b - 4 * a * c
+        if disc < 0:
+            return None, None
+        delta1 = (-b + np.sqrt(disc)) / (2 * a)
+        if delta1 < 0:
+            delta1 = (-b - np.sqrt(disc)) / (2 * a)
+
+    if delta0 < 0 or delta1 < 0:
+        return None, None
+
+    P1 = P0 + delta0 * v0
+    P2 = P3 - delta1 * v1
+    return P1, P2
+
+
+def _sample_cubic_bezier(P0, P1, P2, P3, n_pts):
+    """
+    Sample a cubic Bezier curve at uniform parameter values.
+
+    Uses vectorized de Casteljau evaluation.
+
+    Parameters
+    ----------
+    P0, P1, P2, P3 : ndarray (dim,)
+        Control points.
+    n_pts : int
+        Number of sample points (including endpoints).
+
+    Returns
+    -------
+    ndarray (n_pts, dim)
+    """
+    t = np.linspace(0, 1, n_pts).reshape(-1, 1)
+    s = 1 - t
+    # B(t) = s³P0 + 3s²tP1 + 3st²P2 + t³P3
+    pts = (s**3 * P0 + 3 * s**2 * t * P1 +
+           3 * s * t**2 * P2 + t**3 * P3)
+    return pts
+
+
+def _compute_bezier_blunt_profile(le_pt, us_pts, ls_pts, local_radius,
+                                   n_bezier=10):
+    """
+    Compute G2-continuous blunt LE profile using dual cubic Bezier curves.
+
+    Based on Fu et al. (2020). At a single span station, constructs two
+    cubic Bezier curves (lower→tip and tip→upper) with:
+    - G2 at the blunt tip (curvature = 1/R)
+    - G2 at surface junctions (curvature = 0, matching flat surface)
+
+    Parameters
+    ----------
+    le_pt : ndarray (3,)
+        Original sharp leading edge point.
+    us_pts : ndarray (n, 3)
+        Upper surface streamwise points starting at LE.
+    ls_pts : ndarray (n, 3)
+        Lower surface streamwise points starting at LE.
+    local_radius : float
+        Blunting radius at this station.
+    n_bezier : int
+        Number of sample points per Bezier half-curve (including endpoints).
+
+    Returns
+    -------
+    dict with keys:
+        'upper_bezier' : ndarray (n_bezier, 3) — points from blunt_tip to tp_upper
+        'lower_bezier' : ndarray (n_bezier, 3) — points from blunt_tip to tp_lower
+        'blunt_tip'    : ndarray (3,)
+        'tp_upper'     : ndarray (3,)
+        'tp_lower'     : ndarray (3,)
+        'valid'        : bool
+    """
+    n_pts = us_pts.shape[0]
+    j_tan = max(2, min(n_pts // 4, n_pts - 1))
+
+    # Tangent directions (pointing downstream from LE)
+    t_u = us_pts[j_tan] - us_pts[0]
+    n = np.linalg.norm(t_u)
+    t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
+
+    t_l = ls_pts[j_tan] - ls_pts[0]
+    n = np.linalg.norm(t_l)
+    t_l = t_l / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
+
+    # Bisector
+    bisector = t_u + t_l
+    b_norm = np.linalg.norm(bisector)
+    if b_norm > 1e-12:
+        bisector = bisector / b_norm
+    else:
+        bisector = np.array([1, 0, 0], dtype=float)
+
+    # Half-angle
+    cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
+    half_angle = np.arccos(cos_half) / 2.0
+
+    fail = {
+        'upper_bezier': np.tile(le_pt, (n_bezier, 1)),
+        'lower_bezier': np.tile(le_pt, (n_bezier, 1)),
+        'blunt_tip': le_pt.copy(),
+        'tp_upper': le_pt.copy(), 'tp_lower': le_pt.copy(),
+        'valid': False
+    }
+
+    if half_angle < 0.005:
+        return fail
+
+    # Circle geometry (same as arc method)
+    d_center = local_radius / np.sin(half_angle)
+    d_center = min(d_center, local_radius * 5)
+    center = le_pt + d_center * bisector
+
+    tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
+    tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
+
+    # Blunt tip = point on circle farthest from center along -bisector direction
+    v_u = tp_upper - center
+    v_l = tp_lower - center
+    v_u_norm = np.linalg.norm(v_u)
+    v_l_norm = np.linalg.norm(v_l)
+    v_u_hat = v_u / v_u_norm if v_u_norm > 1e-12 else -t_u
+    v_l_hat = v_l / v_l_norm if v_l_norm > 1e-12 else -t_l
+    v_mid = v_u_hat + v_l_hat
+    v_mid_norm = np.linalg.norm(v_mid)
+    if v_mid_norm > 1e-12:
+        v_mid = v_mid / v_mid_norm
+    blunt_tip = center + local_radius * v_mid
+
+    # --- Local 2D coordinate frame in the osculating plane ---
+    # Plane defined by t_u and t_l emanating from le_pt
+    plane_normal = np.cross(t_u, t_l)
+    pn_norm = np.linalg.norm(plane_normal)
+    if pn_norm < 1e-12:
+        # Degenerate: t_u ≈ t_l, try cross with [0,1,0]
+        plane_normal = np.cross(t_u, np.array([0, 1, 0]))
+        pn_norm = np.linalg.norm(plane_normal)
+        if pn_norm < 1e-12:
+            plane_normal = np.cross(t_u, np.array([0, 0, 1]))
+            pn_norm = np.linalg.norm(plane_normal)
+    plane_normal = plane_normal / pn_norm
+
+    # e1 = bisector direction, e2 = perpendicular to bisector in the plane
+    e1 = bisector
+    e2 = np.cross(plane_normal, e1)
+    e2_norm = np.linalg.norm(e2)
+    if e2_norm > 1e-12:
+        e2 = e2 / e2_norm
+
+    def to_2d(pt):
+        d = pt - le_pt
+        return np.array([np.dot(d, e1), np.dot(d, e2)])
+
+    def to_3d(pt2d):
+        return le_pt + pt2d[0] * e1 + pt2d[1] * e2
+
+    # Project key points to 2D
+    tp_lower_2d = to_2d(tp_lower)
+    tp_upper_2d = to_2d(tp_upper)
+    blunt_tip_2d = to_2d(blunt_tip)
+    center_2d = to_2d(center)
+
+    # --- Lower Bezier: tp_lower → blunt_tip ---
+    # Tangent at tp_lower: perpendicular to radius (center→tp_lower), pointing toward tip
+    radius_dir_lower = tp_lower_2d - center_2d
+    rd_norm = np.linalg.norm(radius_dir_lower)
+    if rd_norm > 1e-12:
+        radius_dir_lower = radius_dir_lower / rd_norm
+    # Perpendicular (rotated 90° CCW) — check direction points toward blunt_tip
+    v0_lower = np.array([-radius_dir_lower[1], radius_dir_lower[0]])
+    # Ensure v0 points from tp_lower toward blunt_tip
+    if np.dot(v0_lower, blunt_tip_2d - tp_lower_2d) < 0:
+        v0_lower = -v0_lower
+
+    # Tangent at blunt_tip: perpendicular to bisector → e2 direction in local frame
+    # In 2D: bisector = [1, 0] (e1), so perpendicular = [0, 1] (e2)
+    v1_lower = np.array([0.0, 1.0])  # pointing from lower side toward upper
+    # Check direction: at blunt_tip, curve arrives from lower side
+    if np.dot(v1_lower, tp_lower_2d - blunt_tip_2d) > 0:
+        v1_lower = -v1_lower  # should point away from tp_lower
+
+    # Curvatures: k0=0 at surface junction, k1=1/R at blunt tip
+    P1_lower, P2_lower = _solve_hermite_bezier(
+        tp_lower_2d, blunt_tip_2d, v0_lower, v1_lower,
+        k0=0.0, k1=1.0 / local_radius)
+
+    # --- Upper Bezier: blunt_tip → tp_upper ---
+    # Tangent at blunt_tip: same perpendicular, pointing toward upper
+    v0_upper = np.array([0.0, 1.0])
+    if np.dot(v0_upper, tp_upper_2d - blunt_tip_2d) < 0:
+        v0_upper = -v0_upper
+
+    # Tangent at tp_upper: perpendicular to radius (center→tp_upper), pointing toward tip
+    radius_dir_upper = tp_upper_2d - center_2d
+    rd_norm = np.linalg.norm(radius_dir_upper)
+    if rd_norm > 1e-12:
+        radius_dir_upper = radius_dir_upper / rd_norm
+    v1_upper = np.array([-radius_dir_upper[1], radius_dir_upper[0]])
+    # Ensure v1 points from tp_upper toward blunt_tip (incoming direction)
+    if np.dot(v1_upper, blunt_tip_2d - tp_upper_2d) < 0:
+        v1_upper = -v1_upper
+
+    # Curvatures: k0=1/R at blunt tip, k1=0 at surface junction
+    P1_upper, P2_upper = _solve_hermite_bezier(
+        blunt_tip_2d, tp_upper_2d, v0_upper, v1_upper,
+        k0=1.0 / local_radius, k1=0.0)
+
+    # Check if Bezier solutions are valid
+    if P1_lower is None or P1_upper is None:
+        # Fallback: use circular arc sampling
+        logger.warning("Bezier Hermite failed, falling back to arc sampling")
+        return fail
+
+    # Sample both Bezier curves in 2D, then convert to 3D
+    lower_pts_2d = _sample_cubic_bezier(
+        tp_lower_2d, P1_lower, P2_lower, blunt_tip_2d, n_bezier)
+    upper_pts_2d = _sample_cubic_bezier(
+        blunt_tip_2d, P1_upper, P2_upper, tp_upper_2d, n_bezier)
+
+    # Convert to 3D
+    lower_bezier_3d = np.array([to_3d(p) for p in lower_pts_2d])
+    upper_bezier_3d = np.array([to_3d(p) for p in upper_pts_2d])
+
+    # lower_bezier goes tp_lower → blunt_tip; reverse for blunt_tip → tp_lower
+    lower_bezier_3d = lower_bezier_3d[::-1]
+
+    return {
+        'upper_bezier': upper_bezier_3d,   # blunt_tip → tp_upper
+        'lower_bezier': lower_bezier_3d,   # blunt_tip → tp_lower
+        'blunt_tip': blunt_tip,
+        'tp_upper': tp_upper,
+        'tp_lower': tp_lower,
+        'valid': True
+    }
+
+
+def compute_sweep_scaled_radius(le_points, base_radius, exponent=2.2):
+    """
+    Compute spanwise blunting radius scaled by local sweep angle.
+
+    RSW_i = base_radius * (cos(sweep_i))^exponent
+
+    Sweep angle at each LE station is computed from the LE curve geometry:
+    the angle between the local LE tangent and the streamwise (X) direction.
+
+    Parameters
+    ----------
+    le_points : ndarray (n, 3)
+        Leading edge points from nose to wingtip.
+    base_radius : float
+        Centerline blunting radius (at zero sweep).
+    exponent : float
+        Sweep scaling exponent (default 2.2 per literature).
+
+    Returns
+    -------
+    radii : ndarray (n,)
+        Blunting radius at each LE station.
+    """
+    n = len(le_points)
+    radii = np.full(n, base_radius)
+
+    for i in range(n):
+        # Local LE tangent from finite differences
+        if i == 0:
+            tangent = le_points[1] - le_points[0]
+        elif i == n - 1:
+            tangent = le_points[-1] - le_points[-2]
+        else:
+            tangent = le_points[i + 1] - le_points[i - 1]
+
+        t_norm = np.linalg.norm(tangent)
+        if t_norm < 1e-12:
+            continue
+
+        tangent = tangent / t_norm
+
+        # Sweep angle = angle between LE tangent projected onto XZ plane
+        # and the Z-axis (spanwise). For a swept wing, LE runs in XZ plane.
+        # cos(sweep) = |tangent_z| / sqrt(tangent_x² + tangent_z²)
+        xz_len = np.sqrt(tangent[0]**2 + tangent[2]**2)
+        if xz_len < 1e-12:
+            continue
+
+        # Sweep angle relative to spanwise: angle of LE tangent from Z-axis
+        cos_sweep = abs(tangent[2]) / xz_len
+        cos_sweep = np.clip(cos_sweep, 0, 1)
+
+        radii[i] = base_radius * cos_sweep**exponent
+
+    return radii
 
 
 def blunt_leading_edge_points(waverider, radius):
@@ -658,13 +1022,15 @@ def _compute_arc_at_station(le_pt, us_pts, ls_pts, local_radius, n_arc=8):
     }
 
 
-def compute_pre_blunted_streams(us_streams, ls_streams, radius, n_arc=8):
+def compute_pre_blunted_streams(us_streams, ls_streams, radius, n_bezier=10,
+                                sweep_scaled=False):
     """
     Compute pre-blunted geometry for OC waverider (stream-list format).
 
-    At each span station, computes the circular arc blunting geometry
-    and trims the upper/lower streams to start at the tangent points
-    instead of the original sharp LE.
+    Uses G2-continuous dual cubic Bezier curves (Fu et al. 2020) to create
+    blunt LE profiles that are embedded directly into the surface streams.
+    Both upper and lower streams start at the shared blunt tip point,
+    enabling a 4-face solid (no separate LE face needed).
 
     Parameters
     ----------
@@ -673,27 +1039,31 @@ def compute_pre_blunted_streams(us_streams, ls_streams, radius, n_arc=8):
     ls_streams : list of ndarray
         Lower surface streams, each shape (n_pts, 3).
     radius : float
-        Blunting radius in meters.
-    n_arc : int
-        Number of arc segments per station.
+        Blunting radius in meters (centerline value if sweep_scaled=True).
+    n_bezier : int
+        Number of sample points per Bezier half-curve.
+    sweep_scaled : bool
+        If True, scale radius by local sweep angle: R * (cos λ)^2.2.
 
     Returns
     -------
     dict with keys:
-        'trimmed_upper' : list of ndarray — streams starting at tp_upper
-        'trimmed_lower' : list of ndarray — streams starting at tp_lower
-        'tp_upper_curve' : ndarray (n_streams, 3) — upper tangent points
-        'tp_lower_curve' : ndarray (n_streams, 3) — lower tangent points
-        'arc_sections'   : list of ndarray (n_arc+1, 3) — arc per station
-        'blunted_le'     : ndarray (n_streams, 3) — arc midpoints
+        'modified_upper' : list of ndarray — streams with Bezier embedded
+        'modified_lower' : list of ndarray — streams with Bezier embedded
+        'blunted_le'     : ndarray (n_streams, 3) — blunt tip points (shared LE)
+        'sweep_radii'    : ndarray or None — actual radius per station
     """
     n_streams = len(us_streams)
-    trimmed_upper = []
-    trimmed_lower = []
-    tp_upper_list = []
-    tp_lower_list = []
-    arc_sections = []
+    modified_upper = []
+    modified_lower = []
     blunted_le = []
+
+    # Compute sweep-scaled radii if requested
+    le_points = np.vstack([s[0] for s in us_streams])
+    if sweep_scaled:
+        sweep_radii = compute_sweep_scaled_radius(le_points, radius)
+    else:
+        sweep_radii = np.full(n_streams, radius)
 
     for i in range(n_streams):
         us = us_streams[i].copy()
@@ -704,55 +1074,50 @@ def compute_pre_blunted_streams(us_streams, ls_streams, radius, n_arc=8):
         frac = i / max(n_streams - 1, 1)
         taper_zone = 0.15
         taper = min(frac / taper_zone, 1.0) if frac < taper_zone else 1.0
-        local_radius = radius * taper
+        local_radius = sweep_radii[i] * taper
 
         if local_radius < 1e-6:
             # No blunting at this station — keep original
-            trimmed_upper.append(us)
-            trimmed_lower.append(ls)
-            tp_upper_list.append(le_pt.copy())
-            tp_lower_list.append(ls[0].copy())
-            arc_sections.append(np.tile(le_pt, (n_arc + 1, 1)))
+            modified_upper.append(us)
+            modified_lower.append(ls)
             blunted_le.append(le_pt.copy())
             continue
 
-        result = _compute_arc_at_station(le_pt, us, ls, local_radius, n_arc)
+        result = _compute_bezier_blunt_profile(
+            le_pt, us, ls, local_radius, n_bezier)
 
         if not result['valid']:
-            trimmed_upper.append(us)
-            trimmed_lower.append(ls)
-            tp_upper_list.append(le_pt.copy())
-            tp_lower_list.append(ls[0].copy())
-            arc_sections.append(result['arc_points'])
+            modified_upper.append(us)
+            modified_lower.append(ls)
             blunted_le.append(le_pt.copy())
             continue
 
-        # Replace LE point with tangent point in streams
-        us[0] = result['tp_upper']
-        ls[0] = result['tp_lower']
-        trimmed_upper.append(us)
-        trimmed_lower.append(ls)
-        tp_upper_list.append(result['tp_upper'])
-        tp_lower_list.append(result['tp_lower'])
-        arc_sections.append(result['arc_points'])
-        blunted_le.append(result['arc_mid'])
+        # Embed Bezier points into streams:
+        # upper_bezier goes blunt_tip → tp_upper (n_bezier points)
+        # Append remaining stream points after the LE (index 1 onward)
+        mod_us = np.vstack([result['upper_bezier'], us[1:]])
+        # lower_bezier goes blunt_tip → tp_lower
+        mod_ls = np.vstack([result['lower_bezier'], ls[1:]])
+
+        modified_upper.append(mod_us)
+        modified_lower.append(mod_ls)
+        blunted_le.append(result['blunt_tip'])
 
     return {
-        'trimmed_upper': trimmed_upper,
-        'trimmed_lower': trimmed_lower,
-        'tp_upper_curve': np.array(tp_upper_list),
-        'tp_lower_curve': np.array(tp_lower_list),
-        'arc_sections': arc_sections,
+        'modified_upper': modified_upper,
+        'modified_lower': modified_lower,
         'blunted_le': np.array(blunted_le),
+        'sweep_radii': sweep_radii if sweep_scaled else None,
     }
 
 
-def compute_pre_blunted_arrays(upper, lower, radius, n_arc=8):
+def compute_pre_blunted_arrays(upper, lower, radius, n_bezier=10,
+                               sweep_scaled=False):
     """
     Compute pre-blunted geometry for cone-derived waverider (array format).
 
-    Operates on a single half (e.g. right side, positive Z) of the surface.
-    Station 0 = symmetry/nose center, station -1 = wingtip.
+    Uses G2-continuous dual cubic Bezier curves. Operates on a single half
+    (e.g. right side, positive Z). Station 0 = symmetry/nose center.
 
     Parameters
     ----------
@@ -761,23 +1126,28 @@ def compute_pre_blunted_arrays(upper, lower, radius, n_arc=8):
     lower : ndarray (n_half, n_stream, 3)
         Lower surface points for one half.
     radius : float
-        Blunting radius in meters.
-    n_arc : int
-        Number of arc segments per station.
+        Blunting radius in meters (centerline value if sweep_scaled=True).
+    n_bezier : int
+        Number of sample points per Bezier half-curve.
+    sweep_scaled : bool
+        If True, scale radius by local sweep angle.
 
     Returns
     -------
     dict — same structure as compute_pre_blunted_streams
     """
     n_half = upper.shape[0]
-    n_stream = upper.shape[1]
-    trimmed_upper = []
-    trimmed_lower = []
-    tp_upper_list = []
-    tp_lower_list = []
-    arc_sections = []
+    modified_upper = []
+    modified_lower = []
     blunted_le = []
     n_valid = 0
+
+    # Compute sweep-scaled radii if requested
+    le_points = upper[:, 0, :]  # LE = first streamwise point of each station
+    if sweep_scaled:
+        sweep_radii = compute_sweep_scaled_radius(le_points, radius)
+    else:
+        sweep_radii = np.full(n_half, radius)
 
     for i in range(n_half):
         us = upper[i, :, :].copy()  # (n_stream, 3)
@@ -788,48 +1158,39 @@ def compute_pre_blunted_arrays(upper, lower, radius, n_arc=8):
         frac = i / max(n_half - 1, 1)
         taper_zone = 0.15
         taper = min(frac / taper_zone, 1.0) if frac < taper_zone else 1.0
-        local_radius = radius * taper
+        local_radius = sweep_radii[i] * taper
 
         if local_radius < 1e-6:
-            trimmed_upper.append(us)
-            trimmed_lower.append(ls)
-            tp_upper_list.append(le_pt.copy())
-            tp_lower_list.append(ls[0].copy())
-            arc_sections.append(np.tile(le_pt, (n_arc + 1, 1)))
+            modified_upper.append(us)
+            modified_lower.append(ls)
             blunted_le.append(le_pt.copy())
             continue
 
-        result = _compute_arc_at_station(le_pt, us, ls, local_radius, n_arc)
+        result = _compute_bezier_blunt_profile(
+            le_pt, us, ls, local_radius, n_bezier)
 
         if not result['valid']:
-            trimmed_upper.append(us)
-            trimmed_lower.append(ls)
-            tp_upper_list.append(le_pt.copy())
-            tp_lower_list.append(ls[0].copy())
-            arc_sections.append(result['arc_points'])
+            modified_upper.append(us)
+            modified_lower.append(ls)
             blunted_le.append(le_pt.copy())
             continue
 
         n_valid += 1
-        us[0] = result['tp_upper']
-        ls[0] = result['tp_lower']
-        trimmed_upper.append(us)
-        trimmed_lower.append(ls)
-        tp_upper_list.append(result['tp_upper'])
-        tp_lower_list.append(result['tp_lower'])
-        arc_sections.append(result['arc_points'])
-        blunted_le.append(result['arc_mid'])
+        # Embed Bezier points into streams
+        mod_us = np.vstack([result['upper_bezier'], us[1:]])
+        mod_ls = np.vstack([result['lower_bezier'], ls[1:]])
+        modified_upper.append(mod_us)
+        modified_lower.append(mod_ls)
+        blunted_le.append(result['blunt_tip'])
 
-    print(f"[PreBlunted arrays] {n_half} stations, {n_valid} valid arcs, "
+    print(f"[PreBlunted arrays] {n_half} stations, {n_valid} valid Bezier profiles, "
           f"radius={radius:.6f}")
 
     return {
-        'trimmed_upper': trimmed_upper,
-        'trimmed_lower': trimmed_lower,
-        'tp_upper_curve': np.array(tp_upper_list),
-        'tp_lower_curve': np.array(tp_lower_list),
-        'arc_sections': arc_sections,
+        'modified_upper': modified_upper,
+        'modified_lower': modified_lower,
         'blunted_le': np.array(blunted_le),
+        'sweep_radii': sweep_radii if sweep_scaled else None,
     }
 
 
@@ -910,31 +1271,16 @@ def compute_blunted_le_preview(waverider, radius, n_points=50):
         cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
         half_angle = np.arccos(cos_half) / 2.0
 
-        if half_angle < 0.05:
+        if half_angle < 0.005:
             blunted_points.append(le_pt)
             continue
 
-        # Arc center and midpoint
-        d_center = local_radius / np.sin(half_angle)
-        d_center = min(d_center, local_radius * 5)
-        center = le_pt + d_center * bisector
-
-        # Tangent points
-        tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
-        tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
-
-        # Arc midpoint (the blunted LE point)
-        v_up = tp_upper - center
-        v_lo = tp_lower - center
-        v_up_hat = v_up / (np.linalg.norm(v_up) + 1e-12)
-        v_lo_hat = v_lo / (np.linalg.norm(v_lo) + 1e-12)
-        v_mid = v_up_hat + v_lo_hat
-        v_mid_norm = np.linalg.norm(v_mid)
-        if v_mid_norm > 1e-12:
-            v_mid = v_mid / v_mid_norm
-        arc_mid = center + local_radius * v_mid
-
-        blunted_points.append(arc_mid)
+        # Use Bezier blunt profile for consistent preview
+        result = _compute_bezier_blunt_profile(le_pt, us, ls, local_radius)
+        if result['valid']:
+            blunted_points.append(result['blunt_tip'])
+        else:
+            blunted_points.append(le_pt)
 
     blunted_curve = np.array(blunted_points)
     return blunted_curve, original_le

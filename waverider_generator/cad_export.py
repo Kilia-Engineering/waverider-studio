@@ -34,12 +34,13 @@ def _enforce_min_thickness(us_streams, ls_streams, min_thickness):
     n_streams = min(len(us_out), len(ls_out))
     for i in range(n_streams):
         n_pts = min(us_out[i].shape[0], ls_out[i].shape[0])
-        for j in range(n_pts):
+        # Skip j=0 (leading edge) — LE must remain a shared boundary
+        # between upper and lower surfaces for solid construction
+        for j in range(1, n_pts):
             y_upper = us_out[i][j, 1]
             y_lower = ls_out[i][j, 1]
             thickness = y_upper - y_lower  # upper is above lower (more positive Y)
             if thickness < min_thickness:
-                deficit = min_thickness - thickness
                 mid_y = (y_upper + y_lower) / 2.0
                 us_out[i][j, 1] = mid_y + min_thickness / 2.0
                 ls_out[i][j, 1] = mid_y - min_thickness / 2.0
@@ -72,7 +73,9 @@ def enforce_min_thickness_arrays(upper, lower, min_thickness):
     lower_out = lower.copy()
     n_le, n_stream = upper_out.shape[0], upper_out.shape[1]
     for i in range(n_le):
-        for j in range(n_stream):
+        # Skip j=0 (leading edge) — LE must remain a shared boundary
+        # between upper and lower surfaces for solid construction
+        for j in range(1, n_stream):
             y_up = upper_out[i, j, 1]
             y_lo = lower_out[i, j, 1]
             thickness = y_up - y_lo
@@ -168,193 +171,124 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     # Determine if we use the pre-blunted path
     use_pre_blunted = (blunting_radius > 0 and blunting_method == "pre_blunted")
 
+    # Sweep-scaled radius option
+    sweep_scaled = kwargs.get("sweep_scaled", False)
+
     if use_pre_blunted:
-        # ===== PRE-BLUNTED PATH: 5-face solid with dedicated LE face =====
+        # ===== PRE-BLUNTED PATH: 4-face solid with G2 Bezier LE embedded =====
         from waverider_generator.leading_edge_blunting import compute_pre_blunted_streams
-        print(f"[PreBlunted] Computing pre-blunted geometry (r={blunting_radius:.4f}m)")
-        blunt_data = compute_pre_blunted_streams(us_streams, ls_streams, blunting_radius)
+        print(f"[PreBlunted G2] Computing G2 Bezier blunted geometry "
+              f"(r={blunting_radius:.4f}m, sweep_scaled={sweep_scaled})")
+        blunt_data = compute_pre_blunted_streams(
+            us_streams, ls_streams, blunting_radius,
+            sweep_scaled=sweep_scaled)
 
-        t_us = blunt_data['trimmed_upper']   # streams starting at tp_upper
-        t_ls = blunt_data['trimmed_lower']   # streams starting at tp_lower
-        tp_upper_curve = blunt_data['tp_upper_curve']
-        tp_lower_curve = blunt_data['tp_lower_curve']
-        arc_sections = blunt_data['arc_sections']
+        # Modified streams have Bezier points embedded, starting at blunt_tip
+        us_streams = blunt_data['modified_upper']
+        ls_streams = blunt_data['modified_lower']
+        # Shared LE boundary = blunt tip points
+        le = blunt_data['blunted_le']
 
-        # LE boundary is now the tangent point curves (not original sharp LE)
-        le_upper = tp_upper_curve
-        le_lower = tp_lower_curve
+        # Fall through to the standard 4-face solid builder below
+        # (same code as the original path, using modified streams + blunted LE)
 
-        # TE curves (same as original — blunting only affects LE)
-        te_upper_surface = np.vstack([x[-1] for x in t_us])
-        te_lower_surface = np.vstack([x[-1] for x in t_ls])
-
-        # Interior points for upper surface (skip first/last = boundary)
-        us_points = []
-        for i in range(len(t_us)):
-            for j in range(1, t_us[i].shape[0] - 1):
-                us_points.append(tuple(t_us[i][j]))
-
-        ls_points = []
-        for i in range(len(t_ls)):
-            for j in range(1, t_ls[i].shape[0] - 1):
-                ls_points.append(tuple(t_ls[i][j]))
-
-        # Symmetry line Y values from trimmed streams
-        us_sym_start_y = float(t_us[0][0, 1])
-        us_sym_end_y = float(t_us[0][-1, 1])
-        ls_sym_start_y = float(t_ls[0][0, 1])
-        ls_sym_end_y = float(t_ls[0][-1, 1])
-
-        # Upper surface boundary: symmetry line + tp_upper spline + TE spline
-        points_upper = [(float(t_us[0][0, 0]), us_sym_start_y, 0),
-                        (waverider.length, us_sym_end_y, 0)]
-        workplane = cq.Workplane("XY")
-        ew_upper = workplane.moveTo(points_upper[0][0], points_upper[0][1])
-        for pt in points_upper[1:]:
-            ew_upper = ew_upper.lineTo(pt[0], pt[1])
-        # LE boundary = tp_upper spline
-        ew_upper = ew_upper.add(cq.Workplane("XY").spline(
-            [tuple(x) for x in le_upper]))
-        ew_upper = ew_upper.add(cq.Workplane("XY").spline(
-            [tuple(x) for x in te_upper_surface]))
-
-        # Lower surface boundary: symmetry line + tp_lower spline + TE spline
-        points_lower = [(float(t_ls[0][0, 0]), ls_sym_start_y, 0),
-                        (waverider.length, ls_sym_end_y, 0)]
-        ew_lower = workplane.moveTo(points_lower[0][0], points_lower[0][1])
-        for pt in points_lower[1:]:
-            ew_lower = ew_lower.lineTo(pt[0], pt[1])
-        ew_lower = ew_lower.add(cq.Workplane("XY").spline(
-            [tuple(x) for x in le_lower]))
-        ew_lower = ew_lower.add(cq.Workplane("XY").spline(
-            [tuple(x) for x in te_lower_surface]))
-
-        # Create upper and lower surfaces
-        upper_surface = cq.Workplane("XY").interpPlate(ew_upper, us_points, 0)
-        lower_surface = cq.Workplane("XY").interpPlate(ew_lower, ls_points, 0)
-
-        # Build the LE face (lofted through arc cross-sections)
-        le_face = _build_le_face(arc_sections, tp_upper_curve, tp_lower_curve)
-
-        # Back face
-        e1 = cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_lower_surface])
-        e2 = cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_upper_surface])
-        sym_edge = np.vstack(((waverider.length, us_sym_end_y, 0),
-                              (waverider.length, ls_sym_end_y, 0)))
-        e3 = cq.Edge.makeLine(cq.Vector(*sym_edge[0]), cq.Vector(*sym_edge[1]))
-        back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2, e3]))
-
-        # Symmetry face — uses tp start points at nose
-        v_nose_upper = cq.Vector(float(t_us[0][0, 0]), us_sym_start_y, 0)
-        v_nose_lower = cq.Vector(float(t_ls[0][0, 0]), ls_sym_start_y, 0)
-        v_te_upper = cq.Vector(waverider.length, us_sym_end_y, 0)
-        v_te_lower = cq.Vector(waverider.length, ls_sym_end_y, 0)
-        e4 = cq.Edge.makeLine(v_nose_upper, v_te_upper)
-        e5 = cq.Edge.makeLine(v_nose_lower, v_te_lower)
-        sym_edges_list = [e3, e4, e5]
-        if abs(us_sym_start_y - ls_sym_start_y) > 1e-8:
-            e6 = cq.Edge.makeLine(v_nose_lower, v_nose_upper)
-            sym_edges_list.append(e6)
-        sym = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges_list))
-
-        # Assemble solid from faces
-        face_list = [upper_surface.objects[0], lower_surface.objects[0], back, sym]
-        if le_face is not None:
-            face_list.append(le_face)
-            print(f"[PreBlunted] Building 5-face solid (upper, lower, back, sym, LE)")
-        else:
-            print(f"[PreBlunted] LE face failed — building 4-face solid (no LE blunting)")
-
-        left_side = _sew_faces_to_solid(face_list).scale(scale)
-        # No post-solid fillet needed — blunting is built into geometry
-
-    else:
-        # ===== ORIGINAL PATH: 4-face solid with optional post-solid fillet =====
-
-        # compute LE
+    if not use_pre_blunted:
+        # compute LE from original streams
         le = np.vstack([x[0] for x in us_streams])
 
-        # compute TE upper surface
-        te_upper_surface=np.vstack([x[-1] for x in us_streams])
+    # ===== SHARED 4-FACE SOLID BUILDER =====
+    # Both pre-blunted and original paths use us_streams, ls_streams, le
 
-        # compute TE lower surface
-        te_lower_surface=np.vstack([x[-1] for x in ls_streams])
+    # compute TE
+    te_upper_surface = np.vstack([x[-1] for x in us_streams])
+    te_lower_surface = np.vstack([x[-1] for x in ls_streams])
 
-        # add interior points for upper surface
-        us_points=[]
-        for i in range(len(us_streams)):
-            for j in range(1, us_streams[i].shape[0]-1):
-                us_points.append(tuple(us_streams[i][j]))
+    # interior points for upper surface
+    us_points = []
+    for i in range(len(us_streams)):
+        for j in range(1, us_streams[i].shape[0] - 1):
+            us_points.append(tuple(us_streams[i][j]))
 
-        # add interior points for lower surface
-        ls_points=[]
-        for i in range(len(ls_streams)):
-            for j in range(1, ls_streams[i].shape[0]-1):
-                ls_points.append(tuple(ls_streams[i][j]))
+    # interior points for lower surface
+    ls_points = []
+    for i in range(len(ls_streams)):
+        for j in range(1, ls_streams[i].shape[0] - 1):
+            ls_points.append(tuple(ls_streams[i][j]))
 
-        # create boundaries
-        # Use actual stream start/end values (respects min_thickness offsets)
-        us_sym_start_y = float(us_streams[0][0, 1])
-        us_sym_end_y = float(us_streams[0][-1, 1])
-        ls_sym_start_y = float(ls_streams[0][0, 1])
-        ls_sym_end_y = float(ls_streams[0][-1, 1])
-        points_upper_surface = [(0, us_sym_start_y, 0), (waverider.length, us_sym_end_y, 0)]
-        points_lower_surface=[(0, ls_sym_start_y, 0),(waverider.length, ls_sym_end_y, 0)]
-        workplane = cq.Workplane("XY")
-        edge_wire_te_upper_surface = workplane.moveTo(points_upper_surface[0][0], points_upper_surface[0][1])
-        edge_wire_te_lower_surface=workplane.moveTo(points_lower_surface[0][0], points_lower_surface[0][1])
+    # create boundaries
+    us_sym_start_y = float(us_streams[0][0, 1])
+    us_sym_end_y = float(us_streams[0][-1, 1])
+    ls_sym_start_y = float(ls_streams[0][0, 1])
+    ls_sym_end_y = float(ls_streams[0][-1, 1])
 
-        for point in points_upper_surface[1:]:
-            edge_wire_te_upper_surface = edge_wire_te_upper_surface.lineTo(point[0], point[1])
-        for point in points_lower_surface[1:]:
-            edge_wire_te_lower_surface = edge_wire_te_lower_surface.lineTo(point[0], point[1])
+    # Nose X position (may differ from 0 for pre-blunted)
+    nose_x_upper = float(us_streams[0][0, 0])
+    nose_x_lower = float(ls_streams[0][0, 0])
 
-        # add the le and te
-        edge_wire_te_upper_surface = edge_wire_te_upper_surface.add(cq.Workplane("XY").spline([tuple(x) for x in le]))
-        edge_wire_te_lower_surface = edge_wire_te_lower_surface.add(cq.Workplane("XY").spline([tuple(x) for x in le]))
-        edge_wire_te_upper_surface = edge_wire_te_upper_surface.add(cq.Workplane("XY").spline([tuple(x) for x in te_upper_surface]))
-        edge_wire_te_lower_surface = edge_wire_te_lower_surface.add(cq.Workplane("XY").spline([tuple(x) for x in te_lower_surface]))
+    points_upper_surface = [(nose_x_upper, us_sym_start_y, 0),
+                            (waverider.length, us_sym_end_y, 0)]
+    points_lower_surface = [(nose_x_lower, ls_sym_start_y, 0),
+                            (waverider.length, ls_sym_end_y, 0)]
+    workplane = cq.Workplane("XY")
+    edge_wire_te_upper_surface = workplane.moveTo(
+        points_upper_surface[0][0], points_upper_surface[0][1])
+    edge_wire_te_lower_surface = workplane.moveTo(
+        points_lower_surface[0][0], points_lower_surface[0][1])
 
-        # create upper surface
-        upper_surface= cq.Workplane("XY").interpPlate(edge_wire_te_upper_surface, us_points, 0)
+    for point in points_upper_surface[1:]:
+        edge_wire_te_upper_surface = edge_wire_te_upper_surface.lineTo(point[0], point[1])
+    for point in points_lower_surface[1:]:
+        edge_wire_te_lower_surface = edge_wire_te_lower_surface.lineTo(point[0], point[1])
 
-        # create lower surface
-        lower_surface= cq.Workplane("XY").interpPlate(edge_wire_te_lower_surface, ls_points, 0)
+    # add the LE and TE splines
+    edge_wire_te_upper_surface = edge_wire_te_upper_surface.add(
+        cq.Workplane("XY").spline([tuple(x) for x in le]))
+    edge_wire_te_lower_surface = edge_wire_te_lower_surface.add(
+        cq.Workplane("XY").spline([tuple(x) for x in le]))
+    edge_wire_te_upper_surface = edge_wire_te_upper_surface.add(
+        cq.Workplane("XY").spline([tuple(x) for x in te_upper_surface]))
+    edge_wire_te_lower_surface = edge_wire_te_lower_surface.add(
+        cq.Workplane("XY").spline([tuple(x) for x in te_lower_surface]))
 
-        # add back as a plane
-        e1 =cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_lower_surface])
-        e2=cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_upper_surface])
-        sym_edge=np.vstack(((waverider.length, us_sym_end_y, 0),(waverider.length, ls_sym_end_y, 0)))
-        v1 = cq.Vector(*sym_edge[0])
-        v2 = cq.Vector(*sym_edge[1])
-        e3 = cq.Edge.makeLine(v1, v2)
-        back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2,e3]))
+    # create surfaces
+    upper_surface = cq.Workplane("XY").interpPlate(
+        edge_wire_te_upper_surface, us_points, 0)
+    lower_surface = cq.Workplane("XY").interpPlate(
+        edge_wire_te_lower_surface, ls_points, 0)
 
-        # add symmetry plane as face
-        # When min_thickness > 0, nose splits into upper/lower points → quadrilateral
-        v_nose_upper = cq.Vector(0, us_sym_start_y, 0)
-        v_nose_lower = cq.Vector(0, ls_sym_start_y, 0)
-        v_te_upper = cq.Vector(waverider.length, us_sym_end_y, 0)
-        v_te_lower = cq.Vector(waverider.length, ls_sym_end_y, 0)
-        e4 = cq.Edge.makeLine(v_nose_upper, v_te_upper)   # upper symmetry line
-        e5 = cq.Edge.makeLine(v_nose_lower, v_te_lower)   # lower symmetry line
-        sym_edges = [e3, e4, e5]
-        if abs(us_sym_start_y - ls_sym_start_y) > 1e-8:
-            # Nose has thickness — add nose closure edge
-            e6 = cq.Edge.makeLine(v_nose_lower, v_nose_upper)
-            sym_edges.append(e6)
-        sym=cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
+    # back face
+    e1 = cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_lower_surface])
+    e2 = cq.Edge.makeSpline([cq.Vector(tuple(x)) for x in te_upper_surface])
+    sym_edge = np.vstack(((waverider.length, us_sym_end_y, 0),
+                          (waverider.length, ls_sym_end_y, 0)))
+    v1 = cq.Vector(*sym_edge[0])
+    v2 = cq.Vector(*sym_edge[1])
+    e3 = cq.Edge.makeLine(v1, v2)
+    back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2, e3]))
 
-        # create solid
-        # by convention, +ve z is left so this produces the left side
-        left_side = _sew_faces_to_solid([upper_surface.objects[0], lower_surface.objects[0], back, sym]).scale(scale)
+    # symmetry face
+    v_nose_upper = cq.Vector(nose_x_upper, us_sym_start_y, 0)
+    v_nose_lower = cq.Vector(nose_x_lower, ls_sym_start_y, 0)
+    v_te_upper = cq.Vector(waverider.length, us_sym_end_y, 0)
+    v_te_lower = cq.Vector(waverider.length, ls_sym_end_y, 0)
+    e4 = cq.Edge.makeLine(v_nose_upper, v_te_upper)
+    e5 = cq.Edge.makeLine(v_nose_lower, v_te_lower)
+    sym_edges = [e3, e4, e5]
+    if abs(us_sym_start_y - ls_sym_start_y) > 1e-8:
+        e6 = cq.Edge.makeLine(v_nose_lower, v_nose_upper)
+        sym_edges.append(e6)
+    sym = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
 
-        # Apply leading edge blunting via post-solid fillet
-        if blunting_radius > 0:
-            le_scaled = le * scale
-            left_side = _apply_le_fillet(left_side, blunting_radius * scale, le_scaled)
+    # create solid (4-face, sewn)
+    left_side = _sew_faces_to_solid(
+        [upper_surface.objects[0], lower_surface.objects[0], back, sym]).scale(scale)
 
-    right_side= left_side.mirror(mirrorPlane='XY')
+    # Apply post-solid fillet only for non-pre-blunted path with legacy methods
+    if not use_pre_blunted and blunting_radius > 0:
+        le_scaled = le * scale
+        left_side = _apply_le_fillet(left_side, blunting_radius * scale, le_scaled)
+
+    right_side = left_side.mirror(mirrorPlane='XY')
 
     if sides=="left":
         if export==True:

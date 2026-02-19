@@ -1528,7 +1528,7 @@ class WaveriderGUI(QMainWindow):
         blunt_layout = QGridLayout()
 
         self.blunting_check = QCheckBox("Enable LE blunting")
-        self.blunting_check.setToolTip("Apply circular arc blunting to the sharp LE during STEP export")
+        self.blunting_check.setToolTip("Apply G2-continuous Bezier blunting to the sharp LE during STEP export")
         self.blunting_check.stateChanged.connect(self._on_blunting_toggled)
         blunt_layout.addWidget(self.blunting_check, 0, 0, 1, 2)
 
@@ -1538,24 +1538,35 @@ class WaveriderGUI(QMainWindow):
         self.blunting_radius_spin.setValue(0.005)
         self.blunting_radius_spin.setSingleStep(0.001)
         self.blunting_radius_spin.setDecimals(4)
-        self.blunting_radius_spin.setToolTip("Blunting radius in meters")
+        self.blunting_radius_spin.setToolTip("Blunting radius in meters (centerline value)")
         self.blunting_radius_spin.setEnabled(False)
         blunt_layout.addWidget(self.blunting_radius_spin, 1, 1)
 
         blunt_layout.addWidget(QLabel("Method:"), 2, 0)
         self.blunting_method_combo = QComboBox()
         self.blunting_method_combo.addItems([
-            "Pre-blunted (D) (Recommended)",
-            "Auto (A→C→B)", "Fillet (A)", "Loft (C)", "Point-level (B)"])
+            "G2 Bezier (Recommended)",
+            "Post-solid fillet (legacy)"])
         self.blunting_method_combo.setToolTip(
-            "Pre-blunted (D): Builds blunt LE directly into geometry (C1 continuous)\n"
-            "Auto: tries fillet first, falls back to loft, then point-level\n"
-            "Fillet (A): CAD-level fillet on the solid\n"
-            "Loft (C): Boolean cut + lofted circular arc replacement\n"
-            "Point-level (B): Modifies geometry points before CAD creation"
+            "G2 Bezier: Dual cubic Bezier with curvature-continuous junctions\n"
+            "  (Fu et al. 2020 — state-of-the-art, embedded in surfaces)\n"
+            "Post-solid fillet: Legacy CAD fillet on the finished solid"
         )
         self.blunting_method_combo.setEnabled(False)
         blunt_layout.addWidget(self.blunting_method_combo, 2, 1)
+
+        blunt_layout.addWidget(QLabel("Spanwise:"), 3, 0)
+        self.blunting_sweep_combo = QComboBox()
+        self.blunting_sweep_combo.addItems([
+            "Uniform radius",
+            "Sweep-scaled (cos\u00b2\u00b7\u00b2)"])
+        self.blunting_sweep_combo.setToolTip(
+            "Uniform: Same radius across the entire span\n"
+            "Sweep-scaled: R_sw = R_ct \u00d7 (cos \u039b)\u00b2\u00b7\u00b2\n"
+            "  Reduces radius toward swept wingtips for thermal optimization"
+        )
+        self.blunting_sweep_combo.setEnabled(False)
+        blunt_layout.addWidget(self.blunting_sweep_combo, 3, 1)
 
         self.blunting_preview_btn = QPushButton("Show LE Preview")
         self.blunting_preview_btn.setToolTip("Visualize blunted vs original LE on the 3D view.\nBlunting is applied automatically during STEP export.")
@@ -1566,7 +1577,7 @@ class WaveriderGUI(QMainWindow):
             "QPushButton:hover { background-color: #78350F; color: #FFFFFF; }"
             "QPushButton:disabled { color: #555555; border-color: #333333; }"
         )
-        blunt_layout.addWidget(self.blunting_preview_btn, 3, 0, 1, 2)
+        blunt_layout.addWidget(self.blunting_preview_btn, 4, 0, 1, 2)
 
         blunt_group.setLayout(blunt_layout)
         layout.addWidget(blunt_group)
@@ -2909,19 +2920,19 @@ class WaveriderGUI(QMainWindow):
             # Blunting parameters
             blunting_radius = 0.0
             blunting_method = "auto"
+            sweep_scaled = False
             if self.blunting_check.isChecked():
                 blunting_radius = self.blunting_radius_spin.value()
                 method_map = {
-                    "Pre-blunted (D) (Recommended)": "pre_blunted",
-                    "Auto (A→C→B)": "auto",
-                    "Fillet (A)": "fillet",
-                    "Loft (C)": "loft",
-                    "Point-level (B)": "points",
+                    "G2 Bezier (Recommended)": "pre_blunted",
+                    "Post-solid fillet (legacy)": "fillet",
                 }
                 blunting_method = method_map.get(
-                    self.blunting_method_combo.currentText(), "auto")
+                    self.blunting_method_combo.currentText(), "pre_blunted")
+                sweep_scaled = (self.blunting_sweep_combo.currentIndex() == 1)
+                sweep_txt = " (sweep-scaled)" if sweep_scaled else ""
                 self.info_label.setText(
-                    f"Exporting STEP with LE blunting (r={blunting_radius:.4f} m)...")
+                    f"Exporting STEP with G2 Bezier LE blunting (r={blunting_radius:.4f} m{sweep_txt})...")
                 QApplication.processEvents()
 
             # Minimum thickness parameter
@@ -2938,14 +2949,16 @@ class WaveriderGUI(QMainWindow):
                 scale=1.0,
                 blunting_radius=blunting_radius,
                 blunting_method=blunting_method,
-                min_thickness=min_thickness
+                min_thickness=min_thickness,
+                sweep_scaled=sweep_scaled,
             )
 
             blunt_msg = ""
             if min_thickness > 0:
                 blunt_msg += f"Min thickness: {min_thickness:.4f} m ({self.min_thickness_spin.value():.1f}% L)\n"
             if blunting_radius > 0:
-                blunt_msg = f"\nLE Blunting: radius = {blunting_radius:.4f} m\n"
+                sweep_txt = " (sweep-scaled)" if sweep_scaled else ""
+                blunt_msg += f"LE Blunting: G2 Bezier, r = {blunting_radius:.4f} m{sweep_txt}\n"
 
             QMessageBox.information(
                 self, "Export successful",
@@ -2976,6 +2989,7 @@ class WaveriderGUI(QMainWindow):
         enabled = bool(state)
         self.blunting_radius_spin.setEnabled(enabled)
         self.blunting_method_combo.setEnabled(enabled)
+        self.blunting_sweep_combo.setEnabled(enabled)
         self.blunting_preview_btn.setEnabled(enabled and self.waverider is not None)
 
     def _preview_blunting(self):
