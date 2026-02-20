@@ -1134,6 +1134,31 @@ class WaveriderGUI(QMainWindow):
         except Exception as e:
             print(f"[Aero] Auto A_ref failed: {e}")
 
+    def _calc_aref_from_imported_geometry(self):
+        """Calculate planform area (XZ projection) from imported tessellation."""
+        try:
+            verts = self.imported_geometry['vertices']
+            faces = self.imported_geometry['faces']
+            # Planform area = sum of projected triangle areas onto XZ plane
+            # For each triangle, project onto XZ (drop Y) and compute area
+            total_area = 0.0
+            for tri in faces:
+                v0, v1, v2 = verts[tri[0]], verts[tri[1]], verts[tri[2]]
+                # Project to XZ plane: use X and Z coordinates
+                ax, az = v0[0], v0[2]
+                bx, bz = v1[0], v1[2]
+                cx, cz = v2[0], v2[2]
+                # Shoelace area (signed)
+                area = 0.5 * abs((bx - ax) * (cz - az) - (cx - ax) * (bz - az))
+                total_area += area
+            # Divide by 2 since both upper and lower surfaces overlap in projection
+            planform = total_area / 2.0
+            print(f"[Aero] A_ref from imported geometry: {planform:.4f} m²")
+            return planform
+        except Exception as e:
+            print(f"[Aero] A_ref from imported geometry failed: {e}")
+            return None
+
     def _update_aero_tab_state(self):
         """Update button enabled states on the Aero Analysis tab."""
         has_step = (self.imported_step_path is not None
@@ -2823,13 +2848,24 @@ class WaveriderGUI(QMainWindow):
 
     def auto_set_aref(self):
         """Automatically calculate accurate A_ref from waverider geometry or STL mesh"""
-        # Try mesh-based calculation first (works with imported geometry)
+        # Try mesh-based calculation first (works with imported STL)
         if self.last_stl_file and os.path.exists(self.last_stl_file):
             self._auto_aref_from_mesh()
             if self.aref_spin.value() > 0.1:
                 QMessageBox.information(
                     self, "A_ref Calculated",
                     f"A_ref = {self.aref_spin.value():.4f} m² (from STL mesh)"
+                )
+                return
+
+        # Try from imported geometry tessellation (e.g. STEP import before meshing)
+        if self.imported_geometry is not None:
+            area = self._calc_aref_from_imported_geometry()
+            if area and area > 0:
+                self.aref_spin.setValue(area)
+                QMessageBox.information(
+                    self, "A_ref Calculated",
+                    f"A_ref = {area:.4f} m² (planform area from imported geometry)"
                 )
                 return
 
