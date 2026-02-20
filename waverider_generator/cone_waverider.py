@@ -112,6 +112,7 @@ class ConeWaverider:
         self._generate_leading_edge()
         self._trace_lower_surface()
         self._generate_upper_surface()
+        self._clamp_surface_intersection()
         self._compute_geometry_metrics()
     
     def _compute_shock_relations(self):
@@ -483,7 +484,40 @@ class ConeWaverider:
             upper_surface.append(streamline)
         
         self.upper_surface = np.array(upper_surface)
-    
+
+    def _clamp_surface_intersection(self):
+        """
+        Prevent lower surface from penetrating above upper surface.
+
+        At long vehicle lengths the shock-derived lower surface streamlines
+        can curve back upward and cross the flat upper surface near the
+        trailing edge.  When that happens, push the surfaces apart
+        symmetrically about their midpoint so there is always a small
+        positive gap.
+        """
+        n_le = self.upper_surface.shape[0]
+        n_stream = self.upper_surface.shape[1]
+        n_fixed = 0
+
+        for i in range(n_le):
+            le_gap = abs(self.upper_surface[i, 0, 1] -
+                         self.lower_surface[i, 0, 1])
+            min_gap = max(le_gap * 0.01, 1e-6)
+
+            for j in range(1, n_stream):
+                y_up = self.upper_surface[i, j, 1]
+                y_lo = self.lower_surface[i, j, 1]
+                gap = y_up - y_lo
+                if gap < min_gap:
+                    mid_y = (y_up + y_lo) / 2.0
+                    self.upper_surface[i, j, 1] = mid_y + min_gap / 2.0
+                    self.lower_surface[i, j, 1] = mid_y - min_gap / 2.0
+                    n_fixed += 1
+
+        if n_fixed > 0:
+            print(f"[ConeWaverider] Clamped {n_fixed} surface intersection(s) "
+                  f"across {n_le}x{n_stream} grid")
+
     def _compute_geometry_metrics(self):
         """Compute geometric properties of the waverider."""
         # Planform area (projection onto x-z plane)

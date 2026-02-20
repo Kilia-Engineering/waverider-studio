@@ -113,6 +113,7 @@ class ShadowWaverider:
         self._trace_lower_surface()
         self._generate_upper_surface()
         self._transform_coordinates()  # Transform to standard coordinate system
+        self._clamp_surface_intersection()
         self._compute_geometry_metrics()
     
     def _transform_coordinates(self):
@@ -147,7 +148,42 @@ class ShadowWaverider:
         # These become the streamwise extent
         self.x_start = self.z_start
         self.x_end = self.z_end
-    
+
+    def _clamp_surface_intersection(self):
+        """
+        Prevent lower surface from penetrating above upper surface.
+
+        At long vehicle lengths the shock-derived lower surface streamlines
+        can curve back upward and cross the flat upper surface near the
+        trailing edge.  When that happens, push the surfaces apart
+        symmetrically about their midpoint so there is always a small
+        positive gap (1 % of local LE thickness or 1e-6 m, whichever is
+        larger).
+        """
+        n_le = self.upper_surface.shape[0]
+        n_stream = self.upper_surface.shape[1]
+        n_fixed = 0
+
+        for i in range(n_le):
+            # Reference gap = LE thickness at this station (j=0)
+            le_gap = abs(self.upper_surface[i, 0, 1] -
+                         self.lower_surface[i, 0, 1])
+            min_gap = max(le_gap * 0.01, 1e-6)
+
+            for j in range(1, n_stream):
+                y_up = self.upper_surface[i, j, 1]
+                y_lo = self.lower_surface[i, j, 1]
+                gap = y_up - y_lo  # positive = healthy
+                if gap < min_gap:
+                    mid_y = (y_up + y_lo) / 2.0
+                    self.upper_surface[i, j, 1] = mid_y + min_gap / 2.0
+                    self.lower_surface[i, j, 1] = mid_y - min_gap / 2.0
+                    n_fixed += 1
+
+        if n_fixed > 0:
+            print(f"[ShadowWaverider] Clamped {n_fixed} surface intersection(s) "
+                  f"across {n_le}x{n_stream} grid")
+
     def _compute_shock_relations(self):
         """Compute oblique shock relations."""
         M = self.mach
