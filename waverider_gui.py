@@ -2258,7 +2258,7 @@ class WaveriderGUI(QMainWindow):
         # Reference area
         params_layout.addWidget(QLabel("Reference Area A_ref (m²):"), 2, 0)
         self.aref_spin = QDoubleSpinBox()
-        self.aref_spin.setRange(0.0001, 10000.0)
+        self.aref_spin.setRange(0.0001, 1000.0)
         self.aref_spin.setValue(21.6)  # More realistic default for baseline
         self.aref_spin.setSingleStep(0.1)
         self.aref_spin.setDecimals(4)
