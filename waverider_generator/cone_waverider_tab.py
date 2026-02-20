@@ -563,8 +563,13 @@ class ConeWaveriderTab(QWidget):
         self.a3_spin.setSingleStep(5.0)
         self.a3_spin.setDecimals(1)
         self.a3_spin.setEnabled(False)
+        self.a3_spin.setToolTip(
+            "Cubic coefficient (3rd order only)\n"
+            "Controls S-shaped inflection of the LE planform.\n"
+            "Positive: wingtip curves upward\n"
+            "Negative: wingtip curves downward more")
         poly_layout.addWidget(self.a3_spin, 1, 1, 1, 2)
-        
+
         # A2 coefficient
         poly_layout.addWidget(QLabel("A₂ (quadratic):"), 2, 0)
         self.a2_spin = QDoubleSpinBox()
@@ -572,8 +577,13 @@ class ConeWaveriderTab(QWidget):
         self.a2_spin.setValue(-2.0)
         self.a2_spin.setSingleStep(0.5)
         self.a2_spin.setDecimals(2)
+        self.a2_spin.setToolTip(
+            "Quadratic coefficient \u2014 controls LE sweep curvature.\n"
+            "More negative: sharper sweep, narrower body, thicker vehicle\n"
+            "Less negative: wider body, less sweep, risk of surface intersection\n"
+            "Typical range: -1 to -10")
         poly_layout.addWidget(self.a2_spin, 2, 1, 1, 2)
-        
+
         # A0 coefficient (y-intercept)
         poly_layout.addWidget(QLabel("A₀ (y-intercept):"), 3, 0)
         self.a0_spin = QDoubleSpinBox()
@@ -581,6 +591,11 @@ class ConeWaveriderTab(QWidget):
         self.a0_spin.setValue(-0.15)
         self.a0_spin.setSingleStep(0.01)
         self.a0_spin.setDecimals(3)
+        self.a0_spin.setToolTip(
+            "Y-intercept \u2014 vertical position of the nose tip.\n"
+            "More negative: nose sits deeper on shock cone, more volume/thickness\n"
+            "Less negative: shallower nose, thinner vehicle, risk of surface crossing\n"
+            "Typical range: -0.05 to -0.3")
         poly_layout.addWidget(self.a0_spin, 3, 1, 1, 2)
         
         poly_group.setLayout(poly_layout)
@@ -1003,9 +1018,19 @@ class ConeWaveriderTab(QWidget):
             # Update results
             self.update_results_display()
             
-            self.status_label.setText("Waverider generated successfully!")
+            # Check surface health and warn user if surfaces are too thin
+            health = self.waverider.check_surface_health()
+            if not health['healthy']:
+                msg = "\n".join(health['suggestions'])
+                QMessageBox.warning(self, "Surface Intersection Warning",
+                                    f"The generated geometry has surface "
+                                    f"intersection issues:\n\n{msg}")
+                self.status_label.setText("Waverider generated (with surface warnings)")
+            else:
+                self.status_label.setText("Waverider generated successfully!")
+
             self.waverider_generated.emit(self.waverider)
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to generate waverider:\n{str(e)}")
             self.status_label.setText(f"Error: {str(e)}")

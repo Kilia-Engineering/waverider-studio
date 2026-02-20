@@ -184,6 +184,95 @@ class ShadowWaverider:
             print(f"[ShadowWaverider] Clamped {n_fixed} surface intersection(s) "
                   f"across {n_le}x{n_stream} grid")
 
+    def check_surface_health(self):
+        """
+        Analyse surface thickness distribution and return a health report.
+
+        The report includes where surfaces are thin or were clamped, and
+        suggests polynomial coefficient adjustments to fix the issue.
+
+        Returns
+        -------
+        dict with keys:
+            healthy : bool
+                True if no intersection issues detected.
+            min_thickness_ratio : float
+                Minimum thickness / LE thickness across the grid.
+            thin_pct : float
+                Percentage of grid points with thickness < 5 % of LE thickness.
+            worst_station : int or None
+                Spanwise station index with thinnest trailing-edge region.
+            suggestions : list of str
+                Human-readable suggestions for fixing the geometry.
+        """
+        n_le = self.upper_surface.shape[0]
+        n_stream = self.upper_surface.shape[1]
+
+        min_ratio = float('inf')
+        thin_count = 0
+        total_count = 0
+        worst_station = None
+        worst_ratio = float('inf')
+
+        for i in range(n_le):
+            le_gap = abs(self.upper_surface[i, 0, 1] -
+                         self.lower_surface[i, 0, 1])
+            if le_gap < 1e-10:
+                le_gap = 1e-6  # avoid division by zero at degenerate tips
+
+            for j in range(1, n_stream):
+                y_up = self.upper_surface[i, j, 1]
+                y_lo = self.lower_surface[i, j, 1]
+                gap = y_up - y_lo
+                ratio = gap / le_gap
+                total_count += 1
+
+                if ratio < min_ratio:
+                    min_ratio = ratio
+
+                if ratio < 0.05:
+                    thin_count += 1
+
+            # Check TE specifically (last streamwise point)
+            te_gap = (self.upper_surface[i, -1, 1] -
+                      self.lower_surface[i, -1, 1])
+            te_ratio = te_gap / le_gap
+            if te_ratio < worst_ratio:
+                worst_ratio = te_ratio
+                worst_station = i
+
+        thin_pct = 100.0 * thin_count / max(total_count, 1)
+        healthy = thin_pct < 1.0 and min_ratio > 0.02
+
+        suggestions = []
+        if not healthy:
+            suggestions.append(
+                f"Surfaces are very thin near the trailing edge "
+                f"({thin_pct:.1f}% of points < 5% of LE thickness).")
+            # Build coefficient-specific advice
+            a0 = self.poly_coeffs[-1]
+            a2 = self.poly_coeffs[-3] if len(self.poly_coeffs) >= 3 else 0
+            suggestions.append(
+                f"Current A\u2080={a0:.3f}, A\u2082={a2:.2f}. "
+                f"Try the following adjustments:")
+            suggestions.append(
+                f"  - Make A\u2080 more negative (e.g. {a0 - 0.05:.3f}) "
+                f"\u2192 deeper nose, more thickness")
+            suggestions.append(
+                f"  - Make A\u2082 more negative (e.g. {a2 - 2.0:.2f}) "
+                f"\u2192 more sweep, shorter streamlines")
+            suggestions.append(
+                f"  - Reduce vehicle length (currently {self.length:.2f}m) "
+                f"\u2192 less streamline curvature")
+
+        return {
+            'healthy': healthy,
+            'min_thickness_ratio': min_ratio,
+            'thin_pct': thin_pct,
+            'worst_station': worst_station,
+            'suggestions': suggestions,
+        }
+
     def _compute_shock_relations(self):
         """Compute oblique shock relations."""
         M = self.mach

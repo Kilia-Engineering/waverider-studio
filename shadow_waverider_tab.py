@@ -504,16 +504,31 @@ class ShadowWaveriderTab(QWidget):
         layout.addWidget(QLabel("A₃:"), 1, 0)
         self.a3_spin = QDoubleSpinBox()
         self.a3_spin.setRange(-100, 100); self.a3_spin.setValue(0); self.a3_spin.setEnabled(False)
+        self.a3_spin.setToolTip(
+            "Cubic coefficient (3rd order only)\n"
+            "Controls S-shaped inflection of the LE planform.\n"
+            "Positive: wingtip curves upward\n"
+            "Negative: wingtip curves downward more")
         layout.addWidget(self.a3_spin, 1, 1)
-        
+
         layout.addWidget(QLabel("A₂:"), 2, 0)
         self.a2_spin = QDoubleSpinBox()
         self.a2_spin.setRange(-50, 50); self.a2_spin.setValue(-2.0); self.a2_spin.setDecimals(2)
+        self.a2_spin.setToolTip(
+            "Quadratic coefficient \u2014 controls LE sweep curvature.\n"
+            "More negative: sharper sweep, narrower body, thicker vehicle\n"
+            "Less negative: wider body, less sweep, risk of surface intersection\n"
+            "Typical range: -1 to -10")
         layout.addWidget(self.a2_spin, 2, 1)
-        
+
         layout.addWidget(QLabel("A₀:"), 3, 0)
         self.a0_spin = QDoubleSpinBox()
         self.a0_spin.setRange(-1, 0); self.a0_spin.setValue(-0.15); self.a0_spin.setDecimals(3)
+        self.a0_spin.setToolTip(
+            "Y-intercept \u2014 vertical position of the nose tip.\n"
+            "More negative: nose sits deeper on shock cone, more volume/thickness\n"
+            "Less negative: shallower nose, thinner vehicle, risk of surface crossing\n"
+            "Typical range: -0.05 to -0.3")
         layout.addWidget(self.a0_spin, 3, 1)
         
         group.setLayout(layout)
@@ -976,6 +991,15 @@ class ShadowWaveriderTab(QWidget):
             self.info_label.setText(f"✓ θc={self.waverider.cone_angle_deg:.1f}°, Area={self.waverider.planform_area:.4f}, L={length:.2f}m")
             if self.blunting_check.isChecked():
                 self.blunting_preview_btn.setEnabled(True)
+
+            # Check surface health and warn user if surfaces are too thin
+            health = self.waverider.check_surface_health()
+            if not health['healthy']:
+                msg = "\n".join(health['suggestions'])
+                QMessageBox.warning(self, "Surface Intersection Warning",
+                                    f"The generated geometry has surface "
+                                    f"intersection issues:\n\n{msg}")
+
             self.waverider_generated.emit(self.waverider)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
