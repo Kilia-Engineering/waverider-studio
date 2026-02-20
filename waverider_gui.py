@@ -1122,17 +1122,21 @@ class WaveriderGUI(QMainWindow):
         self.last_stl_file = temp_stl
 
     def _auto_aref_from_mesh(self):
-        """Auto-calculate A_ref from the current STL mesh."""
+        """Auto-calculate A_ref from the current STL mesh. Returns area or None."""
         if not self.last_stl_file or not os.path.exists(self.last_stl_file):
-            return
+            return None
         try:
             if AREA_CALC_AVAILABLE:
-                area = calculate_reference_area_from_stl(self.last_stl_file)
+                result = calculate_reference_area_from_stl(self.last_stl_file)
+                # Function returns (area, method_string) tuple
+                area = result[0] if isinstance(result, tuple) else result
                 if area and area > 0:
                     self.aref_spin.setValue(area)
                     print(f"[Aero] Auto A_ref from mesh: {area:.4f} m²")
+                    return area
         except Exception as e:
             print(f"[Aero] Auto A_ref failed: {e}")
+        return None
 
     def _calc_aref_from_imported_geometry(self):
         """Calculate planform area (XZ projection) from imported tessellation."""
@@ -2857,18 +2861,18 @@ class WaveriderGUI(QMainWindow):
         """Automatically calculate accurate A_ref from waverider geometry or STL mesh"""
         # Try mesh-based calculation first (works with imported STL)
         if self.last_stl_file and os.path.exists(self.last_stl_file):
-            self._auto_aref_from_mesh()
-            if self.aref_spin.value() > 0.1:
+            area = self._auto_aref_from_mesh()
+            if area is not None:
                 QMessageBox.information(
                     self, "A_ref Calculated",
-                    f"A_ref = {self.aref_spin.value():.4f} m² (from STL mesh)"
+                    f"A_ref = {area:.4f} m² (from STL mesh)"
                 )
                 return
 
         # Try from imported geometry tessellation (e.g. STEP import before meshing)
         if self.imported_geometry is not None:
             area = self._calc_aref_from_imported_geometry()
-            if area and area > 0:
+            if area is not None and area > 0:
                 self.aref_spin.setValue(area)
                 QMessageBox.information(
                     self, "A_ref Calculated",
