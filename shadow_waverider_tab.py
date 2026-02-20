@@ -552,8 +552,10 @@ class ShadowWaveriderTab(QWidget):
         group = QGroupBox("Leading Edge Blunting")
         layout = QGridLayout()
 
-        self.blunting_check = QCheckBox("Enable LE blunting")
-        self.blunting_check.setToolTip("Apply G2-continuous Bezier blunting to the sharp LE during STEP export")
+        self.blunting_check = QCheckBox("Enable LE fillet")
+        self.blunting_check.setToolTip(
+            "Apply a fillet to the leading edge during STEP export.\n"
+            "Uses OpenCASCADE BRepFilletAPI with optional variable radius.")
         self.blunting_check.stateChanged.connect(self._on_blunting_toggled)
         layout.addWidget(self.blunting_check, 0, 0, 1, 2)
 
@@ -566,31 +568,17 @@ class ShadowWaveriderTab(QWidget):
         self.blunting_radius_spin.setEnabled(False)
         layout.addWidget(self.blunting_radius_spin, 1, 1)
 
-        layout.addWidget(QLabel("Method:"), 2, 0)
-        self.blunting_method_combo = QComboBox()
-        self.blunting_method_combo.addItems([
-            "G2 Bezier (Recommended)",
-            "Post-solid fillet (legacy)"])
-        self.blunting_method_combo.setToolTip(
-            "G2 Bezier: Dual cubic Bezier with curvature-continuous junctions\n"
-            "  (Fu et al. 2020 — state-of-the-art, embedded in surfaces)\n"
-            "Post-solid fillet: Legacy CAD fillet on the finished solid"
-        )
-        self.blunting_method_combo.setEnabled(False)
-        layout.addWidget(self.blunting_method_combo, 2, 1)
-
-        layout.addWidget(QLabel("Spanwise:"), 3, 0)
+        layout.addWidget(QLabel("Spanwise:"), 2, 0)
         self.blunting_sweep_combo = QComboBox()
         self.blunting_sweep_combo.addItems([
             "Uniform radius",
-            "Sweep-scaled (cos\u00b2\u00b7\u00b2)"])
+            "Sweep-scaled"])
         self.blunting_sweep_combo.setToolTip(
-            "Uniform: Same radius across the entire span\n"
-            "Sweep-scaled: R_sw = R_ct \u00d7 (cos \u039b)\u00b2\u00b7\u00b2\n"
-            "  Reduces radius toward swept wingtips for thermal optimization"
-        )
+            "Uniform: Same fillet radius across the entire span\n"
+            "Sweep-scaled: Radius tapers toward wingtip based on\n"
+            "  local sweep angle (R_tip = R * cos(sweep))")
         self.blunting_sweep_combo.setEnabled(False)
-        layout.addWidget(self.blunting_sweep_combo, 3, 1)
+        layout.addWidget(self.blunting_sweep_combo, 2, 1)
 
         self.blunting_preview_btn = QPushButton("Show LE Preview")
         self.blunting_preview_btn.setToolTip("Visualize blunted vs original LE on the 3D view.\nBlunting is applied automatically during STEP export.")
@@ -601,7 +589,7 @@ class ShadowWaveriderTab(QWidget):
             "QPushButton:hover { background-color: #78350F; color: #FFFFFF; }"
             "QPushButton:disabled { color: #555555; border-color: #333333; }"
         )
-        layout.addWidget(self.blunting_preview_btn, 4, 0, 1, 2)
+        layout.addWidget(self.blunting_preview_btn, 3, 0, 1, 2)
 
         group.setLayout(layout)
         return group
@@ -640,7 +628,6 @@ class ShadowWaveriderTab(QWidget):
     def _on_blunting_toggled(self, state):
         enabled = bool(state)
         self.blunting_radius_spin.setEnabled(enabled)
-        self.blunting_method_combo.setEnabled(enabled)
         self.blunting_sweep_combo.setEnabled(enabled)
         self.blunting_preview_btn.setEnabled(enabled and self.waverider is not None)
 
@@ -788,8 +775,14 @@ class ShadowWaveriderTab(QWidget):
         step_btn = QPushButton("STEP"); step_btn.clicked.connect(self.export_step)
         step_btn.setEnabled(CADQUERY_AVAILABLE)
 
+        self.half_vehicle_check = QCheckBox("Half vehicle (right side only)")
+        self.half_vehicle_check.setToolTip(
+            "Export only the right half (positive Z) without mirroring.\n"
+            "Useful for CFD meshing with symmetry boundary conditions.")
+
         layout.addWidget(stl_btn, 0, 0); layout.addWidget(tri_btn, 0, 1)
         layout.addWidget(step_btn, 1, 0, 1, 2)
+        layout.addWidget(self.half_vehicle_check, 2, 0, 1, 2)
 
         group.setLayout(layout)
         return group
@@ -1058,27 +1051,27 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 # geometry is in meters → multiply by 1000
                 scale = self.scale_spin.value() * 1000.0
                 blunting_radius = 0.0
-                blunting_method = "auto"
+                sweep_scaled = False
                 if self.blunting_check.isChecked():
                     blunting_radius = self.blunting_radius_spin.value()
-                    method_map = {
-                        "G2 Bezier (Recommended)": "pre_blunted",
-                        "Post-solid fillet (legacy)": "fillet",
-                    }
-                    blunting_method = method_map.get(
-                        self.blunting_method_combo.currentText(), "pre_blunted")
-                    self._sweep_scaled = (self.blunting_sweep_combo.currentIndex() == 1)
+                    sweep_scaled = (self.blunting_sweep_combo.currentIndex() == 1)
                 min_thickness = 0.0
                 if self.min_thickness_check.isChecked():
                     wr = self.waverider
-                    # Estimate vehicle length from upper surface X range
                     x_vals = wr.upper_surface[:, :, 0]
                     veh_length = float(x_vals.max() - x_vals.min())
                     pct = self.min_thickness_spin.value()
                     min_thickness = veh_length * pct / 100.0
-                print(f"[Cone-derived Export] method='{method}', blunting_radius={blunting_radius}, blunting_method={blunting_method}, min_thickness={min_thickness}, scale={scale}")
+                half_only = getattr(self, 'half_vehicle_check', None) and self.half_vehicle_check.isChecked()
+                print(f"[Shadow Export] method='{method}', blunting_radius={blunting_radius}, "
+                      f"sweep_scaled={sweep_scaled}, min_thickness={min_thickness}, "
+                      f"scale={scale}, half_only={half_only}")
                 if method == methods[0]:
-                    self._export_step_nurbs(fn, scale, blunting_radius=blunting_radius, blunting_method=blunting_method, min_thickness=min_thickness)
+                    self._export_step_nurbs(fn, scale,
+                                            blunting_radius=blunting_radius,
+                                            sweep_scaled=sweep_scaled,
+                                            min_thickness=min_thickness,
+                                            half_only=half_only)
                 else:
                     self._export_step_faces(fn, scale, min_thickness=min_thickness)
                 QMessageBox.information(self, "Success", f"Saved: {fn}")
@@ -1087,219 +1080,71 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 traceback.print_exc()
                 QMessageBox.critical(self, "Error", f"STEP export failed:\n{str(e)}")
     
-    def _export_step_nurbs(self, filename, scale, blunting_radius=0.0, blunting_method="auto", min_thickness=0.0):
+    def _export_step_nurbs(self, filename, scale, blunting_radius=0.0,
+                           sweep_scaled=False, min_thickness=0.0,
+                           half_only=False):
         """
         Export STEP with smooth NURBS surfaces using interpPlate.
-        Now that shadow waverider uses same coords as cad_export.py:
-        X = streamwise, Y = vertical, Z = span
+        Coords: X = streamwise, Y = vertical, Z = span.
 
-        We build one half (positive Z / right side), then mirror.
+        Builds one half (positive Z / right side), optionally applies LE
+        fillet, then mirrors to create the full vehicle.
         """
         import cadquery as cq
 
         wr = self.waverider
-
         upper_surf = wr.upper_surface
         lower_surf = wr.lower_surface
 
-        # Apply minimum thickness enforcement before building CAD.
-        # When pre_blunted is enabled, also enforce at j=0 (LE points)
-        # since the Bezier blunting will replace the LE anyway.
-        use_pre_blunted = (blunting_radius > 0 and blunting_method == "pre_blunted")
+        # Apply minimum thickness enforcement before building CAD
         if min_thickness > 0:
             from waverider_generator.cad_export import enforce_min_thickness_arrays
             upper_surf, lower_surf = enforce_min_thickness_arrays(
-                upper_surf, lower_surf, min_thickness,
-                include_le=use_pre_blunted)
+                upper_surf, lower_surf, min_thickness)
 
         n_le = upper_surf.shape[0]
-        n_stream = upper_surf.shape[1]
         center_idx = n_le // 2
 
         # Get right half (positive Z side) — stay in SI meters for all CAD ops
         upper_half = upper_surf[center_idx:, :, :]
         lower_half = lower_surf[center_idx:, :, :]
-
         n_half = upper_half.shape[0]
 
-        sweep_scaled = getattr(self, '_sweep_scaled', False)
+        # Extract curves from arrays
+        le_curve = upper_half[:, 0, :]
+        centerline_upper = upper_half[0, :, :]
+        centerline_lower = lower_half[0, :, :]
+        te_upper = upper_half[:, -1, :]
+        te_lower = lower_half[:, -1, :]
+        upper_streams = [upper_half[i, :, :] for i in range(n_half)]
+        lower_streams = [lower_half[i, :, :] for i in range(n_half)]
 
-        if use_pre_blunted:
-            # ===== PRE-BLUNTED: G2 Bezier embedded into streams (SI meters) =====
-            from waverider_generator.leading_edge_blunting import compute_pre_blunted_arrays
-
-            print(f"[Cone-derived G2 Bezier] Computing pre-blunted geometry "
-                  f"(r={blunting_radius:.4f}m, sweep_scaled={sweep_scaled})")
-            blunt_data = compute_pre_blunted_arrays(
-                upper_half, lower_half, blunting_radius,
-                sweep_scaled=sweep_scaled)
-
-            # Convert modified stream lists back to work like arrays
-            mod_upper_streams = blunt_data['modified_upper']  # list of (n_pts, 3)
-            mod_lower_streams = blunt_data['modified_lower']
-            le_curve = blunt_data['blunted_le']  # shared LE (n_half, 3)
-            n_half_actual = len(mod_upper_streams)
-
-            # ---- Trim degenerate wingtip stations (blunted path only) ----
-            # The outermost LE stations can have zero chord (LE == TE).
-            # After blunting these produce collapsed streams.
-            n_degenerate_trimmed = 0
-            while n_half_actual > 2:
-                wt_stream = mod_upper_streams[-1]
-                chord = np.linalg.norm(wt_stream[0] - wt_stream[-1])
-                if chord < 1e-8:
-                    mod_upper_streams = mod_upper_streams[:-1]
-                    mod_lower_streams = mod_lower_streams[:-1]
-                    if isinstance(le_curve, np.ndarray):
-                        le_curve = le_curve[:-1]
-                    n_half_actual -= 1
-                    n_degenerate_trimmed += 1
-                else:
-                    break
-            if n_degenerate_trimmed > 0:
-                print(f"[Cone-derived STEP] Trimmed {n_degenerate_trimmed} degenerate wingtip station(s)")
-
-            # ---- Ensure uniform stream length (blunted path only) ----
-            from waverider_generator.leading_edge_blunting import _resample_stream
-            stream_lengths = set(s.shape[0] for s in mod_upper_streams)
-            if len(stream_lengths) > 1:
-                target_n_stream = max(stream_lengths)
-                print(f"[Cone-derived STEP] Resampling streams to uniform length {target_n_stream}")
-                mod_upper_streams = [_resample_stream(s, target_n_stream)
-                                     for s in mod_upper_streams]
-                mod_lower_streams = [_resample_stream(s, target_n_stream)
-                                     for s in mod_lower_streams]
-
-            # Compute boundary curves from modified/trimmed streams
-            centerline_upper = mod_upper_streams[0]
-            centerline_lower = mod_lower_streams[0]
-            te_upper = np.vstack([s[-1:] for s in mod_upper_streams])
-            te_lower = np.vstack([s[-1:] for s in mod_lower_streams])
-
-        if not use_pre_blunted:
-            # ===== ORIGINAL PATH: extract curves from arrays directly =====
-            le_curve = upper_half[:, 0, :]  # shared LE = upper LE = lower LE
-            centerline_upper = upper_half[0, :, :]
-            centerline_lower = lower_half[0, :, :]
-            te_upper = upper_half[:, -1, :]
-            te_lower = lower_half[:, -1, :]
-            # Convert arrays to stream lists for unified code below
-            mod_upper_streams = [upper_half[i, :, :] for i in range(n_half)]
-            mod_lower_streams = [lower_half[i, :, :] for i in range(n_half)]
-            n_half_actual = n_half
-
-        # ===== SHARED 4-FACE SOLID BUILDER =====
-        from waverider_generator.cad_export import _sew_faces_to_solid
-
-        us_points = []
-        for i in range(1, n_half_actual - 1):
-            for j in range(1, mod_upper_streams[i].shape[0] - 1):
-                us_points.append(tuple(mod_upper_streams[i][j]))
-
-        ls_points = []
-        for i in range(1, n_half_actual - 1):
-            for j in range(1, mod_lower_streams[i].shape[0] - 1):
-                ls_points.append(tuple(mod_lower_streams[i][j]))
-
-        sym_start = tuple(centerline_upper[0])
-        sym_end = tuple(centerline_upper[-1])
-        sym_start_lower = tuple(centerline_lower[0])
-        sym_end_lower = tuple(centerline_lower[-1])
-
-        # Upper surface boundary: centerline + LE spline + TE spline + wingtip
-        edge_wire_upper = cq.Workplane("XY").spline(
-            [tuple(x) for x in centerline_upper])
-        edge_wire_upper = edge_wire_upper.add(
-            cq.Workplane("XY").spline([tuple(x) for x in le_curve]))
-        edge_wire_upper = edge_wire_upper.add(
-            cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
-        wingtip_upper = mod_upper_streams[-1]
-        wt_u_p0 = tuple(float(c) for c in wingtip_upper[0])
-        wt_u_p1 = tuple(float(c) for c in wingtip_upper[-1])
-        wt_u_dist = np.linalg.norm(wingtip_upper[0] - wingtip_upper[-1])
-        print(f"[DEBUG] Wingtip upper: n_pts={len(wingtip_upper)}, p0={wt_u_p0}, p1={wt_u_p1}, dist={wt_u_dist:.6f}")
-        if wt_u_dist > 1e-8:
-            wt_u_edge = cq.Edge.makeLine(cq.Vector(*wt_u_p0), cq.Vector(*wt_u_p1))
-            edge_wire_upper = edge_wire_upper.add(
-                cq.Workplane("XY").newObject([wt_u_edge]))
-        else:
-            print(f"[Cone-derived STEP] Wingtip upper edge degenerate, skipping")
-
-        upper_surface = cq.Workplane("XY").interpPlate(
-            edge_wire_upper, us_points, 0)
-
-        # Lower surface boundary
-        edge_wire_lower = cq.Workplane("XY").spline(
-            [tuple(x) for x in centerline_lower])
-        edge_wire_lower = edge_wire_lower.add(
-            cq.Workplane("XY").spline([tuple(x) for x in le_curve]))
-        edge_wire_lower = edge_wire_lower.add(
-            cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
-        wingtip_lower = mod_lower_streams[-1]
-        wt_l_p0 = tuple(float(c) for c in wingtip_lower[0])
-        wt_l_p1 = tuple(float(c) for c in wingtip_lower[-1])
-        wt_l_dist = np.linalg.norm(wingtip_lower[0] - wingtip_lower[-1])
-        print(f"[DEBUG] Wingtip lower: n_pts={len(wingtip_lower)}, p0={wt_l_p0}, p1={wt_l_p1}, dist={wt_l_dist:.6f}")
-        if wt_l_dist > 1e-8:
-            wt_l_edge = cq.Edge.makeLine(cq.Vector(*wt_l_p0), cq.Vector(*wt_l_p1))
-            edge_wire_lower = edge_wire_lower.add(
-                cq.Workplane("XY").newObject([wt_l_edge]))
-        else:
-            print(f"[Cone-derived STEP] Wingtip lower edge degenerate, skipping")
-
-        lower_surface = cq.Workplane("XY").interpPlate(
-            edge_wire_lower, ls_points, 0)
-
-        # Back face
-        e1 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_lower])
-        e2 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_upper])
-        e3 = cq.Edge.makeLine(
-            cq.Vector(*sym_end), cq.Vector(*sym_end_lower))
-        back_edges = [e1, e2, e3]
-        # After wingtip trimming, TE upper and TE lower may not converge
-        # to the same point. Add a closing edge if they differ.
-        wt_te_upper = tuple(float(c) for c in te_upper[-1])
-        wt_te_lower = tuple(float(c) for c in te_lower[-1])
-        wt_te_dist = np.linalg.norm(np.array(wt_te_upper) - np.array(wt_te_lower))
-        if wt_te_dist > 1e-8:
-            e_wt_close = cq.Edge.makeLine(
-                cq.Vector(*wt_te_upper), cq.Vector(*wt_te_lower))
-            back_edges.append(e_wt_close)
-        back = cq.Face.makeFromWires(cq.Wire.assembleEdges(back_edges))
-
-        # Symmetry face
-        v_le_upper = cq.Vector(*sym_start)
-        v_le_lower = cq.Vector(*sym_start_lower)
-        v_te_upper = cq.Vector(*sym_end)
-        v_te_lower = cq.Vector(*sym_end_lower)
-        e4 = cq.Edge.makeLine(v_le_upper, v_te_upper)
-        e5 = cq.Edge.makeLine(v_le_lower, v_te_lower)
-        sym_edges = [e3, e4, e5]
-        if abs(sym_start[1] - sym_start_lower[1]) > 1e-8:
-            e6 = cq.Edge.makeLine(v_le_lower, v_le_upper)
-            sym_edges.append(e6)
-        sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
-
-        # Assemble 4-face solid via sewing (still in SI meters)
-        right_side = _sew_faces_to_solid([
-            upper_surface.val(), lower_surface.val(), back, sym_face])
+        # Build 4-face NURBS solid (in SI meters)
+        from waverider_generator.cad_export import build_waverider_solid
+        right_side = build_waverider_solid(
+            upper_streams, lower_streams, le_curve,
+            centerline_upper, centerline_lower,
+            te_upper, te_lower)
 
         # Scale from SI meters to mm for STEP export
         right_side = right_side.scale(scale)
 
-        # Apply post-solid fillet only for legacy (non-pre-blunted) methods
-        if not use_pre_blunted and blunting_radius > 0:
-            print(f"[Cone-derived STEP] Post-fillet blunting_radius={blunting_radius * scale}mm")
+        # Apply post-solid LE fillet if blunting is enabled
+        if blunting_radius > 0:
+            print(f"[Shadow STEP] LE fillet: radius={blunting_radius * scale:.4f}mm, "
+                  f"sweep_scaled={sweep_scaled}")
             from waverider_generator.cad_export import _apply_le_fillet
             le_pts = le_curve * scale
             right_side = _apply_le_fillet(
-                right_side, blunting_radius * scale, le_pts, nose_cap=True)
+                right_side, blunting_radius * scale, le_pts,
+                nose_cap=True, sweep_scaled=sweep_scaled)
 
-        # Mirror across XY plane (Z=0) to get left side
-        left_side = right_side.mirror(mirrorPlane='XY')
-
-        # Union both halves
-        result = cq.Workplane("XY").newObject([right_side]).union(left_side)
+        if half_only:
+            result = cq.Workplane("XY").newObject([right_side])
+        else:
+            # Mirror across XY plane (Z=0) to get left side
+            left_side = right_side.mirror(mirrorPlane='XY')
+            result = cq.Workplane("XY").newObject([right_side]).union(left_side)
 
         cq.exporters.export(result, filename)
     

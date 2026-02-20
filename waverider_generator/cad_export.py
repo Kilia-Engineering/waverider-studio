@@ -147,6 +147,138 @@ def _sew_faces_to_solid(faces, tolerance=1e-3):
     return cq.Solid(solid_shape)
 
 
+def build_waverider_solid(upper_streams, lower_streams, le_curve,
+                          centerline_upper, centerline_lower,
+                          te_upper, te_lower):
+    """
+    Build a 4-face NURBS solid from waverider stream data (right half).
+
+    Constructs upper/lower interpPlate surfaces, a back face, and a symmetry
+    face, then sews them into a closed solid.
+
+    Parameters
+    ----------
+    upper_streams : list of ndarray (n_pts, 3)
+        Upper surface streamlines, one per LE station.
+    lower_streams : list of ndarray (n_pts, 3)
+        Lower surface streamlines, one per LE station.
+    le_curve : ndarray (n_stations, 3)
+        Leading edge points (shared between upper/lower).
+    centerline_upper : ndarray (n_stream, 3)
+        Upper surface centerline (i=0 station, Z=0).
+    centerline_lower : ndarray (n_stream, 3)
+        Lower surface centerline (i=0 station, Z=0).
+    te_upper : ndarray (n_stations, 3)
+        Upper trailing edge points.
+    te_lower : ndarray (n_stations, 3)
+        Lower trailing edge points.
+
+    Returns
+    -------
+    cq.Solid
+        Right-half solid in original coordinate units.
+    """
+    n_half = len(upper_streams)
+
+    # Interior points for upper surface
+    us_points = []
+    for i in range(1, n_half - 1):
+        for j in range(1, upper_streams[i].shape[0] - 1):
+            us_points.append(tuple(upper_streams[i][j]))
+
+    # Interior points for lower surface
+    ls_points = []
+    for i in range(1, n_half - 1):
+        for j in range(1, lower_streams[i].shape[0] - 1):
+            ls_points.append(tuple(lower_streams[i][j]))
+
+    sym_start = tuple(centerline_upper[0])
+    sym_end = tuple(centerline_upper[-1])
+    sym_start_lower = tuple(centerline_lower[0])
+    sym_end_lower = tuple(centerline_lower[-1])
+
+    # Upper surface boundary: centerline + LE spline + TE spline + wingtip
+    edge_wire_upper = cq.Workplane("XY").spline(
+        [tuple(x) for x in centerline_upper])
+    edge_wire_upper = edge_wire_upper.add(
+        cq.Workplane("XY").spline([tuple(x) for x in le_curve]))
+    edge_wire_upper = edge_wire_upper.add(
+        cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
+    wingtip_upper = upper_streams[-1]
+    wt_u_p0 = tuple(float(c) for c in wingtip_upper[0])
+    wt_u_p1 = tuple(float(c) for c in wingtip_upper[-1])
+    wt_u_dist = np.linalg.norm(wingtip_upper[0] - wingtip_upper[-1])
+    print(f"[SolidBuilder] Wingtip upper: n_pts={len(wingtip_upper)}, "
+          f"p0={wt_u_p0}, p1={wt_u_p1}, dist={wt_u_dist:.6f}")
+    if wt_u_dist > 1e-8:
+        wt_u_edge = cq.Edge.makeLine(cq.Vector(*wt_u_p0), cq.Vector(*wt_u_p1))
+        edge_wire_upper = edge_wire_upper.add(
+            cq.Workplane("XY").newObject([wt_u_edge]))
+    else:
+        print(f"[SolidBuilder] Wingtip upper edge degenerate, skipping")
+
+    upper_surface = cq.Workplane("XY").interpPlate(
+        edge_wire_upper, us_points, 0)
+
+    # Lower surface boundary
+    edge_wire_lower = cq.Workplane("XY").spline(
+        [tuple(x) for x in centerline_lower])
+    edge_wire_lower = edge_wire_lower.add(
+        cq.Workplane("XY").spline([tuple(x) for x in le_curve]))
+    edge_wire_lower = edge_wire_lower.add(
+        cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
+    wingtip_lower = lower_streams[-1]
+    wt_l_p0 = tuple(float(c) for c in wingtip_lower[0])
+    wt_l_p1 = tuple(float(c) for c in wingtip_lower[-1])
+    wt_l_dist = np.linalg.norm(wingtip_lower[0] - wingtip_lower[-1])
+    print(f"[SolidBuilder] Wingtip lower: n_pts={len(wingtip_lower)}, "
+          f"p0={wt_l_p0}, p1={wt_l_p1}, dist={wt_l_dist:.6f}")
+    if wt_l_dist > 1e-8:
+        wt_l_edge = cq.Edge.makeLine(cq.Vector(*wt_l_p0), cq.Vector(*wt_l_p1))
+        edge_wire_lower = edge_wire_lower.add(
+            cq.Workplane("XY").newObject([wt_l_edge]))
+    else:
+        print(f"[SolidBuilder] Wingtip lower edge degenerate, skipping")
+
+    lower_surface = cq.Workplane("XY").interpPlate(
+        edge_wire_lower, ls_points, 0)
+
+    # Back face
+    e1 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_lower])
+    e2 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_upper])
+    e3 = cq.Edge.makeLine(
+        cq.Vector(*sym_end), cq.Vector(*sym_end_lower))
+    back_edges = [e1, e2, e3]
+    # Close wingtip gap if TE upper and TE lower don't converge
+    wt_te_upper = tuple(float(c) for c in te_upper[-1])
+    wt_te_lower = tuple(float(c) for c in te_lower[-1])
+    wt_te_dist = np.linalg.norm(np.array(wt_te_upper) - np.array(wt_te_lower))
+    if wt_te_dist > 1e-8:
+        e_wt_close = cq.Edge.makeLine(
+            cq.Vector(*wt_te_upper), cq.Vector(*wt_te_lower))
+        back_edges.append(e_wt_close)
+    back = cq.Face.makeFromWires(cq.Wire.assembleEdges(back_edges))
+
+    # Symmetry face
+    v_le_upper = cq.Vector(*sym_start)
+    v_le_lower = cq.Vector(*sym_start_lower)
+    v_te_upper = cq.Vector(*sym_end)
+    v_te_lower = cq.Vector(*sym_end_lower)
+    e4 = cq.Edge.makeLine(v_le_upper, v_te_upper)
+    e5 = cq.Edge.makeLine(v_le_lower, v_te_lower)
+    sym_edges = [e3, e4, e5]
+    if abs(sym_start[1] - sym_start_lower[1]) > 1e-8:
+        e6 = cq.Edge.makeLine(v_le_lower, v_le_upper)
+        sym_edges.append(e6)
+    sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
+
+    # Assemble 4-face solid via sewing
+    right_side = _sew_faces_to_solid([
+        upper_surface.val(), lower_surface.val(), back, sym_face])
+
+    return right_side
+
+
 def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
 
     if "scale" in kwargs:
@@ -486,13 +618,30 @@ def _build_le_face(arc_sections, tp_upper_curve, tp_lower_curve):
             return None
 
 
-def _apply_le_fillet(solid, radius, le_points, nose_cap=False):
+def _apply_le_fillet(solid, radius, le_points, nose_cap=False,
+                     sweep_scaled=False):
     """
-    Apply leading edge blunting to a waverider solid.
+    Apply leading edge blunting to a waverider solid using OCP variable-radius
+    fillet (BRepFilletAPI_MakeFillet).
 
-    For OC waverider: just fillet the LE edges (nose_cap=False).
-    For cone-derived: optionally apply nose cap after LE fillet (nose_cap=True).
+    Parameters
+    ----------
+    solid : cq.Solid
+        The sharp waverider half-solid (right side, Z >= 0).
+    radius : float
+        Base fillet radius (in model units, typically mm after scaling).
+    le_points : ndarray
+        Leading edge points for reference (not currently used for edge
+        identification but kept for future use).
+    nose_cap : bool
+        If True, apply nose cap rounding after LE fillet (cone-derived).
+    sweep_scaled : bool
+        If True, taper fillet radius from full at nose to reduced at wingtip.
+        Wingtip radius = radius * cos(sweep_angle), where sweep_angle is
+        estimated from the LE edge geometry.
     """
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+
     all_edges = solid.Edges()
     bb = solid.BoundingBox()
     x_min = bb.xmin
@@ -501,7 +650,8 @@ def _apply_le_fillet(solid, radius, le_points, nose_cap=False):
 
     print(f"[Blunting] Solid bounding box: x=[{bb.xmin:.4f}, {bb.xmax:.4f}], "
           f"y=[{bb.ymin:.4f}, {bb.ymax:.4f}], z=[{bb.zmin:.4f}, {bb.zmax:.4f}]")
-    print(f"[Blunting] Solid has {len(all_edges)} edges, radius={radius:.5f}m")
+    print(f"[Blunting] Solid has {len(all_edges)} edges, radius={radius:.5f}, "
+          f"sweep_scaled={sweep_scaled}")
 
     le_edges = []
     for i, edge in enumerate(all_edges):
@@ -529,7 +679,7 @@ def _apply_le_fillet(solid, radius, le_points, nose_cap=False):
             label = "back"
         elif has_z and has_tip:
             label = "LEADING EDGE"
-            le_edges.append(edge)
+            le_edges.append((edge, p1, p2))
         elif has_z:
             label = "trailing edge"
 
@@ -542,23 +692,69 @@ def _apply_le_fillet(solid, radius, le_points, nose_cap=False):
         print("[Blunting] No LE edges found — exporting sharp LE")
         return solid
 
-    # LE-only fillet
+    # Compute per-edge radii (nose end vs wingtip end)
+    def _compute_edge_radii(edge_info, base_radius, sweep_scaled):
+        """Return (r_at_vertex0, r_at_vertex1) for a LE edge."""
+        _, p1, p2 = edge_info
+        if not sweep_scaled:
+            return base_radius, base_radius
+
+        # Identify nose end (Z ≈ 0) vs wingtip end (Z > 0)
+        # Estimate sweep angle from LE geometry: angle between
+        # LE direction and streamwise (X) direction
+        dx = abs(p2[0] - p1[0])
+        dz = abs(p2[2] - p1[2])
+        le_length = np.sqrt(dx**2 + dz**2)
+        if le_length < 1e-10:
+            return base_radius, base_radius
+
+        # Sweep angle = arctan(dz / dx), i.e. how much the LE sweeps
+        # back relative to the X axis
+        sweep_angle = np.arctan2(dz, dx)
+        # Wingtip radius reduced by cos(sweep_angle)
+        r_wingtip = base_radius * max(np.cos(sweep_angle), 0.1)
+
+        # Determine which vertex is nose (smaller |Z|)
+        if abs(p1[2]) < abs(p2[2]):
+            # p1 is nose, p2 is wingtip
+            return base_radius, r_wingtip
+        else:
+            # p2 is nose, p1 is wingtip
+            return r_wingtip, base_radius
+
+    # Apply fillet using OCP BRepFilletAPI_MakeFillet with adaptive fallback
     current = None
     le_r_used = 0
     for factor in [1.0, 0.75, 0.5, 0.25, 0.1]:
-        r = radius * factor
         try:
-            current = solid.fillet(r, le_edges)
-            le_r_used = r
-            print(f"[Blunting] LE fillet OK (r={r:.6f}m, factor={factor})")
+            fillet_builder = BRepFilletAPI_MakeFillet(solid.wrapped)
+            for edge_info in le_edges:
+                edge = edge_info[0]
+                r1, r2 = _compute_edge_radii(edge_info, radius * factor,
+                                             sweep_scaled)
+                if abs(r1 - r2) < 1e-10:
+                    # Constant radius — use single-radius Add
+                    fillet_builder.Add(r1, edge.wrapped)
+                else:
+                    # Variable radius — linear evolution from r1 to r2
+                    fillet_builder.Add(r1, r2, edge.wrapped)
+            fillet_builder.Build()
+            if not fillet_builder.IsDone():
+                raise RuntimeError("BRepFilletAPI_MakeFillet.IsDone() is False")
+            result_shape = fillet_builder.Shape()
+            current = cq.Solid(result_shape)
+            le_r_used = radius * factor
+            r1_show, r2_show = _compute_edge_radii(
+                le_edges[0], radius * factor, sweep_scaled)
+            print(f"[Blunting] LE fillet OK (factor={factor}, "
+                  f"r_nose={r1_show:.6f}, r_wingtip={r2_show:.6f})")
             break
         except Exception as e:
-            print(f"[Blunting] LE fillet failed (r={r:.6f}): {e}")
+            print(f"[Blunting] LE fillet failed (factor={factor}): {e}")
 
     if current is None:
         print("[Blunting] All LE fillet attempts failed — exporting sharp LE")
         if nose_cap:
-            # For cone-derived: try nose cap on the original solid
             capped = _cap_nose(solid, radius)
             if capped is not None:
                 return capped

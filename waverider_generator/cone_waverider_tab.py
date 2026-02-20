@@ -625,24 +625,65 @@ class ConeWaveriderTab(QWidget):
         # === Export Group ===
         export_group = QGroupBox("Export")
         export_layout = QGridLayout()
-        
+
         stl_btn = QPushButton("Export STL")
         stl_btn.clicked.connect(self.export_stl)
         export_layout.addWidget(stl_btn, 0, 0)
-        
+
         step_btn = QPushButton("Export STEP")
         step_btn.clicked.connect(self.export_step)
         step_btn.setEnabled(CADQUERY_AVAILABLE)
         if not CADQUERY_AVAILABLE:
             step_btn.setToolTip("CadQuery not installed")
         export_layout.addWidget(step_btn, 0, 1)
-        
+
         tri_btn = QPushButton("Export TRI")
         tri_btn.clicked.connect(self.export_tri)
         export_layout.addWidget(tri_btn, 1, 0)
-        
+
+        self.half_vehicle_check = QCheckBox("Half vehicle")
+        self.half_vehicle_check.setToolTip(
+            "Export only the right half (positive Z) without mirroring.\n"
+            "Useful for CFD meshing with symmetry boundary conditions.")
+        export_layout.addWidget(self.half_vehicle_check, 1, 1)
+
         export_group.setLayout(export_layout)
         layout.addWidget(export_group)
+
+        # === LE Blunting Group ===
+        blunt_group = QGroupBox("LE Fillet (STEP only)")
+        blunt_layout = QGridLayout()
+
+        self.blunting_check = QCheckBox("Enable LE fillet")
+        self.blunting_check.setToolTip(
+            "Apply a fillet to the leading edge during STEP export.\n"
+            "Uses OpenCASCADE BRepFilletAPI with optional variable radius.")
+        self.blunting_check.stateChanged.connect(self._on_blunting_toggled)
+        blunt_layout.addWidget(self.blunting_check, 0, 0, 1, 2)
+
+        blunt_layout.addWidget(QLabel("Radius (m):"), 1, 0)
+        self.blunting_radius_spin = QDoubleSpinBox()
+        self.blunting_radius_spin.setRange(0.0001, 1.0)
+        self.blunting_radius_spin.setValue(0.005)
+        self.blunting_radius_spin.setSingleStep(0.001)
+        self.blunting_radius_spin.setDecimals(4)
+        self.blunting_radius_spin.setEnabled(False)
+        blunt_layout.addWidget(self.blunting_radius_spin, 1, 1)
+
+        blunt_layout.addWidget(QLabel("Spanwise:"), 2, 0)
+        self.blunting_sweep_combo = QComboBox()
+        self.blunting_sweep_combo.addItems([
+            "Uniform radius",
+            "Sweep-scaled"])
+        self.blunting_sweep_combo.setToolTip(
+            "Uniform: Same fillet radius across the entire span\n"
+            "Sweep-scaled: Radius tapers toward wingtip based on\n"
+            "  local sweep angle (R_tip = R * cos(sweep))")
+        self.blunting_sweep_combo.setEnabled(False)
+        blunt_layout.addWidget(self.blunting_sweep_combo, 2, 1)
+
+        blunt_group.setLayout(blunt_layout)
+        layout.addWidget(blunt_group)
         
         # === Gmsh Meshing ===
         gmsh_group = QGroupBox("Gmsh Meshing")
@@ -1026,6 +1067,11 @@ Streamwise Pts:     {self.waverider.n_streamwise}
 """
         self.results_text.setText(text)
     
+    def _on_blunting_toggled(self, state):
+        enabled = bool(state)
+        self.blunting_radius_spin.setEnabled(enabled)
+        self.blunting_sweep_combo.setEnabled(enabled)
+
     def export_stl(self):
         """Export waverider to STL format"""
         if self.waverider is None:
@@ -1064,64 +1110,108 @@ Streamwise Pts:     {self.waverider.n_streamwise}
                 QMessageBox.critical(self, "Error", f"Failed to export TRI:\n{str(e)}")
     
     def export_step(self):
-        """Export waverider to STEP format using CadQuery"""
+        """Export waverider to STEP format using CadQuery NURBS surfaces"""
         if self.waverider is None:
             QMessageBox.warning(self, "Warning", "Generate a waverider first!")
             return
-        
+
         if not CADQUERY_AVAILABLE:
             QMessageBox.warning(self, "Warning", "CadQuery is not installed!")
             return
-        
+
         filename, _ = QFileDialog.getSaveFileName(
             self, "Save STEP File", "cone_waverider.step", "STEP Files (*.step *.stp)"
         )
-        
+
         if filename:
             try:
                 self.status_label.setText("Exporting to STEP (this may take a moment)...")
-                
-                # Create solid from surfaces using CadQuery
-                self._export_step_cadquery(filename)
-                
+
+                # STEP uses mm; geometry is in meters → scale * 1000
+                scale = self.scale_spin.value() * 1000.0
+                blunting_radius = 0.0
+                sweep_scaled = False
+                if hasattr(self, 'blunting_check') and self.blunting_check.isChecked():
+                    blunting_radius = self.blunting_radius_spin.value()
+                    sweep_scaled = (self.blunting_sweep_combo.currentIndex() == 1)
+                half_only = hasattr(self, 'half_vehicle_check') and self.half_vehicle_check.isChecked()
+
+                print(f"[ConeWaverider Export] blunting_radius={blunting_radius}, "
+                      f"sweep_scaled={sweep_scaled}, scale={scale}, half_only={half_only}")
+                self._export_step_nurbs(filename, scale,
+                                        blunting_radius=blunting_radius,
+                                        sweep_scaled=sweep_scaled,
+                                        half_only=half_only)
+
                 self.last_step_file = filename
                 self.status_label.setText(f"Exported to {filename}")
                 QMessageBox.information(self, "Success", f"STEP exported to:\n{filename}")
             except Exception as e:
                 import traceback
-                QMessageBox.critical(self, "Error", f"Failed to export STEP:\n{str(e)}\n\n{traceback.format_exc()}")
-    
-    def _export_step_cadquery(self, filename):
-        """Export using CadQuery for proper STEP format"""
+                traceback.print_exc()
+                QMessageBox.critical(self, "Error", f"Failed to export STEP:\n{str(e)}")
+
+    def _export_step_nurbs(self, filename, scale, blunting_radius=0.0,
+                           sweep_scaled=False, half_only=False):
+        """
+        Export STEP with smooth NURBS surfaces.
+
+        The cone waverider uses coords [x=span, y=vertical, z=streamwise].
+        We swizzle to [X=streamwise, Y=vertical, Z=span] for the shared
+        solid builder, then build right half → fillet → mirror → export.
+        """
         import cadquery as cq
-        
-        scale = self.scale_spin.value()
-        
-        # Get vertices and create faces
-        vertices, triangles = self.waverider.get_mesh()
-        vertices = vertices * scale
-        
-        # Create shell from triangles
-        faces = []
-        for tri in triangles:
-            v0, v1, v2 = vertices[tri[0]], vertices[tri[1]], vertices[tri[2]]
-            try:
-                face = cq.Face.makeFromWires(
-                    cq.Wire.makePolygon([
-                        cq.Vector(*v0),
-                        cq.Vector(*v1),
-                        cq.Vector(*v2),
-                        cq.Vector(*v0)
-                    ])
-                )
-                faces.append(face)
-            except:
-                pass  # Skip degenerate triangles
-        
-        # Create shell and export
-        if faces:
-            shell = cq.Shell.makeShell(faces)
-            cq.exporters.export(shell, filename)
+
+        wr = self.waverider
+        # Swizzle from [x_span, y_vert, z_stream] to [X_stream, Y_vert, Z_span]
+        upper_raw = wr.upper_surface[:, :, [2, 1, 0]]  # (n_le, n_stream, 3)
+        lower_raw = wr.lower_surface[:, :, [2, 1, 0]]
+        le_raw = wr.leading_edge[:, [2, 1, 0]]          # (n_le, 3)
+
+        n_le = upper_raw.shape[0]
+        center_idx = n_le // 2
+
+        # Right half = positive Z (positive original x_span)
+        upper_half = upper_raw[center_idx:, :, :]
+        lower_half = lower_raw[center_idx:, :, :]
+        le_curve = le_raw[center_idx:]
+        n_half = upper_half.shape[0]
+
+        # Extract boundary curves
+        centerline_upper = upper_half[0, :, :]
+        centerline_lower = lower_half[0, :, :]
+        te_upper = upper_half[:, -1, :]
+        te_lower = lower_half[:, -1, :]
+        upper_streams = [upper_half[i, :, :] for i in range(n_half)]
+        lower_streams = [lower_half[i, :, :] for i in range(n_half)]
+
+        # Build 4-face NURBS solid
+        from waverider_generator.cad_export import build_waverider_solid
+        right_side = build_waverider_solid(
+            upper_streams, lower_streams, le_curve,
+            centerline_upper, centerline_lower,
+            te_upper, te_lower)
+
+        # Scale to mm for STEP
+        right_side = right_side.scale(scale)
+
+        # Apply LE fillet if enabled
+        if blunting_radius > 0:
+            print(f"[ConeWaverider STEP] LE fillet: radius={blunting_radius * scale:.4f}mm, "
+                  f"sweep_scaled={sweep_scaled}")
+            from waverider_generator.cad_export import _apply_le_fillet
+            le_pts = le_curve * scale
+            right_side = _apply_le_fillet(
+                right_side, blunting_radius * scale, le_pts,
+                nose_cap=True, sweep_scaled=sweep_scaled)
+
+        if half_only:
+            result = cq.Workplane("XY").newObject([right_side])
+        else:
+            left_side = right_side.mirror(mirrorPlane='XY')
+            result = cq.Workplane("XY").newObject([right_side]).union(left_side)
+
+        cq.exporters.export(result, filename)
     
     def generate_gmsh_mesh(self):
         """Generate mesh using Gmsh"""
