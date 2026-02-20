@@ -1191,9 +1191,9 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         n_stream = upper_surf.shape[1]
         center_idx = n_le // 2
 
-        # Get right half (positive Z side) - indices from center to end
-        upper_half = upper_surf[center_idx:, :, :] * scale
-        lower_half = lower_surf[center_idx:, :, :] * scale
+        # Get right half (positive Z side) — stay in SI meters for blunting
+        upper_half = upper_surf[center_idx:, :, :]
+        lower_half = lower_surf[center_idx:, :, :]
 
         n_half = upper_half.shape[0]
 
@@ -1201,13 +1201,13 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         sweep_scaled = getattr(self, '_sweep_scaled', False)
 
         if use_pre_blunted:
-            # ===== PRE-BLUNTED: G2 Bezier embedded into streams =====
+            # ===== PRE-BLUNTED: G2 Bezier embedded into streams (SI meters) =====
             from waverider_generator.leading_edge_blunting import compute_pre_blunted_arrays
 
             print(f"[Cone-derived G2 Bezier] Computing pre-blunted geometry "
-                  f"(r={blunting_radius * scale:.4f}m, sweep_scaled={sweep_scaled})")
+                  f"(r={blunting_radius:.4f}m, sweep_scaled={sweep_scaled})")
             blunt_data = compute_pre_blunted_arrays(
-                upper_half, lower_half, blunting_radius * scale,
+                upper_half, lower_half, blunting_radius,
                 sweep_scaled=sweep_scaled)
 
             # Convert modified stream lists back to work like arrays
@@ -1232,6 +1232,15 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             mod_upper_streams = [upper_half[i, :, :] for i in range(n_half)]
             mod_lower_streams = [lower_half[i, :, :] for i in range(n_half)]
             n_half_actual = n_half
+
+        # Now scale everything from SI meters to mm for STEP export
+        le_curve = le_curve * scale
+        mod_upper_streams = [s * scale for s in mod_upper_streams]
+        mod_lower_streams = [s * scale for s in mod_lower_streams]
+        centerline_upper = centerline_upper * scale
+        centerline_lower = centerline_lower * scale
+        te_upper = te_upper * scale
+        te_lower = te_lower * scale
 
         # ===== SHARED 4-FACE SOLID BUILDER =====
         from waverider_generator.cad_export import _sew_faces_to_solid
