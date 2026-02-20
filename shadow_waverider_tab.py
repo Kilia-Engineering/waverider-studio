@@ -1255,7 +1255,17 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         e2 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_upper])
         e3 = cq.Edge.makeLine(
             cq.Vector(*sym_end), cq.Vector(*sym_end_lower))
-        back = cq.Face.makeFromWires(cq.Wire.assembleEdges([e1, e2, e3]))
+        back_edges = [e1, e2, e3]
+        # After wingtip trimming, TE upper and TE lower may not converge
+        # to the same point. Add a closing edge if they differ.
+        wt_te_upper = tuple(float(c) for c in te_upper[-1])
+        wt_te_lower = tuple(float(c) for c in te_lower[-1])
+        wt_te_dist = np.linalg.norm(np.array(wt_te_upper) - np.array(wt_te_lower))
+        if wt_te_dist > 1e-8:
+            e_wt_close = cq.Edge.makeLine(
+                cq.Vector(*wt_te_upper), cq.Vector(*wt_te_lower))
+            back_edges.append(e_wt_close)
+        back = cq.Face.makeFromWires(cq.Wire.assembleEdges(back_edges))
 
         # Symmetry face
         v_le_upper = cq.Vector(*sym_start)
