@@ -1139,36 +1139,80 @@ class WaveriderGUI(QMainWindow):
         return None
 
     def _calc_aref_from_imported_geometry(self):
-        """Calculate planform area (XZ projection) from imported tessellation."""
-        try:
-            verts = self.imported_geometry['vertices'].copy()
-            faces = self.imported_geometry['faces']
+        """Calculate planform area from imported geometry.
 
-            # Detect mm units: if max extent > 100, geometry is likely in mm
-            bounds_range = verts.max(axis=0) - verts.min(axis=0)
-            max_extent = bounds_range.max()
-            if max_extent > 100:
-                verts = verts * 0.001  # mm → m
-                print(f"[Aero] Geometry extent {max_extent:.1f} — converting mm → m for A_ref")
+        For STEP files: use CadQuery to re-import the solid, tessellate
+        with known mm units, convert mm→m, and compute projected area.
+        For STL/OBJ: compute from self.imported_geometry tessellation.
+        """
+        # --- Path A: STEP file (CadQuery, units are ALWAYS mm) ---
+        if self.imported_step_path and os.path.exists(self.imported_step_path):
+            try:
+                import cadquery as cq
+                shape = cq.importers.importStep(self.imported_step_path)
+                solids = shape.solids().vals()
+                if not solids:
+                    solids = shape.shells().vals()
+                if not solids:
+                    solids = shape.faces().vals()
+                if not solids:
+                    raise ValueError("STEP contains no geometry")
 
-            # Planform area = projected area of upper-facing triangles onto XZ plane
-            # Only count triangles whose normal has a positive Y component (upward-facing)
-            planform = 0.0
-            for tri in faces:
-                v0, v1, v2 = verts[tri[0]], verts[tri[1]], verts[tri[2]]
-                normal = np.cross(v1 - v0, v2 - v0)
-                if normal[1] > 0:  # Y-component positive = upper-facing
-                    # Projected area on XZ plane
-                    ax, az = v0[0], v0[2]
-                    bx, bz = v1[0], v1[2]
-                    cx, cz = v2[0], v2[2]
-                    area = 0.5 * abs((bx - ax) * (cz - az) - (cx - ax) * (bz - az))
-                    planform += area
-            print(f"[Aero] A_ref from imported geometry: {planform:.4f} m²")
-            return planform
-        except Exception as e:
-            print(f"[Aero] A_ref from imported geometry failed: {e}")
-            return None
+                # Tessellate — vertices come out in mm (OCCT convention)
+                all_verts, all_faces = [], []
+                offset = 0
+                for s in solids:
+                    tess = s.tessellate(0.01, 0.5)
+                    v = np.array([(p.x, p.y, p.z) for p in tess[0]])
+                    f = np.array(tess[1]) + offset
+                    all_verts.append(v)
+                    all_faces.append(f)
+                    offset += len(v)
+                verts = np.vstack(all_verts) * 0.001  # mm → m (ALWAYS)
+                faces = np.vstack(all_faces)
+
+                planform = self._planform_from_tris(verts, faces)
+                print(f"[Aero] A_ref from STEP (CadQuery): {planform:.4f} m²")
+                return planform
+            except ImportError:
+                print("[Aero] CadQuery not available, falling back to tessellation")
+            except Exception as e:
+                print(f"[Aero] CadQuery A_ref failed: {e}")
+
+        # --- Path B: fallback for STL / OBJ (units assumed to be meters) ---
+        if self.imported_geometry is not None:
+            try:
+                verts = self.imported_geometry['vertices'].copy()
+                faces = self.imported_geometry['faces']
+
+                # Heuristic for non-STEP: if extent > 100, likely mm
+                max_ext = (verts.max(axis=0) - verts.min(axis=0)).max()
+                if max_ext > 100:
+                    verts = verts * 0.001
+                    print(f"[Aero] Extent {max_ext:.1f} — converting mm → m")
+
+                planform = self._planform_from_tris(verts, faces)
+                print(f"[Aero] A_ref from tessellation: {planform:.4f} m²")
+                return planform
+            except Exception as e:
+                print(f"[Aero] Tessellation A_ref failed: {e}")
+
+        return None
+
+    @staticmethod
+    def _planform_from_tris(verts, faces):
+        """Compute planform area (XZ projection) from upper-facing triangles."""
+        planform = 0.0
+        for tri in faces:
+            v0, v1, v2 = verts[tri[0]], verts[tri[1]], verts[tri[2]]
+            normal = np.cross(v1 - v0, v2 - v0)
+            if normal[1] > 0:  # upper-facing
+                ax, az = v0[0], v0[2]
+                bx, bz = v1[0], v1[2]
+                cx, cz = v2[0], v2[2]
+                area = 0.5 * abs((bx - ax) * (cz - az) - (cx - ax) * (bz - az))
+                planform += area
+        return planform
 
     def _update_aero_tab_state(self):
         """Update button enabled states on the Aero Analysis tab."""
