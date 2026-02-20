@@ -1147,19 +1147,19 @@ class WaveriderGUI(QMainWindow):
                 verts = verts * 0.001  # mm → m
                 print(f"[Aero] Geometry extent {max_extent:.1f} — converting mm → m for A_ref")
 
-            # Planform area = sum of projected triangle areas onto XZ plane
-            total_area = 0.0
+            # Planform area = projected area of upper-facing triangles onto XZ plane
+            # Only count triangles whose normal has a positive Y component (upward-facing)
+            planform = 0.0
             for tri in faces:
                 v0, v1, v2 = verts[tri[0]], verts[tri[1]], verts[tri[2]]
-                # Project to XZ plane: use X and Z coordinates
-                ax, az = v0[0], v0[2]
-                bx, bz = v1[0], v1[2]
-                cx, cz = v2[0], v2[2]
-                # Cross-product area
-                area = 0.5 * abs((bx - ax) * (cz - az) - (cx - ax) * (bz - az))
-                total_area += area
-            # Divide by 2 since both upper and lower surfaces overlap in projection
-            planform = total_area / 2.0
+                normal = np.cross(v1 - v0, v2 - v0)
+                if normal[1] > 0:  # Y-component positive = upper-facing
+                    # Projected area on XZ plane
+                    ax, az = v0[0], v0[2]
+                    bx, bz = v1[0], v1[2]
+                    cx, cz = v2[0], v2[2]
+                    area = 0.5 * abs((bx - ax) * (cz - az) - (cx - ax) * (bz - az))
+                    planform += area
             print(f"[Aero] A_ref from imported geometry: {planform:.4f} m²")
             return planform
         except Exception as e:
@@ -2258,7 +2258,7 @@ class WaveriderGUI(QMainWindow):
         # Reference area
         params_layout.addWidget(QLabel("Reference Area A_ref (m²):"), 2, 0)
         self.aref_spin = QDoubleSpinBox()
-        self.aref_spin.setRange(0.1, 100.0)
+        self.aref_spin.setRange(0.0001, 10000.0)
         self.aref_spin.setValue(21.6)  # More realistic default for baseline
         self.aref_spin.setSingleStep(0.1)
         self.aref_spin.setDecimals(4)
