@@ -1102,11 +1102,15 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         upper_surf = wr.upper_surface
         lower_surf = wr.lower_surface
 
-        # Apply minimum thickness enforcement before building CAD
+        # Apply minimum thickness enforcement before building CAD.
+        # When pre_blunted is enabled, also enforce at j=0 (LE points)
+        # since the Bezier blunting will replace the LE anyway.
+        use_pre_blunted = (blunting_radius > 0 and blunting_method == "pre_blunted")
         if min_thickness > 0:
             from waverider_generator.cad_export import enforce_min_thickness_arrays
             upper_surf, lower_surf = enforce_min_thickness_arrays(
-                upper_surf, lower_surf, min_thickness)
+                upper_surf, lower_surf, min_thickness,
+                include_le=use_pre_blunted)
 
         n_le = upper_surf.shape[0]
         n_stream = upper_surf.shape[1]
@@ -1118,7 +1122,6 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
 
         n_half = upper_half.shape[0]
 
-        use_pre_blunted = (blunting_radius > 0 and blunting_method == "pre_blunted")
         sweep_scaled = getattr(self, '_sweep_scaled', False)
 
         if use_pre_blunted:
@@ -1135,24 +1138,55 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             mod_upper_streams = blunt_data['modified_upper']  # list of (n_pts, 3)
             mod_lower_streams = blunt_data['modified_lower']
             le_curve = blunt_data['blunted_le']  # shared LE (n_half, 3)
-
-            centerline_upper = mod_upper_streams[0]
-            centerline_lower = mod_lower_streams[0]
-            te_upper = np.vstack([s[-1:] for s in mod_upper_streams])
-            te_lower = np.vstack([s[-1:] for s in mod_lower_streams])
             n_half_actual = len(mod_upper_streams)
 
         if not use_pre_blunted:
             # ===== ORIGINAL PATH: extract curves from arrays =====
             le_curve = upper_half[:, 0, :]  # shared LE = upper LE = lower LE
-            centerline_upper = upper_half[0, :, :]
-            centerline_lower = lower_half[0, :, :]
-            te_upper = upper_half[:, -1, :]
-            te_lower = lower_half[:, -1, :]
             # Convert arrays to stream lists for unified code below
             mod_upper_streams = [upper_half[i, :, :] for i in range(n_half)]
             mod_lower_streams = [lower_half[i, :, :] for i in range(n_half)]
             n_half_actual = n_half
+
+        # ===== TRIM DEGENERATE WINGTIP STATIONS =====
+        # The shadow waverider's outermost LE stations can have zero chord
+        # (LE point == TE point). These degenerate stations produce collapsed
+        # streams that interpPlate cannot handle. Remove them.
+        n_degenerate_trimmed = 0
+        while n_half_actual > 2:
+            wt_stream = mod_upper_streams[-1]
+            chord = np.linalg.norm(wt_stream[0] - wt_stream[-1])
+            if chord < 1e-8:
+                mod_upper_streams = mod_upper_streams[:-1]
+                mod_lower_streams = mod_lower_streams[:-1]
+                le_curve = le_curve[:-1] if isinstance(le_curve, np.ndarray) else le_curve
+                n_half_actual -= 1
+                n_degenerate_trimmed += 1
+            else:
+                break
+        if n_degenerate_trimmed > 0:
+            print(f"[Cone-derived STEP] Trimmed {n_degenerate_trimmed} degenerate wingtip station(s)")
+
+        # ===== ENSURE UNIFORM STREAM LENGTH =====
+        # After blunting, streams may still differ in length. Resample to
+        # a uniform count so that interpPlate gets a regular interior grid.
+        from waverider_generator.leading_edge_blunting import _resample_stream
+        stream_lengths = set(s.shape[0] for s in mod_upper_streams)
+        if len(stream_lengths) > 1:
+            target_n_stream = max(stream_lengths)
+            print(f"[Cone-derived STEP] Resampling streams to uniform length {target_n_stream}")
+            mod_upper_streams = [_resample_stream(s, target_n_stream)
+                                 for s in mod_upper_streams]
+            mod_lower_streams = [_resample_stream(s, target_n_stream)
+                                 for s in mod_lower_streams]
+
+        # Recompute boundary curves from (possibly trimmed/resampled) streams
+        centerline_upper = mod_upper_streams[0]
+        centerline_lower = mod_lower_streams[0]
+        te_upper = np.vstack([s[-1:] for s in mod_upper_streams])
+        te_lower = np.vstack([s[-1:] for s in mod_lower_streams])
+        # Recompute LE curve from stream first-points (handles trimming correctly)
+        le_curve = np.vstack([s[0:1] for s in mod_upper_streams])
 
         # ===== SHARED 4-FACE SOLID BUILDER =====
         from waverider_generator.cad_export import _sew_faces_to_solid

@@ -147,6 +147,92 @@ def _sample_cubic_bezier(P0, P1, P2, P3, n_pts):
     return pts
 
 
+def _find_splice_index(stream_pts, tangent_point):
+    """
+    Find the index in stream_pts where the Bezier curve should splice
+    into the original stream.
+
+    The Bezier curve ends at tangent_point. We find the closest original
+    stream point and return the index of the first point AFTER that
+    (so the concatenation doesn't double-back or leave a gap).
+
+    Parameters
+    ----------
+    stream_pts : ndarray (n, 3)
+        Original streamwise points (index 0 = LE).
+    tangent_point : ndarray (3,)
+        The tangent point where the Bezier meets the surface.
+
+    Returns
+    -------
+    splice_idx : int >= 1
+        Index such that stream_pts[splice_idx:] should be appended
+        after the Bezier points.
+    """
+    dists = np.linalg.norm(stream_pts - tangent_point, axis=1)
+    closest_idx = np.argmin(dists)
+
+    # Always skip LE (index 0) since Bezier starts from blunt_tip
+    if closest_idx == 0:
+        closest_idx = 1
+
+    # Check if the tangent point is upstream or downstream of closest_idx.
+    # Use the cumulative arc-length parameter to decide.
+    # If tp is past (downstream of) stream[closest_idx], splice at closest_idx+1
+    # to avoid doubling back.
+    if closest_idx < stream_pts.shape[0] - 1:
+        # Vector from closest to next point
+        seg = stream_pts[closest_idx + 1] - stream_pts[closest_idx]
+        # Vector from closest to tangent_point
+        to_tp = tangent_point - stream_pts[closest_idx]
+        # If tp projects past the midpoint of the segment, use closest_idx+1
+        if np.dot(to_tp, seg) > 0.5 * np.dot(seg, seg):
+            return min(closest_idx + 1, stream_pts.shape[0])
+
+    return closest_idx
+
+
+def _resample_stream(stream, target_n):
+    """
+    Resample a 3D stream to exactly target_n points using arc-length
+    parameterized linear interpolation.
+
+    Parameters
+    ----------
+    stream : ndarray (n, 3)
+        Original stream points.
+    target_n : int
+        Desired number of points.
+
+    Returns
+    -------
+    resampled : ndarray (target_n, 3)
+    """
+    if stream.shape[0] == target_n:
+        return stream.copy()
+    if stream.shape[0] < 2:
+        return np.tile(stream[0], (target_n, 1))
+
+    # Cumulative arc length
+    diffs = np.diff(stream, axis=0)
+    seg_lengths = np.linalg.norm(diffs, axis=1)
+    cum_length = np.concatenate([[0.0], np.cumsum(seg_lengths)])
+    total_length = cum_length[-1]
+
+    if total_length < 1e-15:
+        return np.tile(stream[0], (target_n, 1))
+
+    # Normalized arc-length parameter [0, 1]
+    s = cum_length / total_length
+    s_target = np.linspace(0.0, 1.0, target_n)
+
+    resampled = np.zeros((target_n, 3))
+    for dim in range(3):
+        resampled[:, dim] = np.interp(s_target, s, stream[:, dim])
+
+    return resampled
+
+
 def _compute_bezier_blunt_profile(le_pt, us_pts, ls_pts, local_radius,
                                    n_bezier=10):
     """
@@ -1086,7 +1172,13 @@ def compute_pre_blunted_streams(us_streams, ls_streams, radius, n_bezier=10,
     for i in range(n_streams):
         us = us_streams[i].copy()
         ls = ls_streams[i].copy()
-        le_pt = us[0]
+
+        # Use midpoint when upper/lower LE differ (after min_thickness at j=0)
+        le_gap = np.linalg.norm(us[0] - ls[0])
+        if le_gap > 1e-10:
+            le_pt = (us[0] + ls[0]) / 2.0
+        else:
+            le_pt = us[0]
 
         # Taper near nose tip (stream 0 = symmetry/tip)
         frac = i / max(n_streams - 1, 1)
@@ -1110,16 +1202,25 @@ def compute_pre_blunted_streams(us_streams, ls_streams, radius, n_bezier=10,
             blunted_le.append(le_pt.copy())
             continue
 
-        # Embed Bezier points into streams:
+        # Embed Bezier points into streams with proper splice point.
         # upper_bezier goes blunt_tip → tp_upper (n_bezier points)
-        # Append remaining stream points after the LE (index 1 onward)
-        mod_us = np.vstack([result['upper_bezier'], us[1:]])
-        # lower_bezier goes blunt_tip → tp_lower
-        mod_ls = np.vstack([result['lower_bezier'], ls[1:]])
+        # Find where tp_upper/tp_lower fall on the original streams and
+        # splice there to avoid gaps or kinks.
+        splice_idx_u = _find_splice_index(us, result['tp_upper'])
+        splice_idx_l = _find_splice_index(ls, result['tp_lower'])
+        mod_us = np.vstack([result['upper_bezier'], us[splice_idx_u:]])
+        mod_ls = np.vstack([result['lower_bezier'], ls[splice_idx_l:]])
 
         modified_upper.append(mod_us)
         modified_lower.append(mod_ls)
         blunted_le.append(result['blunt_tip'])
+
+    # Resample all streams to a uniform length so interpPlate gets a
+    # regular grid (blunted stations may differ from non-blunted ones).
+    if modified_upper:
+        target_n = max(s.shape[0] for s in modified_upper)
+        modified_upper = [_resample_stream(s, target_n) for s in modified_upper]
+        modified_lower = [_resample_stream(s, target_n) for s in modified_lower]
 
     return {
         'modified_upper': modified_upper,
@@ -1170,7 +1271,14 @@ def compute_pre_blunted_arrays(upper, lower, radius, n_bezier=10,
     for i in range(n_half):
         us = upper[i, :, :].copy()  # (n_stream, 3)
         ls = lower[i, :, :].copy()
-        le_pt = us[0]
+
+        # Use midpoint of upper/lower LE when they differ (e.g. after
+        # min_thickness enforcement with include_le=True).
+        le_gap = np.linalg.norm(us[0] - ls[0])
+        if le_gap > 1e-10:
+            le_pt = (us[0] + ls[0]) / 2.0
+        else:
+            le_pt = us[0]
 
         # Taper near nose (station 0 = center/nose for half-surface)
         frac = i / max(n_half - 1, 1)
@@ -1194,15 +1302,24 @@ def compute_pre_blunted_arrays(upper, lower, radius, n_bezier=10,
             continue
 
         n_valid += 1
-        # Embed Bezier points into streams
-        mod_us = np.vstack([result['upper_bezier'], us[1:]])
-        mod_ls = np.vstack([result['lower_bezier'], ls[1:]])
+        # Embed Bezier points into streams with proper splice point
+        splice_idx_u = _find_splice_index(us, result['tp_upper'])
+        splice_idx_l = _find_splice_index(ls, result['tp_lower'])
+        mod_us = np.vstack([result['upper_bezier'], us[splice_idx_u:]])
+        mod_ls = np.vstack([result['lower_bezier'], ls[splice_idx_l:]])
         modified_upper.append(mod_us)
         modified_lower.append(mod_ls)
         blunted_le.append(result['blunt_tip'])
 
+    # Resample all streams to a uniform length so interpPlate gets a
+    # regular grid (blunted stations may differ from non-blunted ones).
+    if modified_upper:
+        target_n = max(s.shape[0] for s in modified_upper)
+        modified_upper = [_resample_stream(s, target_n) for s in modified_upper]
+        modified_lower = [_resample_stream(s, target_n) for s in modified_lower]
+
     print(f"[PreBlunted arrays] {n_half} stations, {n_valid} valid Bezier profiles, "
-          f"radius={radius:.6f}")
+          f"radius={radius:.6f}, uniform stream length={target_n if modified_upper else 0}")
 
     return {
         'modified_upper': modified_upper,

@@ -6,7 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _enforce_min_thickness(us_streams, ls_streams, min_thickness):
+def _enforce_min_thickness(us_streams, ls_streams, min_thickness, include_le=False):
     """
     Enforce a minimum thickness between upper and lower surface streams.
 
@@ -22,6 +22,9 @@ def _enforce_min_thickness(us_streams, ls_streams, min_thickness):
         Lower surface streams, each shape (n_pts, 3).
     min_thickness : float
         Minimum allowed thickness in meters (same units as geometry).
+    include_le : bool
+        If True, also enforce thickness at j=0 (leading edge points).
+        Use when the LE will be replaced by Bezier blunting curves.
 
     Returns
     -------
@@ -32,11 +35,10 @@ def _enforce_min_thickness(us_streams, ls_streams, min_thickness):
     ls_out = [s.copy() for s in ls_streams]
 
     n_streams = min(len(us_out), len(ls_out))
+    j_start = 0 if include_le else 1
     for i in range(n_streams):
         n_pts = min(us_out[i].shape[0], ls_out[i].shape[0])
-        # Skip j=0 (leading edge) — LE must remain a shared boundary
-        # between upper and lower surfaces for solid construction
-        for j in range(1, n_pts):
+        for j in range(j_start, n_pts):
             y_upper = us_out[i][j, 1]
             y_lower = ls_out[i][j, 1]
             thickness = y_upper - y_lower  # upper is above lower (more positive Y)
@@ -46,11 +48,11 @@ def _enforce_min_thickness(us_streams, ls_streams, min_thickness):
                 ls_out[i][j, 1] = mid_y - min_thickness / 2.0
 
     print(f"[MinThickness] Enforced min_thickness={min_thickness:.6f}m "
-          f"across {n_streams} stream pairs")
+          f"across {n_streams} stream pairs (include_le={include_le})")
     return us_out, ls_out
 
 
-def enforce_min_thickness_arrays(upper, lower, min_thickness):
+def enforce_min_thickness_arrays(upper, lower, min_thickness, include_le=False):
     """
     Enforce minimum thickness on 3D surface arrays (n_le, n_stream, 3).
 
@@ -63,6 +65,9 @@ def enforce_min_thickness_arrays(upper, lower, min_thickness):
         Upper and lower surface point arrays.
     min_thickness : float
         Minimum allowed thickness in meters.
+    include_le : bool
+        If True, also enforce thickness at j=0 (leading edge points).
+        Use when the LE will be replaced by Bezier blunting curves.
 
     Returns
     -------
@@ -72,10 +77,9 @@ def enforce_min_thickness_arrays(upper, lower, min_thickness):
     upper_out = upper.copy()
     lower_out = lower.copy()
     n_le, n_stream = upper_out.shape[0], upper_out.shape[1]
+    j_start = 0 if include_le else 1
     for i in range(n_le):
-        # Skip j=0 (leading edge) — LE must remain a shared boundary
-        # between upper and lower surfaces for solid construction
-        for j in range(1, n_stream):
+        for j in range(j_start, n_stream):
             y_up = upper_out[i, j, 1]
             y_lo = lower_out[i, j, 1]
             thickness = y_up - y_lo
@@ -84,7 +88,7 @@ def enforce_min_thickness_arrays(upper, lower, min_thickness):
                 upper_out[i, j, 1] = mid_y + min_thickness / 2.0
                 lower_out[i, j, 1] = mid_y - min_thickness / 2.0
     print(f"[MinThickness] Enforced min_thickness={min_thickness:.6f}m "
-          f"on {n_le}x{n_stream} surface arrays")
+          f"on {n_le}x{n_stream} surface arrays (include_le={include_le})")
     return upper_out, lower_out
 
 
