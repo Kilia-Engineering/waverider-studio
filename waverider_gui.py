@@ -4328,6 +4328,42 @@ def main():
         QDoubleSpinBox:focus, QSpinBox:focus {
             border-color: #F59E0B;
         }
+        QDoubleSpinBox::up-button, QSpinBox::up-button {
+            subcontrol-origin: border;
+            subcontrol-position: top right;
+            width: 16px;
+            border-left: 1px solid #78350F;
+            border-bottom: 1px solid #78350F;
+            border-top-right-radius: 3px;
+            background-color: #2A2A2A;
+        }
+        QDoubleSpinBox::down-button, QSpinBox::down-button {
+            subcontrol-origin: border;
+            subcontrol-position: bottom right;
+            width: 16px;
+            border-left: 1px solid #78350F;
+            border-top: 1px solid #78350F;
+            border-bottom-right-radius: 3px;
+            background-color: #2A2A2A;
+        }
+        QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover,
+        QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover {
+            background-color: #78350F;
+        }
+        QDoubleSpinBox::up-arrow, QSpinBox::up-arrow {
+            image: none;
+            width: 0; height: 0;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-bottom: 5px solid #F59E0B;
+        }
+        QDoubleSpinBox::down-arrow, QSpinBox::down-arrow {
+            image: none;
+            width: 0; height: 0;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid #F59E0B;
+        }
 
         QComboBox {
             background-color: #1A1A1A;
