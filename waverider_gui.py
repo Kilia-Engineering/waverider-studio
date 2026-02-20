@@ -127,7 +127,8 @@ def calculate_waverider_volume(waverider_obj):
 try:
     from reference_area_calculator import (
         calculate_planform_area_from_waverider,
-        calculate_wetted_area_from_waverider
+        calculate_wetted_area_from_waverider,
+        calculate_reference_area_from_stl
     )
     AREA_CALC_AVAILABLE = True
 except ImportError:
@@ -1021,6 +1022,140 @@ class WaveriderGUI(QMainWindow):
 
         # Visualize
         self._visualize_imported_geometry()
+
+    def _aero_import_geometry(self):
+        """Import geometry for the Aero Analysis tab (STEP / STL / OBJ)."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Geometry for Analysis",
+            "",
+            "All Supported (*.stl *.step *.stp *.obj);;"
+            "STL files (*.stl);;"
+            "STEP files (*.step *.stp);;"
+            "OBJ files (*.obj);;"
+            "All files (*)",
+        )
+        if not filepath:
+            return
+
+        ext = os.path.splitext(filepath)[1].lower()
+        try:
+            if ext == ".stl":
+                self._import_stl(filepath)
+            elif ext in (".step", ".stp"):
+                self._import_step(filepath)
+            elif ext == ".obj":
+                self._import_obj(filepath)
+            else:
+                QMessageBox.warning(
+                    self, "Unsupported format",
+                    f"File format '{ext}' is not supported.\n"
+                    "Supported formats: STL, STEP, OBJ",
+                )
+                return
+
+            name = os.path.basename(filepath)
+            n_verts = len(self.imported_geometry['vertices'])
+            n_faces = len(self.imported_geometry['faces'])
+
+            if ext == ".stl":
+                # STL can be analyzed directly
+                self.last_stl_file = filepath
+                self.aero_geo_info.setText(
+                    f"STL: {name} | {n_faces:,} triangles, {n_verts:,} vertices"
+                )
+                self.aero_geo_status.setText("STL loaded — ready to analyze")
+                self.aero_geo_status.setStyleSheet("color: #4ADE80;")
+            elif ext in (".step", ".stp"):
+                # STEP must be meshed first
+                self.aero_geo_info.setText(
+                    f"STEP: {name} | {n_faces:,} triangles (tessellation), {n_verts:,} vertices"
+                )
+                self.aero_geo_status.setText("STEP loaded — generate mesh to analyze")
+                self.aero_geo_status.setStyleSheet("color: #F59E0B;")
+            else:
+                self.aero_geo_info.setText(
+                    f"OBJ: {name} | {n_faces:,} triangles, {n_verts:,} vertices"
+                )
+                self.aero_geo_status.setText("OBJ loaded — ready to analyze")
+                self.aero_geo_status.setStyleSheet("color: #4ADE80;")
+                # Write OBJ as temp STL for analysis
+                self._write_temp_stl_from_imported()
+
+            self._update_aero_tab_state()
+
+            # Auto-calculate A_ref if we have an STL
+            if self.last_stl_file and os.path.exists(self.last_stl_file):
+                self._auto_aref_from_mesh()
+
+        except Exception as e:
+            self.aero_geo_info.setText(f"Import failed: {str(e)}")
+            self.aero_geo_info.setStyleSheet("color: #EF4444;")
+            self.aero_geo_status.setText("")
+            QMessageBox.critical(
+                self, "Import Failed",
+                f"Could not import geometry:\n\n{str(e)}",
+            )
+
+    def _write_temp_stl_from_imported(self):
+        """Write the current imported_geometry to a temp STL for analysis."""
+        if self.imported_geometry is None:
+            return
+        import tempfile
+        verts = self.imported_geometry['vertices']
+        faces = self.imported_geometry['faces']
+        temp_stl = tempfile.NamedTemporaryFile(suffix='.stl', delete=False).name
+        with open(temp_stl, 'w') as f:
+            f.write("solid imported\n")
+            for tri in faces:
+                v0, v1, v2 = verts[tri[0]], verts[tri[1]], verts[tri[2]]
+                n = np.cross(v1 - v0, v2 - v0)
+                norm = np.linalg.norm(n)
+                n = n / norm if norm > 1e-10 else np.array([0, 0, 1])
+                f.write(f"  facet normal {n[0]:.6e} {n[1]:.6e} {n[2]:.6e}\n")
+                f.write("    outer loop\n")
+                f.write(f"      vertex {v0[0]:.6e} {v0[1]:.6e} {v0[2]:.6e}\n")
+                f.write(f"      vertex {v1[0]:.6e} {v1[1]:.6e} {v1[2]:.6e}\n")
+                f.write(f"      vertex {v2[0]:.6e} {v2[1]:.6e} {v2[2]:.6e}\n")
+                f.write("    endloop\n  endfacet\n")
+            f.write("endsolid imported\n")
+        self.last_stl_file = temp_stl
+
+    def _auto_aref_from_mesh(self):
+        """Auto-calculate A_ref from the current STL mesh."""
+        if not self.last_stl_file or not os.path.exists(self.last_stl_file):
+            return
+        try:
+            if AREA_CALC_AVAILABLE:
+                area = calculate_reference_area_from_stl(self.last_stl_file)
+                if area and area > 0:
+                    self.aref_spin.setValue(area)
+                    print(f"[Aero] Auto A_ref from mesh: {area:.4f} m²")
+        except Exception as e:
+            print(f"[Aero] Auto A_ref failed: {e}")
+
+    def _update_aero_tab_state(self):
+        """Update button enabled states on the Aero Analysis tab."""
+        has_step = (self.imported_step_path is not None
+                    and os.path.exists(self.imported_step_path))
+        has_stl = (self.last_stl_file is not None
+                   and os.path.exists(self.last_stl_file))
+
+        self.generate_mesh_btn.setEnabled(has_step)
+        self.load_mesh_btn.setEnabled(has_stl)
+        self.run_analysis_btn.setEnabled(has_stl)
+
+        if has_stl:
+            self.mesh_gen_info.setText("Ready to generate mesh" if has_step else "STL loaded directly")
+            self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
+        elif has_step:
+            self.mesh_gen_info.setText("STEP loaded — click Generate to create mesh")
+            self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
+
+        # Enable sweep button if sweep is checked and STL exists
+        if hasattr(self, 'enable_sweep_check') and hasattr(self, 'run_sweep_btn'):
+            if self.enable_sweep_check.isChecked() and has_stl:
+                self.run_sweep_btn.setEnabled(True)
 
     def _visualize_imported_geometry(self):
         """Plot the imported geometry in the 3D canvas."""
@@ -2040,6 +2175,30 @@ class WaveriderGUI(QMainWindow):
             warning_label.setStyleSheet("QLabel { background-color: #1A1A1A; color: #EF4444; padding: 10px; border: 1px solid #78350F; }")
             layout.addWidget(warning_label)
 
+        # Geometry Source Group
+        geo_group = QGroupBox("Geometry Source")
+        geo_layout = QGridLayout()
+
+        self.aero_import_btn = QPushButton("Import Geometry (STEP / STL / OBJ)")
+        self.aero_import_btn.setStyleSheet(
+            "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
+            "font-weight: bold; padding: 10px; } QPushButton:hover { background-color: #D97706; }"
+        )
+        self.aero_import_btn.clicked.connect(self._aero_import_geometry)
+        geo_layout.addWidget(self.aero_import_btn, 0, 0, 1, 2)
+
+        self.aero_geo_info = QLabel("No geometry loaded")
+        self.aero_geo_info.setStyleSheet("color: #888888; font-style: italic;")
+        self.aero_geo_info.setWordWrap(True)
+        geo_layout.addWidget(self.aero_geo_info, 1, 0, 1, 2)
+
+        self.aero_geo_status = QLabel("")
+        self.aero_geo_status.setStyleSheet("color: #888888;")
+        geo_layout.addWidget(self.aero_geo_status, 2, 0, 1, 2)
+
+        geo_group.setLayout(geo_layout)
+        layout.addWidget(geo_group)
+
         # Analysis parameters
         params_group = QGroupBox("Analysis Parameters")
         params_layout = QGridLayout()
@@ -2339,9 +2498,9 @@ class WaveriderGUI(QMainWindow):
         )
         self.results_text.setText("No analysis results yet.\n\n"
                                   "Steps:\n"
-                                  "1. Generate a waverider\n"
-                                  "2. Export to CAD (creates STL)\n"
-                                  "3. Set analysis parameters\n"
+                                  "1. Import a STEP or STL file\n"
+                                  "2. If STEP: Generate mesh with Gmsh\n"
+                                  "3. Set analysis parameters (Mach, AoA, etc.)\n"
                                   "4. Click 'Run PySAGAS Analysis'")
         results_layout.addWidget(self.results_text)
 
@@ -2663,11 +2822,22 @@ class WaveriderGUI(QMainWindow):
     # ========== AERO ANALYSIS METHODS ==========
 
     def auto_set_aref(self):
-        """Automatically calculate accurate A_ref from waverider geometry"""
+        """Automatically calculate accurate A_ref from waverider geometry or STL mesh"""
+        # Try mesh-based calculation first (works with imported geometry)
+        if self.last_stl_file and os.path.exists(self.last_stl_file):
+            self._auto_aref_from_mesh()
+            if self.aref_spin.value() > 0.1:
+                QMessageBox.information(
+                    self, "A_ref Calculated",
+                    f"A_ref = {self.aref_spin.value():.4f} m² (from STL mesh)"
+                )
+                return
+
         if self.waverider is None:
             QMessageBox.warning(
-                self, "No waverider",
-                "Generate a waverider first to calculate accurate reference area."
+                self, "No geometry",
+                "Import geometry or generate a waverider first\n"
+                "to calculate accurate reference area."
             )
             return
         
@@ -2837,10 +3007,8 @@ class WaveriderGUI(QMainWindow):
             # Update plots
             self.update_all_views()
 
-            # Enable mesh generation and analysis buttons
-            self.generate_mesh_btn.setEnabled(True)
-            self.mesh_gen_info.setText("✓ Ready to generate mesh")
-            self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
+            # Mesh generation and analysis now controlled by import state
+            # (use Aero tab "Import Geometry" button)
 
             # Enable blunting preview if blunting is checked
             if self.blunting_check.isChecked():
@@ -3058,14 +3226,14 @@ class WaveriderGUI(QMainWindow):
         self.mesh_max_spin.setValue(max_size)
     
     def generate_stl_mesh(self):
-        """Generate high-quality STL mesh using Gmsh"""
-        if self.waverider is None:
+        """Generate high-quality STL mesh using Gmsh from imported STEP file"""
+        if self.imported_step_path is None or not os.path.exists(self.imported_step_path):
             QMessageBox.warning(
-                self, "No waverider",
-                "Generate a waverider first before creating mesh."
+                self, "No STEP file",
+                "Import a STEP file first before generating mesh."
             )
             return
-        
+
         try:
             # Check if gmsh is available
             try:
@@ -3084,7 +3252,7 @@ class WaveriderGUI(QMainWindow):
                     # Fallback to CadQuery
                     self.generate_stl_mesh_cadquery()
                     return
-            
+
             # Get mesh parameters
             min_size = self.mesh_min_spin.value()
             max_size = self.mesh_max_spin.value()
@@ -3093,30 +3261,16 @@ class WaveriderGUI(QMainWindow):
             self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
             QApplication.processEvents()
 
+            step_path = self.imported_step_path
+
             print(f"\n{'='*60}")
             print(f"Gmsh Mesh Generation")
             print(f"{'='*60}")
+            print(f"STEP file: {step_path}")
             print(f"Min element size:  {min_size:.5f} m")
             print(f"Max element size:  {max_size:.5f} m")
             sys.stdout.flush()
 
-            # First, export STEP file temporarily
-            import tempfile
-            import cadquery as cq
-
-            temp_step = tempfile.NamedTemporaryFile(suffix='.step', delete=False).name
-
-            print("Exporting STEP geometry...")
-            sys.stdout.flush()
-
-            to_CAD(
-                waverider=self.waverider,
-                sides="both",
-                export=True,
-                filename=temp_step,
-                scale=1.0
-            )
-            
             # Initialize Gmsh
             gmsh.initialize()
             gmsh.option.setNumber("General.Terminal", 1)
@@ -3143,16 +3297,25 @@ class WaveriderGUI(QMainWindow):
             sys.stdout.flush()
 
             # Load STEP file
-            gmsh.model.occ.importShapes(temp_step)
+            gmsh.model.occ.importShapes(step_path)
             gmsh.model.occ.synchronize()
 
             # Remove duplicate entities introduced by STEP import, then resync
             gmsh.model.occ.removeAllDuplicates()
             gmsh.model.occ.synchronize()
 
-            # Set mesh parameters
-            gmsh.option.setNumber("Mesh.CharacteristicLengthMin", min_size)
-            gmsh.option.setNumber("Mesh.CharacteristicLengthMax", max_size)
+            # Detect if STEP is in mm (max extent > 100 likely means mm)
+            bb = gmsh.model.getBoundingBox(-1, -1)
+            max_extent = max(bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2])
+            step_scale = 1.0
+            if max_extent > 100:
+                step_scale = 0.001
+                print(f"[Gmsh] Geometry extent {max_extent:.1f} — likely mm, will scale output to meters")
+                sys.stdout.flush()
+
+            # Set mesh parameters (in geometry units)
+            gmsh.option.setNumber("Mesh.CharacteristicLengthMin", min_size / step_scale if step_scale < 1 else min_size)
+            gmsh.option.setNumber("Mesh.CharacteristicLengthMax", max_size / step_scale if step_scale < 1 else max_size)
             gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay (usually best)
             gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
             
@@ -3207,7 +3370,6 @@ class WaveriderGUI(QMainWindow):
                 except Exception:
                     pass
                 gmsh.finalize()
-                os.unlink(temp_step)
                 self.mesh_gen_info.setText("Mesh generation cancelled")
                 self.mesh_gen_info.setStyleSheet("color: #888888; font-style: italic;")
                 return
@@ -3224,10 +3386,19 @@ class WaveriderGUI(QMainWindow):
                 pass
 
             gmsh.finalize()
-            
-            # Clean up temp file
-            os.unlink(temp_step)
-            
+
+            # If geometry was in mm, scale STL vertices to meters
+            if step_scale < 1:
+                try:
+                    from stl import mesh as stl_mesh
+                    m = stl_mesh.Mesh.from_file(stl_filename)
+                    m.vectors *= step_scale
+                    m.save(stl_filename)
+                    print(f"[Gmsh] Scaled STL output by {step_scale} (mm → m)")
+                    sys.stdout.flush()
+                except Exception as scale_err:
+                    print(f"[Gmsh] Warning: could not scale STL: {scale_err}")
+
             # Store STL file path
             self.last_stl_file = stl_filename
             
@@ -3244,18 +3415,14 @@ class WaveriderGUI(QMainWindow):
             )
             self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
             
-            # Enable buttons
-            self.load_mesh_btn.setEnabled(True)
-            self.run_analysis_btn.setEnabled(True)
-            
-            # Enable sweep button if sweep checkbox is enabled
-            if hasattr(self, 'enable_sweep_check') and hasattr(self, 'run_sweep_btn'):
-                if self.enable_sweep_check.isChecked():
-                    self.run_sweep_btn.setEnabled(True)
-                    # Update the info label
-                    if hasattr(self, 'update_sweep_info'):
-                        self.update_sweep_info()
-            
+            # Update button states and auto A_ref
+            self._update_aero_tab_state()
+            self._auto_aref_from_mesh()
+
+            # Update geometry status
+            self.aero_geo_status.setText("Mesh generated — ready to analyze")
+            self.aero_geo_status.setStyleSheet("color: #4ADE80;")
+
             # Show success message
             QMessageBox.information(
                 self, "Mesh Generated",
@@ -3277,12 +3444,6 @@ class WaveriderGUI(QMainWindow):
                 gmsh.finalize()
             except Exception:
                 pass
-            try:
-                if 'temp_step' in locals() and os.path.exists(temp_step):
-                    os.unlink(temp_step)
-            except Exception:
-                pass
-
             self.mesh_gen_info.setText(f"✗ Mesh generation failed")
             self.mesh_gen_info.setStyleSheet("color: #EF4444;")
             QMessageBox.critical(
@@ -3296,17 +3457,15 @@ class WaveriderGUI(QMainWindow):
         """Fallback: Generate STL using CadQuery (lower quality)"""
         try:
             import cadquery as cq
-            
+
+            if self.imported_step_path is None or not os.path.exists(self.imported_step_path):
+                QMessageBox.warning(self, "No STEP", "Import a STEP file first.")
+                return
+
             self.mesh_gen_info.setText("Generating mesh with CadQuery...")
             QApplication.processEvents()
-            
-            waverider_cad = to_CAD(
-                waverider=self.waverider,
-                sides="both",
-                export=False,
-                filename="",
-                scale=1.0
-            )
+
+            waverider_cad = cq.importers.importStep(self.imported_step_path)
             
             # Ask for filename
             stl_filename, _ = QFileDialog.getSaveFileName(
@@ -3339,16 +3498,9 @@ class WaveriderGUI(QMainWindow):
             )
             self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
             
-            self.load_mesh_btn.setEnabled(True)
-            self.run_analysis_btn.setEnabled(True)
-            
-            # Enable sweep button if sweep checkbox is enabled
-            if hasattr(self, 'enable_sweep_check') and hasattr(self, 'run_sweep_btn'):
-                if self.enable_sweep_check.isChecked():
-                    self.run_sweep_btn.setEnabled(True)
-                    if hasattr(self, 'update_sweep_info'):
-                        self.update_sweep_info()
-            
+            self._update_aero_tab_state()
+            self._auto_aref_from_mesh()
+
             QMessageBox.warning(
                 self, "Lower Quality Mesh",
                 f"Mesh generated with CadQuery (not Gmsh).\n\n"
@@ -3457,23 +3609,15 @@ class WaveriderGUI(QMainWindow):
             )
             return
 
-        if self.waverider is None:
-            QMessageBox.warning(
-                self, "No waverider",
-                "Generate a waverider first."
-            )
-            return
-
         # Check if we have an STL file
         if self.last_stl_file is None or not os.path.exists(self.last_stl_file):
             QMessageBox.warning(
                 self, "No STL file",
                 "No STL mesh found.\n\n"
-                "Please generate the STL mesh first:\n"
-                "1. Set mesh parameters (min/max element size)\n"
-                "2. Click 'Generate STL Mesh with Gmsh'\n"
-                "3. Review the mesh quality\n"
-                "4. Then run analysis"
+                "Import geometry first:\n"
+                "1. Click 'Import Geometry' (STEP or STL)\n"
+                "2. If STEP: Generate mesh with Gmsh\n"
+                "3. Then run analysis"
             )
             return
 

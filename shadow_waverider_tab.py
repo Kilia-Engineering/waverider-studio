@@ -37,12 +37,6 @@ except ImportError:
     CADQUERY_AVAILABLE = False
 
 try:
-    import gmsh
-    GMSH_AVAILABLE = True
-except ImportError:
-    GMSH_AVAILABLE = False
-
-try:
     from pysagas.cfd import OPM
     from pysagas.flow import FlowState
     from pysagas.geometry.parsers import MeshIO
@@ -56,43 +50,6 @@ try:
 except ImportError:
     PANDAS_AVAILABLE = False
 
-
-class AnalysisWorker(QThread):
-    """Worker thread for PySAGAS analysis"""
-    progress = pyqtSignal(str)
-    finished = pyqtSignal(dict)
-    error = pyqtSignal(str)
-    
-    def __init__(self, stl_file, mach, aoa, pressure, temperature, A_ref):
-        super().__init__()
-        self.stl_file = stl_file
-        self.mach = mach
-        self.aoa = aoa
-        self.pressure = pressure
-        self.temperature = temperature
-        self.A_ref = A_ref
-        
-    def run(self):
-        try:
-            self.progress.emit("Loading mesh...")
-            cells = MeshIO.load_from_file(self.stl_file)
-            
-            self.progress.emit("Setting up flow...")
-            flow = FlowState(mach=self.mach, pressure=self.pressure,
-                           temperature=self.temperature, aoa=np.radians(self.aoa))
-            
-            self.progress.emit("Running OPM...")
-            solver = OPM(cells=cells, freestream=flow, verbosity=0)
-            solver.solve()
-            
-            CL, CD, Cm = solver.flow_result.coefficients()
-            LD = CL / CD if CD != 0 else float('inf')
-            
-            self.finished.emit({'CL': float(CL), 'CD': float(CD), 
-                              'Cm': float(Cm), 'L/D': float(LD)})
-        except Exception as e:
-            import traceback
-            self.error.emit(f"{str(e)}\n\n{traceback.format_exc()}")
 
 
 class DesignSpaceWorker(QThread):
@@ -403,7 +360,6 @@ class ShadowWaveriderTab(QWidget):
         self.waverider = None
         self.last_stl_file = None
         self.design_space_results = None
-        self.analysis_worker = None
         self.design_worker = None
         self.init_ui()
         
@@ -424,7 +380,6 @@ class ShadowWaveriderTab(QWidget):
         left_layout.addWidget(self._create_min_thickness_group())
         left_layout.addWidget(self._create_generate_group())
         left_layout.addWidget(self._create_export_group())
-        left_layout.addWidget(self._create_analysis_group())
         left_layout.addStretch()
 
         left_scroll.setWidget(left_panel)
@@ -827,64 +782,14 @@ class ShadowWaveriderTab(QWidget):
     def _create_export_group(self):
         group = QGroupBox("Export")
         layout = QGridLayout()
-        
+
         stl_btn = QPushButton("STL"); stl_btn.clicked.connect(self.export_stl)
         tri_btn = QPushButton("TRI"); tri_btn.clicked.connect(self.export_tri)
         step_btn = QPushButton("STEP"); step_btn.clicked.connect(self.export_step)
         step_btn.setEnabled(CADQUERY_AVAILABLE)
-        gmsh_btn = QPushButton("Gmsh"); gmsh_btn.clicked.connect(self.gmsh_mesh)
-        gmsh_btn.setEnabled(GMSH_AVAILABLE)
-        
+
         layout.addWidget(stl_btn, 0, 0); layout.addWidget(tri_btn, 0, 1)
-        layout.addWidget(step_btn, 1, 0); layout.addWidget(gmsh_btn, 1, 1)
-        
-        layout.addWidget(QLabel("Gmsh min [m]:"), 2, 0)
-        self.gmsh_min = QDoubleSpinBox()
-        self.gmsh_min.setRange(0.00001, 10.0); self.gmsh_min.setValue(0.005); self.gmsh_min.setDecimals(5)
-        layout.addWidget(self.gmsh_min, 2, 1)
-
-        layout.addWidget(QLabel("Gmsh max [m]:"), 3, 0)
-        self.gmsh_max = QDoubleSpinBox()
-        self.gmsh_max.setRange(0.0001, 100.0); self.gmsh_max.setValue(0.05); self.gmsh_max.setDecimals(5)
-        layout.addWidget(self.gmsh_max, 3, 1)
-        
-        group.setLayout(layout)
-        return group
-    
-    def _create_analysis_group(self):
-        group = QGroupBox("PySAGAS Analysis")
-        layout = QGridLayout()
-
-        if not PYSAGAS_AVAILABLE:
-            layout.addWidget(QLabel("PySAGAS not available"), 0, 0, 1, 2)
-
-        layout.addWidget(QLabel("AoA:"), 1, 0)
-        self.aoa_spin = QDoubleSpinBox()
-        self.aoa_spin.setRange(-20, 20); self.aoa_spin.setValue(0)
-        layout.addWidget(self.aoa_spin, 1, 1)
-
-        layout.addWidget(QLabel("P (Pa):"), 2, 0)
-        self.p_spin = QDoubleSpinBox()
-        self.p_spin.setRange(100, 1e7); self.p_spin.setValue(101325); self.p_spin.setDecimals(0)
-        layout.addWidget(self.p_spin, 2, 1)
-
-        layout.addWidget(QLabel("T (K):"), 3, 0)
-        self.t_spin = QDoubleSpinBox()
-        self.t_spin.setRange(100, 500); self.t_spin.setValue(288.15)
-        layout.addWidget(self.t_spin, 3, 1)
-
-        self.analyze_btn = QPushButton("Analyze")
-        self.analyze_btn.clicked.connect(self.run_analysis)
-        self.analyze_btn.setEnabled(PYSAGAS_AVAILABLE)
-        layout.addWidget(self.analyze_btn, 4, 0, 1, 2)
-
-        self.analysis_progress = QProgressBar()
-        self.analysis_progress.setVisible(False)
-        layout.addWidget(self.analysis_progress, 5, 0, 1, 2)
-
-        self.analysis_status = QLabel("")
-        self.analysis_status.setStyleSheet("color: #888888; font-style: italic;")
-        layout.addWidget(self.analysis_status, 6, 0, 1, 2)
+        layout.addWidget(step_btn, 1, 0, 1, 2)
 
         group.setLayout(layout)
         return group
@@ -925,14 +830,30 @@ class ShadowWaveriderTab(QWidget):
         else:
             self.ds_include_aero.setToolTip("Run PySAGAS for each design (slower but gives L/D)")
         gl.addWidget(self.ds_include_aero, 3, 0, 1, 3)
-        
+
         # Color-by selector
         gl.addWidget(QLabel("Color by:"), 3, 3)
         self.ds_color_combo = QComboBox()
         self.ds_color_combo.addItems(["volume", "planform_area", "L/D", "CL", "CD"])
         self.ds_color_combo.currentTextChanged.connect(self.update_ds_plot)
         gl.addWidget(self.ds_color_combo, 3, 4)
-        
+
+        # Aero flow conditions (used when Include Aero is checked)
+        aero_row = QHBoxLayout()
+        aero_row.addWidget(QLabel("AoA:"))
+        self.aoa_spin = QDoubleSpinBox()
+        self.aoa_spin.setRange(-20, 20); self.aoa_spin.setValue(0)
+        aero_row.addWidget(self.aoa_spin)
+        aero_row.addWidget(QLabel("P (Pa):"))
+        self.p_spin = QDoubleSpinBox()
+        self.p_spin.setRange(100, 1e7); self.p_spin.setValue(101325); self.p_spin.setDecimals(0)
+        aero_row.addWidget(self.p_spin)
+        aero_row.addWidget(QLabel("T (K):"))
+        self.t_spin = QDoubleSpinBox()
+        self.t_spin.setRange(100, 500); self.t_spin.setValue(288.15)
+        aero_row.addWidget(self.t_spin)
+        gl.addLayout(aero_row, 4, 0, 1, 5)
+
         btn_layout = QHBoxLayout()
         self.run_ds_btn = QPushButton("▶ Run")
         self.run_ds_btn.clicked.connect(self.run_design_space)
@@ -940,7 +861,7 @@ class ShadowWaveriderTab(QWidget):
         self.cancel_ds_btn.clicked.connect(self.cancel_ds)
         self.cancel_ds_btn.setEnabled(False)
         btn_layout.addWidget(self.run_ds_btn); btn_layout.addWidget(self.cancel_ds_btn)
-        gl.addLayout(btn_layout, 4, 0, 1, 5)
+        gl.addLayout(btn_layout, 5, 0, 1, 5)
         
         group.setLayout(gl)
         layout.addWidget(group)
@@ -1433,136 +1354,6 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         # Fallback: export as compound of faces
         compound = cq.Compound.makeCompound(faces)
         cq.exporters.export(compound, filename)
-    
-    def gmsh_mesh(self):
-        if self.waverider is None:
-            QMessageBox.warning(self, "Warning", "Generate waverider first!")
-            return
-        if not GMSH_AVAILABLE:
-            QMessageBox.warning(self, "Warning", "Gmsh not installed")
-            return
-
-        # Export STL in meters (SI units)
-        temp_stl = tempfile.mktemp(suffix='.stl')
-        self.waverider.export_stl(temp_stl)
-
-        fn, _ = QFileDialog.getSaveFileName(self, "Save Mesh", "shadow_waverider_gmsh.stl", "STL (*.stl);;MSH (*.msh)")
-        if fn:
-            try:
-                gmsh.initialize()
-                gmsh.option.setNumber("General.Terminal", 0)
-                gmsh.merge(temp_stl)
-                gmsh.option.setNumber("Mesh.MeshSizeMin", self.gmsh_min.value())
-                gmsh.option.setNumber("Mesh.MeshSizeMax", self.gmsh_max.value())
-                gmsh.model.mesh.generate(2)
-
-                # Get mesh statistics
-                num_nodes = len(gmsh.model.mesh.getNodes()[0])
-                num_triangles = len(gmsh.model.mesh.getElementsByType(2)[0])
-
-                gmsh.write(fn)
-                gmsh.finalize()
-                os.unlink(temp_stl)
-
-                file_size_kb = os.path.getsize(fn) / 1024
-                self.last_stl_file = fn
-
-                QMessageBox.information(
-                    self, "Mesh Generated",
-                    f"Mesh generated successfully!\n\n"
-                    f"Triangles: {num_triangles}\n"
-                    f"Nodes: {num_nodes}\n"
-                    f"File size: {file_size_kb:.1f} KB\n"
-                    f"Saved to: {fn}\n\n"
-                    f"You can now run PySAGAS analysis."
-                )
-            except Exception as e:
-                gmsh.finalize()
-                QMessageBox.critical(self, "Error", str(e))
-    
-    # === Analysis ===
-    def run_analysis(self):
-        if self.waverider is None:
-            QMessageBox.warning(self, "Warning", "Generate waverider first!")
-            return
-        if not PYSAGAS_AVAILABLE: return
-
-        temp_stl = tempfile.mktemp(suffix='.stl')
-        scale = self.scale_spin.value()
-        verts, tris = self.waverider.get_mesh()
-        verts = verts * scale
-
-        with open(temp_stl, 'w') as f:
-            f.write("solid waverider\n")
-            for tri in tris:
-                v0, v1, v2 = verts[tri[0]], verts[tri[1]], verts[tri[2]]
-                n = np.cross(v1-v0, v2-v0); n = n/np.linalg.norm(n) if np.linalg.norm(n) > 1e-10 else [0,0,1]
-                f.write(f"  facet normal {n[0]:.6e} {n[1]:.6e} {n[2]:.6e}\n    outer loop\n")
-                f.write(f"      vertex {v0[0]:.6e} {v0[1]:.6e} {v0[2]:.6e}\n")
-                f.write(f"      vertex {v1[0]:.6e} {v1[1]:.6e} {v1[2]:.6e}\n")
-                f.write(f"      vertex {v2[0]:.6e} {v2[1]:.6e} {v2[2]:.6e}\n    endloop\n  endfacet\n")
-            f.write("endsolid waverider\n")
-
-        # Show progress bar and disable button
-        self.analyze_btn.setEnabled(False)
-        self.analysis_progress.setVisible(True)
-        self.analysis_progress.setRange(0, 0)  # Indeterminate
-        self.analysis_status.setText("Starting analysis...")
-        self.analysis_status.setStyleSheet("color: #F59E0B;")
-
-        refs = self.waverider.get_reference_values(scale=scale)
-        self.analysis_worker = AnalysisWorker(temp_stl, self.mach_spin.value(), self.aoa_spin.value(),
-            self.p_spin.value(), self.t_spin.value(), refs['area'])
-        self.analysis_worker.progress.connect(self._on_analysis_progress)
-        self.analysis_worker.finished.connect(self.on_analysis_done)
-        self.analysis_worker.error.connect(self._on_analysis_error)
-        self.analysis_worker.start()
-
-    def _on_analysis_progress(self, message):
-        self.analysis_status.setText(message)
-        self.info_label.setText(message)
-
-    def _on_analysis_error(self, error_msg):
-        self.analysis_progress.setVisible(False)
-        self.analyze_btn.setEnabled(True)
-        self.analysis_status.setText("Analysis failed")
-        self.analysis_status.setStyleSheet("color: #EF4444;")
-        QMessageBox.critical(self, "Error", error_msg)
-    
-    def on_analysis_done(self, r):
-        # Hide progress bar, re-enable button
-        self.analysis_progress.setVisible(False)
-        self.analyze_btn.setEnabled(True)
-        self.analysis_status.setText("Analysis complete")
-        self.analysis_status.setStyleSheet("color: #4ADE80;")
-
-        result_text = "\n" + "="*60 + "\n"
-        result_text += "AERODYNAMIC ANALYSIS RESULTS\n"
-        result_text += "="*60 + "\n\n"
-        result_text += f"Conditions:\n"
-        result_text += f"  Mach number:     {self.mach_spin.value():.2f}\n"
-        result_text += f"  Angle of attack: {self.aoa_spin.value():.2f}\n"
-        result_text += f"  Pressure:        {self.p_spin.value():.0f} Pa\n"
-        result_text += f"  Temperature:     {self.t_spin.value():.2f} K\n\n"
-        result_text += f"Coefficients:\n"
-        result_text += f"  CL (Lift):   {r['CL']:.6f}\n"
-        result_text += f"  CD (Drag):   {r['CD']:.6f}\n"
-        result_text += f"  Cm (Moment): {r['Cm']:.6f}\n"
-        result_text += f"  L/D Ratio:   {r['L/D']:.3f}\n\n"
-        result_text += "="*60 + "\n"
-
-        txt = self.results_text.toPlainText()
-        self.results_text.setText(txt + result_text)
-        self.info_label.setText(f"L/D = {r['L/D']:.3f}")
-
-        QMessageBox.information(
-            self, "Analysis Complete",
-            f"Analysis finished successfully!\n\n"
-            f"CL = {r['CL']:.6f}\n"
-            f"CD = {r['CD']:.6f}\n"
-            f"Cm = {r['Cm']:.6f}\n"
-            f"L/D = {r['L/D']:.3f}"
-        )
     
     # === Design Space ===
     def run_design_space(self):
