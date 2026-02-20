@@ -1191,7 +1191,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         n_stream = upper_surf.shape[1]
         center_idx = n_le // 2
 
-        # Get right half (positive Z side) — stay in SI meters for blunting
+        # Get right half (positive Z side) — stay in SI meters for all CAD ops
         upper_half = upper_surf[center_idx:, :, :]
         lower_half = lower_surf[center_idx:, :, :]
 
@@ -1232,15 +1232,6 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             mod_upper_streams = [upper_half[i, :, :] for i in range(n_half)]
             mod_lower_streams = [lower_half[i, :, :] for i in range(n_half)]
             n_half_actual = n_half
-
-        # Now scale everything from SI meters to mm for STEP export
-        le_curve = le_curve * scale
-        mod_upper_streams = [s * scale for s in mod_upper_streams]
-        mod_lower_streams = [s * scale for s in mod_lower_streams]
-        centerline_upper = centerline_upper * scale
-        centerline_lower = centerline_lower * scale
-        te_upper = te_upper * scale
-        te_lower = te_lower * scale
 
         # ===== SHARED 4-FACE SOLID BUILDER =====
         from waverider_generator.cad_export import _sew_faces_to_solid
@@ -1314,15 +1305,18 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             sym_edges.append(e6)
         sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
 
-        # Assemble 4-face solid via sewing
+        # Assemble 4-face solid via sewing (still in SI meters)
         right_side = _sew_faces_to_solid([
             upper_surface.val(), lower_surface.val(), back, sym_face])
 
+        # Scale from SI meters to mm for STEP export
+        right_side = right_side.scale(scale)
+
         # Apply post-solid fillet only for legacy (non-pre-blunted) methods
         if not use_pre_blunted and blunting_radius > 0:
-            print(f"[Cone-derived STEP] Post-fillet blunting_radius={blunting_radius}, scale={scale}")
+            print(f"[Cone-derived STEP] Post-fillet blunting_radius={blunting_radius * scale}mm")
             from waverider_generator.cad_export import _apply_le_fillet
-            le_pts = le_curve
+            le_pts = le_curve * scale
             right_side = _apply_le_fillet(
                 right_side, blunting_radius * scale, le_pts, nose_cap=True)
 
