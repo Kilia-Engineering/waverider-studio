@@ -6,6 +6,7 @@ Allows real-time parameter adjustment and 3D visualization
 
 import sys
 import os
+import shutil
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -478,12 +479,13 @@ class AnalysisWorker(QThread):
     error = pyqtSignal(str)  # Emits error message
     progress = pyqtSignal(str)  # Emits progress updates
     
-    def __init__(self, stl_file, freestream_dict, aoa, A_ref):
+    def __init__(self, stl_file, freestream_dict, aoa, A_ref, vtk_path=None):
         super().__init__()
         self.stl_file = stl_file
         self.freestream_dict = freestream_dict
         self.aoa = aoa
         self.A_ref = A_ref
+        self.vtk_path = vtk_path
         
     def run(self):
         import io
@@ -551,8 +553,9 @@ class AnalysisWorker(QThread):
             sys.stdout.flush()
             
             try:
-                solver.save("waverider")
-                print("✓ VTK file saved: waverider.vtu")
+                vtk_name = self.vtk_path if self.vtk_path else "waverider"
+                solver.save(vtk_name)
+                print(f"✓ VTK file saved: {vtk_name}.vtu")
             except Exception as e:
                 print(f"⚠️  Could not save VTK: {e}")
             
@@ -2246,14 +2249,22 @@ class WaveriderGUI(QMainWindow):
         return tab
 
     def create_analysis_tab(self):
-        """Create the PySAGAS analysis tab"""
+        """Create the PySAGAS analysis tab with left/right split layout"""
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        outer_layout = QVBoxLayout(tab)
 
         if not PYSAGAS_AVAILABLE:
             warning_label = QLabel("⚠️ PySAGAS not available. Install with: pip install pysagas")
             warning_label.setStyleSheet("QLabel { background-color: #1A1A1A; color: #EF4444; padding: 10px; border: 1px solid #78350F; }")
-            layout.addWidget(warning_label)
+            outer_layout.addWidget(warning_label)
+
+        # ============ LEFT/RIGHT SPLITTER ============
+        splitter = QSplitter(Qt.Horizontal)
+
+        # --- LEFT PANEL (controls, scrollable) ---
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 4, 0)
 
         # Geometry Source Group
         geo_group = QGroupBox("Geometry Source")
@@ -2262,7 +2273,7 @@ class WaveriderGUI(QMainWindow):
         self.aero_import_btn = QPushButton("Import Geometry (STEP / STL / OBJ)")
         self.aero_import_btn.setStyleSheet(
             "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
-            "font-weight: bold; padding: 10px; } QPushButton:hover { background-color: #D97706; }"
+            "font-weight: bold; padding: 8px; } QPushButton:hover { background-color: #D97706; }"
         )
         self.aero_import_btn.clicked.connect(self._aero_import_geometry)
         geo_layout.addWidget(self.aero_import_btn, 0, 0, 1, 2)
@@ -2277,13 +2288,12 @@ class WaveriderGUI(QMainWindow):
         geo_layout.addWidget(self.aero_geo_status, 2, 0, 1, 2)
 
         geo_group.setLayout(geo_layout)
-        layout.addWidget(geo_group)
+        left_layout.addWidget(geo_group)
 
         # Analysis parameters
         params_group = QGroupBox("Analysis Parameters")
         params_layout = QGridLayout()
 
-        # Mach number for analysis
         params_layout.addWidget(QLabel("Mach Number M∞:"), 0, 0)
         self.analysis_mach_spin = QDoubleSpinBox()
         self.analysis_mach_spin.setRange(0.1, 25.0)
@@ -2293,7 +2303,6 @@ class WaveriderGUI(QMainWindow):
         self.analysis_mach_spin.setToolTip("Freestream Mach number for aerodynamic analysis")
         params_layout.addWidget(self.analysis_mach_spin, 0, 1)
 
-        # Angle of attack
         params_layout.addWidget(QLabel("Angle of Attack α (deg):"), 1, 0)
         self.aoa_spin = QDoubleSpinBox()
         self.aoa_spin.setRange(-20.0, 20.0)
@@ -2303,171 +2312,125 @@ class WaveriderGUI(QMainWindow):
         self.aoa_spin.setToolTip("Angle of attack for aerodynamic analysis")
         params_layout.addWidget(self.aoa_spin, 1, 1)
 
-        # Reference area
         params_layout.addWidget(QLabel("Reference Area A_ref (m²):"), 2, 0)
         self.aref_spin = QDoubleSpinBox()
         self.aref_spin.setRange(0.0001, 1000.0)
-        self.aref_spin.setValue(21.6)  # More realistic default for baseline
+        self.aref_spin.setValue(21.6)
         self.aref_spin.setSingleStep(0.1)
         self.aref_spin.setDecimals(4)
         self.aref_spin.setToolTip(
             "Reference area for coefficient normalization.\n"
-            "Use 'Calculate Accurate A_ref' for precise value!\n"
-            "Simple w×h is very inaccurate (~400% error)."
+            "Use 'Calculate Accurate A_ref' for precise value!"
         )
         params_layout.addWidget(self.aref_spin, 2, 1)
 
-        # Auto-update A_ref button
-        auto_aref_btn = QPushButton("🎯 Calculate Accurate A_ref")
+        auto_aref_btn = QPushButton("Calculate A_ref")
         auto_aref_btn.clicked.connect(self.auto_set_aref)
-        auto_aref_btn.setToolTip(
-            "Calculate accurate planform area from waverider geometry.\n"
-            "Much more accurate than simple width × height!\n"
-            "Requires waverider to be generated first."
-        )
+        auto_aref_btn.setToolTip("Calculate accurate planform area from imported geometry.")
         params_layout.addWidget(auto_aref_btn, 2, 2)
 
-        # Freestream pressure
         params_layout.addWidget(QLabel("Pressure P∞ (Pa):"), 3, 0)
         self.pressure_spin = QDoubleSpinBox()
         self.pressure_spin.setRange(100, 1e7)
-        self.pressure_spin.setValue(101325)  # Sea level
+        self.pressure_spin.setValue(101325)
         self.pressure_spin.setSingleStep(1000)
         self.pressure_spin.setDecimals(0)
         self.pressure_spin.setToolTip("Freestream static pressure")
         params_layout.addWidget(self.pressure_spin, 3, 1)
 
-        # Freestream temperature
         params_layout.addWidget(QLabel("Temperature T∞ (K):"), 4, 0)
         self.temperature_spin = QDoubleSpinBox()
         self.temperature_spin.setRange(100, 400)
-        self.temperature_spin.setValue(288.15)  # Sea level ISA
+        self.temperature_spin.setValue(288.15)
         self.temperature_spin.setSingleStep(1)
         self.temperature_spin.setDecimals(2)
         self.temperature_spin.setToolTip("Freestream static temperature")
         params_layout.addWidget(self.temperature_spin, 4, 1)
 
         params_group.setLayout(params_layout)
-        layout.addWidget(params_group)
+        left_layout.addWidget(params_group)
 
         # STL Mesh Generation Group
-        mesh_gen_group = QGroupBox("STL Mesh Generation (using Gmsh)")
+        mesh_gen_group = QGroupBox("STL Mesh Generation (Gmsh)")
         mesh_gen_layout = QGridLayout()
-        
-        # Mesh size controls (SI units - meters)
+
         mesh_gen_layout.addWidget(QLabel("Min Element Size [m]:"), 0, 0)
         self.mesh_min_spin = QDoubleSpinBox()
         self.mesh_min_spin.setRange(0.00001, 10.0)
-        self.mesh_min_spin.setValue(0.005)  # 5mm default
+        self.mesh_min_spin.setValue(0.005)
         self.mesh_min_spin.setSingleStep(0.001)
         self.mesh_min_spin.setDecimals(5)
-        self.mesh_min_spin.setToolTip("Minimum triangle edge length in meters (smaller = finer mesh)")
+        self.mesh_min_spin.setToolTip("Minimum triangle edge length in meters")
         mesh_gen_layout.addWidget(self.mesh_min_spin, 0, 1)
 
         mesh_gen_layout.addWidget(QLabel("Max Element Size [m]:"), 1, 0)
         self.mesh_max_spin = QDoubleSpinBox()
         self.mesh_max_spin.setRange(0.0001, 100.0)
-        self.mesh_max_spin.setValue(0.05)  # 50mm default
+        self.mesh_max_spin.setValue(0.05)
         self.mesh_max_spin.setSingleStep(0.005)
         self.mesh_max_spin.setDecimals(5)
-        self.mesh_max_spin.setToolTip("Maximum triangle edge length in meters (smaller = finer mesh)")
+        self.mesh_max_spin.setToolTip("Maximum triangle edge length in meters")
         mesh_gen_layout.addWidget(self.mesh_max_spin, 1, 1)
-        
-        # Quality presets
+
         preset_layout = QHBoxLayout()
         preset_layout.addWidget(QLabel("Presets:"))
-        
-        coarse_btn = QPushButton("Coarse (fast)")
+        coarse_btn = QPushButton("Coarse")
         coarse_btn.clicked.connect(lambda: self.set_mesh_preset(0.01, 0.1))
         preset_layout.addWidget(coarse_btn)
-
         medium_btn = QPushButton("Medium")
         medium_btn.clicked.connect(lambda: self.set_mesh_preset(0.005, 0.05))
         preset_layout.addWidget(medium_btn)
-
-        fine_btn = QPushButton("Fine (slow)")
+        fine_btn = QPushButton("Fine")
         fine_btn.clicked.connect(lambda: self.set_mesh_preset(0.002, 0.02))
         preset_layout.addWidget(fine_btn)
-        
         preset_layout.addStretch()
         mesh_gen_layout.addLayout(preset_layout, 2, 0, 1, 2)
-        
-        # Generate mesh button
-        self.generate_mesh_btn = QPushButton("🔧 Generate STL Mesh with Gmsh")
+
+        self.generate_mesh_btn = QPushButton("Generate STL Mesh with Gmsh")
         self.generate_mesh_btn.clicked.connect(self.generate_stl_mesh)
         self.generate_mesh_btn.setEnabled(False)
         self.generate_mesh_btn.setStyleSheet(
             "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
-            "font-weight: bold; padding: 10px; } QPushButton:hover { background-color: #D97706; }"
+            "font-weight: bold; padding: 8px; } QPushButton:hover { background-color: #D97706; }"
         )
         mesh_gen_layout.addWidget(self.generate_mesh_btn, 3, 0, 1, 2)
-        
-        # Mesh info
-        self.mesh_gen_info = QLabel("Generate waverider first, then create mesh")
+
+        self.mesh_gen_info = QLabel("Import geometry first, then create mesh")
         self.mesh_gen_info.setStyleSheet("color: #888888; font-style: italic;")
         mesh_gen_layout.addWidget(self.mesh_gen_info, 4, 0, 1, 2)
-        
+
         mesh_gen_group.setLayout(mesh_gen_layout)
-        layout.addWidget(mesh_gen_group)
-        
-        # STL Mesh Visualization Group
-        viz_group = QGroupBox("STL Mesh Preview")
-        viz_layout = QVBoxLayout()
-        
-        # Add mesh canvas
-        self.mesh_canvas = MeshCanvas(self)
-        self.mesh_toolbar = NavigationToolbar(self.mesh_canvas, self)
-        
-        viz_layout.addWidget(self.mesh_toolbar)
-        viz_layout.addWidget(self.mesh_canvas)
-        
-        # Mesh info label
-        self.mesh_info_label = QLabel("No mesh loaded - Export CAD first to create STL")
-        self.mesh_info_label.setStyleSheet("color: #888888; font-style: italic;")
-        viz_layout.addWidget(self.mesh_info_label)
-        
-        # Load/Refresh mesh button
-        mesh_btn_layout = QHBoxLayout()
-        self.load_mesh_btn = QPushButton("📊 Load/Refresh STL Mesh")
-        self.load_mesh_btn.clicked.connect(self.load_and_display_mesh)
-        self.load_mesh_btn.setEnabled(False)
-        mesh_btn_layout.addWidget(self.load_mesh_btn)
-        mesh_btn_layout.addStretch()
-        viz_layout.addLayout(mesh_btn_layout)
-        
-        viz_group.setLayout(viz_layout)
-        layout.addWidget(viz_group)
+        left_layout.addWidget(mesh_gen_group)
 
         # Run analysis buttons
-        run_layout = QHBoxLayout()
-        self.run_analysis_btn = QPushButton("🚀 Run PySAGAS Analysis")
+        run_widget = QWidget()
+        run_layout = QHBoxLayout(run_widget)
+        run_layout.setContentsMargins(0, 0, 0, 0)
+        self.run_analysis_btn = QPushButton("Run PySAGAS Analysis")
         self.run_analysis_btn.clicked.connect(self.run_analysis)
         self.run_analysis_btn.setStyleSheet(
             "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
-            "font-weight: bold; padding: 12px; font-size: 14px; }"
+            "font-weight: bold; padding: 10px; }"
             "QPushButton:hover { background-color: #D97706; }"
         )
         self.run_analysis_btn.setEnabled(False)
         run_layout.addWidget(self.run_analysis_btn)
-        
-        # Stop button (initially hidden)
-        self.stop_analysis_btn = QPushButton("⛔ Stop Analysis")
+
+        self.stop_analysis_btn = QPushButton("Stop")
         self.stop_analysis_btn.clicked.connect(self.stop_analysis)
         self.stop_analysis_btn.setStyleSheet(
             "QPushButton { background-color: #EF4444; color: #FFFFFF; "
-            "font-weight: bold; padding: 12px; font-size: 14px; }"
+            "font-weight: bold; padding: 10px; }"
             "QPushButton:hover { background-color: #DC2626; }"
         )
         self.stop_analysis_btn.setVisible(False)
         run_layout.addWidget(self.stop_analysis_btn)
-        
-        layout.addLayout(run_layout)
-        
+        left_layout.addWidget(run_widget)
+
         # AeroDeck Sweep Group
-        sweep_group = QGroupBox("📊 AeroDeck Sweep (Multi-Point Analysis)")
+        sweep_group = QGroupBox("AeroDeck Sweep (Multi-Point)")
         sweep_layout = QGridLayout()
-        
-        # Enable sweep checkbox
+
         self.enable_sweep_check = QCheckBox("Enable AoA/Mach Sweep")
         self.enable_sweep_check.setToolTip(
             "Run analysis at multiple angles of attack and Mach numbers.\n"
@@ -2475,98 +2438,115 @@ class WaveriderGUI(QMainWindow):
         )
         self.enable_sweep_check.stateChanged.connect(self.on_sweep_enabled_changed)
         sweep_layout.addWidget(self.enable_sweep_check, 0, 0, 1, 4)
-        
-        # AoA range
+
         sweep_layout.addWidget(QLabel("AoA range (°):"), 1, 0)
         self.aoa_min_spin = QDoubleSpinBox()
-        self.aoa_min_spin.setRange(-30.0, 30.0)
-        self.aoa_min_spin.setValue(-5.0)
-        self.aoa_min_spin.setDecimals(1)
-        self.aoa_min_spin.setEnabled(False)
+        self.aoa_min_spin.setRange(-30.0, 30.0); self.aoa_min_spin.setValue(-5.0)
+        self.aoa_min_spin.setDecimals(1); self.aoa_min_spin.setEnabled(False)
         self.aoa_min_spin.valueChanged.connect(self.update_sweep_info)
         sweep_layout.addWidget(self.aoa_min_spin, 1, 1)
-        
         sweep_layout.addWidget(QLabel("to"), 1, 2)
         self.aoa_max_spin = QDoubleSpinBox()
-        self.aoa_max_spin.setRange(-30.0, 30.0)
-        self.aoa_max_spin.setValue(10.0)
-        self.aoa_max_spin.setDecimals(1)
-        self.aoa_max_spin.setEnabled(False)
+        self.aoa_max_spin.setRange(-30.0, 30.0); self.aoa_max_spin.setValue(10.0)
+        self.aoa_max_spin.setDecimals(1); self.aoa_max_spin.setEnabled(False)
         self.aoa_max_spin.valueChanged.connect(self.update_sweep_info)
         sweep_layout.addWidget(self.aoa_max_spin, 1, 3)
-        
         sweep_layout.addWidget(QLabel("Step:"), 1, 4)
         self.aoa_step_spin = QDoubleSpinBox()
-        self.aoa_step_spin.setRange(0.5, 10.0)
-        self.aoa_step_spin.setValue(1.0)
-        self.aoa_step_spin.setDecimals(1)
-        self.aoa_step_spin.setEnabled(False)
+        self.aoa_step_spin.setRange(0.5, 10.0); self.aoa_step_spin.setValue(1.0)
+        self.aoa_step_spin.setDecimals(1); self.aoa_step_spin.setEnabled(False)
         self.aoa_step_spin.valueChanged.connect(self.update_sweep_info)
         sweep_layout.addWidget(self.aoa_step_spin, 1, 5)
-        
-        # Mach range
+
         sweep_layout.addWidget(QLabel("Mach range:"), 2, 0)
         self.mach_min_spin = QDoubleSpinBox()
-        self.mach_min_spin.setRange(1.5, 25.0)
-        self.mach_min_spin.setValue(4.0)
-        self.mach_min_spin.setDecimals(1)
-        self.mach_min_spin.setEnabled(False)
+        self.mach_min_spin.setRange(1.5, 25.0); self.mach_min_spin.setValue(4.0)
+        self.mach_min_spin.setDecimals(1); self.mach_min_spin.setEnabled(False)
         self.mach_min_spin.valueChanged.connect(self.update_sweep_info)
         sweep_layout.addWidget(self.mach_min_spin, 2, 1)
-        
         sweep_layout.addWidget(QLabel("to"), 2, 2)
         self.mach_max_spin = QDoubleSpinBox()
-        self.mach_max_spin.setRange(1.5, 25.0)
-        self.mach_max_spin.setValue(8.0)
-        self.mach_max_spin.setDecimals(1)
-        self.mach_max_spin.setEnabled(False)
+        self.mach_max_spin.setRange(1.5, 25.0); self.mach_max_spin.setValue(8.0)
+        self.mach_max_spin.setDecimals(1); self.mach_max_spin.setEnabled(False)
         self.mach_max_spin.valueChanged.connect(self.update_sweep_info)
         sweep_layout.addWidget(self.mach_max_spin, 2, 3)
-        
         sweep_layout.addWidget(QLabel("Step:"), 2, 4)
         self.mach_step_spin = QDoubleSpinBox()
-        self.mach_step_spin.setRange(0.5, 5.0)
-        self.mach_step_spin.setValue(1.0)
-        self.mach_step_spin.setDecimals(1)
-        self.mach_step_spin.setEnabled(False)
+        self.mach_step_spin.setRange(0.5, 5.0); self.mach_step_spin.setValue(1.0)
+        self.mach_step_spin.setDecimals(1); self.mach_step_spin.setEnabled(False)
         self.mach_step_spin.valueChanged.connect(self.update_sweep_info)
         sweep_layout.addWidget(self.mach_step_spin, 2, 5)
-        
-        # Sweep info label
+
         self.sweep_info_label = QLabel("Enable sweep to analyze multiple flight conditions")
         self.sweep_info_label.setStyleSheet("color: #888888; font-style: italic;")
         sweep_layout.addWidget(self.sweep_info_label, 3, 0, 1, 6)
-        
-        # Run sweep button
-        self.run_sweep_btn = QPushButton("🔄 Run AeroDeck Sweep")
+
+        self.run_sweep_btn = QPushButton("Run AeroDeck Sweep")
         self.run_sweep_btn.clicked.connect(self.run_aerodeck_sweep)
         self.run_sweep_btn.setStyleSheet(
             "QPushButton { background-color: #78350F; color: #FFFFFF; "
-            "font-weight: bold; padding: 10px; }"
+            "font-weight: bold; padding: 8px; }"
             "QPushButton:hover { background-color: #F59E0B; color: #0A0A0A; }"
         )
         self.run_sweep_btn.setEnabled(False)
         sweep_layout.addWidget(self.run_sweep_btn, 4, 0, 1, 3)
-        
-        # Plot results button
-        self.plot_sweep_btn = QPushButton("📈 Plot AeroDeck Results")
+
+        self.plot_sweep_btn = QPushButton("Plot AeroDeck Results")
         self.plot_sweep_btn.clicked.connect(self.plot_aerodeck_results)
         self.plot_sweep_btn.setStyleSheet(
             "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
-            "font-weight: bold; padding: 10px; } QPushButton:hover { background-color: #D97706; }"
+            "font-weight: bold; padding: 8px; } QPushButton:hover { background-color: #D97706; }"
         )
         self.plot_sweep_btn.setEnabled(False)
         sweep_layout.addWidget(self.plot_sweep_btn, 4, 3, 1, 3)
-        
+
         sweep_group.setLayout(sweep_layout)
-        layout.addWidget(sweep_group)
+        left_layout.addWidget(sweep_group)
 
         # Progress bar
         self.analysis_progress = QProgressBar()
         self.analysis_progress.setVisible(False)
-        layout.addWidget(self.analysis_progress)
+        left_layout.addWidget(self.analysis_progress)
 
-        # Results display
+        left_layout.addStretch()
+
+        # Wrap left panel in scroll area
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_widget)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+
+        # --- RIGHT PANEL (results) ---
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(4, 0, 0, 0)
+
+        # STL Mesh Visualization
+        viz_group = QGroupBox("STL Mesh Preview")
+        viz_layout = QVBoxLayout()
+
+        self.mesh_canvas = MeshCanvas(self)
+        self.mesh_toolbar = NavigationToolbar(self.mesh_canvas, self)
+
+        viz_layout.addWidget(self.mesh_toolbar)
+        viz_layout.addWidget(self.mesh_canvas)
+
+        self.mesh_info_label = QLabel("No mesh loaded")
+        self.mesh_info_label.setStyleSheet("color: #888888; font-style: italic;")
+        viz_layout.addWidget(self.mesh_info_label)
+
+        mesh_btn_layout = QHBoxLayout()
+        self.load_mesh_btn = QPushButton("Load/Refresh STL Mesh")
+        self.load_mesh_btn.clicked.connect(self.load_and_display_mesh)
+        self.load_mesh_btn.setEnabled(False)
+        mesh_btn_layout.addWidget(self.load_mesh_btn)
+        mesh_btn_layout.addStretch()
+        viz_layout.addLayout(mesh_btn_layout)
+
+        viz_group.setLayout(viz_layout)
+        right_layout.addWidget(viz_group)
+
+        # Analysis Results
         results_group = QGroupBox("Analysis Results")
         results_layout = QVBoxLayout()
 
@@ -2584,8 +2564,23 @@ class WaveriderGUI(QMainWindow):
                                   "4. Click 'Run PySAGAS Analysis'")
         results_layout.addWidget(self.results_text)
 
+        # Save VTK button
+        self.save_vtk_btn = QPushButton("Save VTK (for ParaView)")
+        self.save_vtk_btn.clicked.connect(self.save_vtk)
+        self.save_vtk_btn.setEnabled(False)
+        self.save_vtk_btn.setToolTip("Save analysis results as VTK file for visualization in ParaView")
+        results_layout.addWidget(self.save_vtk_btn)
+
         results_group.setLayout(results_layout)
-        layout.addWidget(results_group)
+        right_layout.addWidget(results_group)
+
+        # ============ ASSEMBLE SPLITTER ============
+        splitter.addWidget(left_scroll)
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 1)  # left ~33%
+        splitter.setStretchFactor(1, 2)  # right ~67%
+
+        outer_layout.addWidget(splitter)
 
         return tab
 
@@ -3730,12 +3725,17 @@ class WaveriderGUI(QMainWindow):
         self.results_text.setText("Starting analysis...\n")
         QApplication.processEvents()
 
+        # Create temp VTK path for results
+        import tempfile
+        self.last_vtk_file = tempfile.mktemp(suffix='')  # PySAGAS appends .vtu
+
         # Create and start worker thread
         self.analysis_worker = AnalysisWorker(
             self.last_stl_file,
             freestream_dict,
             aoa,
-            A_ref
+            A_ref,
+            vtk_path=self.last_vtk_file
         )
         self.analysis_worker.finished.connect(self.on_analysis_finished)
         self.analysis_worker.error.connect(self.on_analysis_error)
@@ -3778,7 +3778,12 @@ class WaveriderGUI(QMainWindow):
         result_text += "Analysis complete! ✓\n"
 
         self.results_text.setText(result_text)
-        
+
+        # Enable VTK save if file exists
+        vtk_file = getattr(self, 'last_vtk_file', None)
+        if vtk_file and os.path.exists(vtk_file + '.vtu'):
+            self.save_vtk_btn.setEnabled(True)
+
         # Clean up worker thread
         if self.analysis_worker:
             self.analysis_worker.quit()
@@ -3813,6 +3818,40 @@ class WaveriderGUI(QMainWindow):
             f"Analysis failed with error:\n\n{error_msg}"
         )
 
+    def save_vtk(self):
+        """Save analysis VTK results to a user-chosen location."""
+        vtk_src = getattr(self, 'last_vtk_file', None)
+        if not vtk_src:
+            QMessageBox.warning(self, "No VTK Data",
+                                "No analysis results to save. Run an analysis first.")
+            return
+
+        src_path = vtk_src + '.vtu'
+        if not os.path.exists(src_path):
+            QMessageBox.warning(self, "VTK File Missing",
+                                "The VTK results file was not found.\n"
+                                "Please re-run the analysis.")
+            return
+
+        dest_path, _ = QFileDialog.getSaveFileName(
+            self, "Save VTK Results", "waverider_analysis.vtu",
+            "VTK Files (*.vtu);;All Files (*)"
+        )
+        if not dest_path:
+            return  # User cancelled
+
+        try:
+            shutil.copy2(src_path, dest_path)
+            QMessageBox.information(
+                self, "VTK Saved",
+                f"Analysis results saved to:\n{dest_path}\n\n"
+                "Open this file in ParaView to visualize pressure/Cp fields."
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Save Failed",
+                f"Could not save VTK file:\n{e}"
+            )
 
     # ========== AERODECK SWEEP METHODS ==========
     
