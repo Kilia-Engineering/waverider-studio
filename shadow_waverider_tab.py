@@ -1259,11 +1259,16 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         edge_wire_upper = edge_wire_upper.add(
             cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
         wingtip_upper = mod_upper_streams[-1]
-        wt_u_edge = cq.Edge.makeLine(
-            cq.Vector(*tuple(wingtip_upper[0])),
-            cq.Vector(*tuple(wingtip_upper[-1])))
-        edge_wire_upper = edge_wire_upper.add(
-            cq.Workplane("XY").newObject([wt_u_edge]))
+        wt_u_p0 = tuple(float(c) for c in wingtip_upper[0])
+        wt_u_p1 = tuple(float(c) for c in wingtip_upper[-1])
+        wt_u_dist = np.linalg.norm(wingtip_upper[0] - wingtip_upper[-1])
+        print(f"[DEBUG] Wingtip upper: n_pts={len(wingtip_upper)}, p0={wt_u_p0}, p1={wt_u_p1}, dist={wt_u_dist:.6f}")
+        if wt_u_dist > 1e-8:
+            wt_u_edge = cq.Edge.makeLine(cq.Vector(*wt_u_p0), cq.Vector(*wt_u_p1))
+            edge_wire_upper = edge_wire_upper.add(
+                cq.Workplane("XY").newObject([wt_u_edge]))
+        else:
+            print(f"[Cone-derived STEP] Wingtip upper edge degenerate, skipping")
 
         upper_surface = cq.Workplane("XY").interpPlate(
             edge_wire_upper, us_points, 0)
@@ -1276,11 +1281,16 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         edge_wire_lower = edge_wire_lower.add(
             cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
         wingtip_lower = mod_lower_streams[-1]
-        wt_l_edge = cq.Edge.makeLine(
-            cq.Vector(*tuple(wingtip_lower[0])),
-            cq.Vector(*tuple(wingtip_lower[-1])))
-        edge_wire_lower = edge_wire_lower.add(
-            cq.Workplane("XY").newObject([wt_l_edge]))
+        wt_l_p0 = tuple(float(c) for c in wingtip_lower[0])
+        wt_l_p1 = tuple(float(c) for c in wingtip_lower[-1])
+        wt_l_dist = np.linalg.norm(wingtip_lower[0] - wingtip_lower[-1])
+        print(f"[DEBUG] Wingtip lower: n_pts={len(wingtip_lower)}, p0={wt_l_p0}, p1={wt_l_p1}, dist={wt_l_dist:.6f}")
+        if wt_l_dist > 1e-8:
+            wt_l_edge = cq.Edge.makeLine(cq.Vector(*wt_l_p0), cq.Vector(*wt_l_p1))
+            edge_wire_lower = edge_wire_lower.add(
+                cq.Workplane("XY").newObject([wt_l_edge]))
+        else:
+            print(f"[Cone-derived STEP] Wingtip lower edge degenerate, skipping")
 
         lower_surface = cq.Workplane("XY").interpPlate(
             edge_wire_lower, ls_points, 0)
