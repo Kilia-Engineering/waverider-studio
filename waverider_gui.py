@@ -1137,10 +1137,17 @@ class WaveriderGUI(QMainWindow):
     def _calc_aref_from_imported_geometry(self):
         """Calculate planform area (XZ projection) from imported tessellation."""
         try:
-            verts = self.imported_geometry['vertices']
+            verts = self.imported_geometry['vertices'].copy()
             faces = self.imported_geometry['faces']
+
+            # Detect mm units: if max extent > 100, geometry is likely in mm
+            bounds_range = verts.max(axis=0) - verts.min(axis=0)
+            max_extent = bounds_range.max()
+            if max_extent > 100:
+                verts = verts * 0.001  # mm → m
+                print(f"[Aero] Geometry extent {max_extent:.1f} — converting mm → m for A_ref")
+
             # Planform area = sum of projected triangle areas onto XZ plane
-            # For each triangle, project onto XZ (drop Y) and compute area
             total_area = 0.0
             for tri in faces:
                 v0, v1, v2 = verts[tri[0]], verts[tri[1]], verts[tri[2]]
@@ -1148,7 +1155,7 @@ class WaveriderGUI(QMainWindow):
                 ax, az = v0[0], v0[2]
                 bx, bz = v1[0], v1[2]
                 cx, cz = v2[0], v2[2]
-                # Shoelace area (signed)
+                # Cross-product area
                 area = 0.5 * abs((bx - ax) * (cz - az) - (cx - ax) * (bz - az))
                 total_area += area
             # Divide by 2 since both upper and lower surfaces overlap in projection
