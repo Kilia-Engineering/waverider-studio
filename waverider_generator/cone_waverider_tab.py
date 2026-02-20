@@ -1203,7 +1203,7 @@ Streamwise Pts:     {self.waverider.n_streamwise}
             le_pts = le_curve * scale
             right_side = _apply_le_fillet(
                 right_side, blunting_radius * scale, le_pts,
-                nose_cap=True, sweep_scaled=sweep_scaled)
+                nose_cap=False, sweep_scaled=sweep_scaled)
 
         if half_only:
             result = cq.Workplane("XY").newObject([right_side])
