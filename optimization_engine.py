@@ -681,8 +681,11 @@ def evaluate_single_design(
             }
         
         try:
+            # Use waverider streamwise length as reference length for moment coefficients
+            c_ref_calc = getattr(wr, 'length', 1.0)
             CL, CD, Cm = run_pysagas_analysis(
-                stl_file, M_inf, pressure, temperature, aoa, A_ref_calc, temp_dir
+                stl_file, M_inf, pressure, temperature, aoa, A_ref_calc, temp_dir,
+                c_ref=c_ref_calc
             )
         except Exception as e:
             return {
@@ -880,7 +883,8 @@ def run_pysagas_analysis(
     temperature: float,
     aoa: float,
     A_ref: float,
-    work_dir: str
+    work_dir: str,
+    c_ref: float = None
 ) -> Tuple[float, float, float]:
     """
     Run PySAGAS aerodynamic analysis.
@@ -898,16 +902,19 @@ def run_pysagas_analysis(
     aoa : float
         Angle of attack (degrees)
     A_ref : float
-        Reference area (m²) - not used by PySAGAS coefficients() but kept for API consistency
+        Reference area (m²) for aerodynamic coefficient non-dimensionalization
     work_dir : str
         Working directory for PySAGAS temp files
-    
+    c_ref : float, optional
+        Reference length (m) for moment coefficient non-dimensionalization.
+        If None, defaults to 1.0.
+
     Returns
     -------
     CL : float
         Lift coefficient
     CD : float
-        Drag coefficient  
+        Drag coefficient
     Cm : float
         Moment coefficient
         
@@ -970,11 +977,9 @@ def run_pysagas_analysis(
         # Run solver at specified AoA
         result = solver.solve(aoa=aoa)
         
-        # Get aerodynamic coefficients from flow_result
-        CL, CD, Cm = solver.flow_result.coefficients()
-        
-        # Optionally save results for debugging
-        # solver.save("waverider")
+        # Get aerodynamic coefficients from flow_result with proper reference values
+        _c_ref = c_ref if c_ref is not None else 1.0
+        CL, CD, Cm = solver.flow_result.coefficients(A_ref=A_ref, c_ref=_c_ref)
         
         return CL, CD, Cm
         

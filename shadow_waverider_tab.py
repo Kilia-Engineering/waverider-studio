@@ -115,14 +115,18 @@ class DesignSpaceWorker(QThread):
             self.error.emit(f"{str(e)}\n\n{traceback.format_exc()}")
     
     def _run_pysagas(self, wr, mach):
-        """Run PySAGAS analysis on a waverider"""
+        """Run PySAGAS analysis on a SHADOW waverider.
+
+        Uses waverider's computed planform_area and mac as reference values
+        for proper coefficient non-dimensionalization.
+        """
         if not PYSAGAS_AVAILABLE:
             return {}
-        
+
         try:
             # Create temporary STL
             verts, tris = wr.get_mesh()
-            
+
             # Write STL to temp file
             temp_stl = tempfile.mktemp(suffix='.stl')
             with open(temp_stl, 'w') as f:
@@ -145,62 +149,167 @@ class DesignSpaceWorker(QThread):
                     f.write("    endloop\n")
                     f.write("  endfacet\n")
                 f.write("endsolid waverider\n")
-            
+
             # Run PySAGAS
             cells = MeshIO.read_mesh(temp_stl)
             pressure = self.params.get('pressure', 101325)
             temperature = self.params.get('temperature', 288.15)
             aoa = self.params.get('aoa', 0)
-            
-            flow = FlowState(mach=mach, pressure=pressure, 
+
+            flow = FlowState(mach=mach, pressure=pressure,
                            temperature=temperature, aoa=np.radians(aoa))
             solver = OPM(cells=cells, freestream=flow, verbosity=0)
             solver.solve()
-            
-            CL, CD, Cm = solver.flow_result.coefficients()
+
+            # Use waverider's computed reference values for proper non-dimensionalization
+            A_ref = getattr(wr, 'planform_area', 1.0) or 1.0
+            c_ref = getattr(wr, 'mac', 1.0) or 1.0
+            CL, CD, Cm = solver.flow_result.coefficients(A_ref=A_ref, c_ref=c_ref)
             LD = CL / CD if abs(CD) > 1e-10 else 0
-            
+
             # Cleanup
             try:
                 os.unlink(temp_stl)
             except:
                 pass
-            
+
             return {'CL': float(CL), 'CD': float(CD), 'Cm': float(Cm), 'L/D': float(LD)}
         except Exception as e:
             return {'aero_error': str(e)}
     
+    def _run_stability(self, wr, mach):
+        """Run stability derivative analysis on a SHADOW waverider."""
+        try:
+            from stability_analysis import analyze_waverider_stability
+            pressure = self.params.get('pressure', 101325)
+            temperature = self.params.get('temperature', 288.15)
+            aoa = self.params.get('aoa', 0)
+            vtk_dir = self.params.get('vtk_dir', None)
+
+            result = analyze_waverider_stability(
+                wr, mach, pressure=pressure, temperature=temperature,
+                alpha_deg=aoa, save_vtk_prefix=vtk_dir)
+
+            # Return subset of keys for design space (exclude perturbed data)
+            return {
+                'CL': result['CL'], 'CD': result['CD'], 'Cm': result['Cm'],
+                'L/D': result['L/D'],
+                'Cl_beta': result['Cl_beta'],
+                'Cn_beta': result['Cn_beta'],
+                'Cm_alpha': result['Cm_alpha'],
+                'pitch_stable': result['pitch_stable'],
+                'yaw_stable': result['yaw_stable'],
+                'roll_stable': result['roll_stable'],
+                'fully_stable': result['fully_stable'],
+            }
+        except Exception as e:
+            return {'stability_error': str(e)}
+
     def _eval_2nd(self, mach, shock_angle, A2, A0, include_aero=False):
         try:
             wr = create_second_order_waverider(mach=mach, shock_angle=shock_angle,
                 A2=A2, A0=A0, n_leading_edge=self.params.get('n_le', 15),
                 n_streamwise=self.params.get('n_stream', 15))
             result = {'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
-                   'planform_area': wr.planform_area, 'volume': wr.volume, 'valid': True}
-            
-            if include_aero:
+                   'planform_area': wr.planform_area, 'volume': wr.volume,
+                   'mac': wr.mac, 'valid': True}
+
+            include_stability = self.params.get('include_stability', False)
+            if include_stability:
+                stab = self._run_stability(wr, mach)
+                result.update(stab)
+            elif include_aero:
                 aero = self._run_pysagas(wr, mach)
                 result.update(aero)
-            
+
             return result
         except Exception as e:
             return {'A2': A2, 'A0': A0, 'valid': False, 'error': str(e)}
-    
+
     def _eval_3rd(self, mach, shock_angle, A3, A2, A0, include_aero=False):
         try:
             wr = create_third_order_waverider(mach=mach, shock_angle=shock_angle,
                 A3=A3, A2=A2, A0=A0, n_leading_edge=self.params.get('n_le', 15),
                 n_streamwise=self.params.get('n_stream', 15))
             result = {'A3': A3, 'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
-                   'planform_area': wr.planform_area, 'volume': wr.volume, 'valid': True}
-            
-            if include_aero:
+                   'planform_area': wr.planform_area, 'volume': wr.volume,
+                   'mac': wr.mac, 'valid': True}
+
+            include_stability = self.params.get('include_stability', False)
+            if include_stability:
+                stab = self._run_stability(wr, mach)
+                result.update(stab)
+            elif include_aero:
                 aero = self._run_pysagas(wr, mach)
                 result.update(aero)
-            
+
             return result
         except Exception as e:
             return {'A3': A3, 'A2': A2, 'A0': A0, 'valid': False, 'error': str(e)}
+
+
+class GradientOptWorker(QThread):
+    """Worker thread for gradient-based optimization using ShadowOptimizer."""
+    progress = pyqtSignal(int, dict)
+    finished_signal = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, mach, shock_angle, poly_order, x0, bounds,
+                 objective='L/D', method='SLSQP', maxiter=50,
+                 stability_constrained=False, save_vtk=True,
+                 pressure=101325.0, temperature=288.15, alpha_deg=0.0):
+        super().__init__()
+        self.mach = mach
+        self.shock_angle = shock_angle
+        self.poly_order = poly_order
+        self.x0 = np.array(x0, dtype=float)
+        self.bounds = bounds
+        self.objective = objective
+        self.method = method
+        self.maxiter = maxiter
+        self.stability_constrained = stability_constrained
+        self.save_vtk = save_vtk
+        self.pressure = pressure
+        self.temperature = temperature
+        self.alpha_deg = alpha_deg
+
+    def run(self):
+        try:
+            from pysagas_optimizer import ShadowOptimizer
+
+            optimizer = ShadowOptimizer(
+                mach=self.mach,
+                shock_angle=self.shock_angle,
+                poly_order=self.poly_order,
+                pressure=self.pressure,
+                temperature=self.temperature,
+                alpha_deg=self.alpha_deg,
+                objective=self.objective,
+                method=self.method,
+                stability_constrained=self.stability_constrained,
+                save_vtk=self.save_vtk,
+                output_dir='optimization_results',
+                verbose=False
+            )
+
+            # Wire progress callback to emit Qt signal
+            optimizer.progress_callback = lambda iteration, entry: \
+                self.progress.emit(iteration, entry)
+
+            result = optimizer.optimize(
+                x0=self.x0,
+                bounds=self.bounds,
+                maxiter=self.maxiter
+            )
+
+            # Remove non-serializable items before emitting
+            result.pop('waverider', None)
+            result.pop('scipy_result', None)
+            self.finished_signal.emit(result)
+
+        except Exception as e:
+            import traceback
+            self.error.emit(f"{str(e)}\n\n{traceback.format_exc()}")
 
 
 class ShadowWaveriderCanvas(FigureCanvas):
@@ -304,28 +413,30 @@ class DesignSpaceCanvas(FigureCanvas):
             except:
                 pass
             self.colorbar = None
-        
+
         self.ax.clear()
-        
+
         if df is None or len(df) == 0:
             self.ax.set_title('No results')
             self.draw()
             return
-        
+
         valid_df = df[df['valid'] == True] if 'valid' in df.columns else df
         invalid_df = df[df['valid'] == False] if 'valid' in df.columns else None
-        
+
         if len(valid_df) == 0:
             self.ax.set_title('No valid results')
             self.draw()
             return
-        
-        # Plot valid points
-        if color_param in valid_df.columns:
+
+        # Special handling for "stability" color mode
+        if color_param == 'stability' and 'fully_stable' in valid_df.columns:
+            self._plot_stability_overlay(valid_df, x_param, y_param)
+        elif color_param in valid_df.columns:
             sc = self.ax.scatter(valid_df[x_param], valid_df[y_param], c=valid_df[color_param],
                                cmap='viridis', s=80, alpha=0.8, edgecolors='white', linewidths=0.5)
             self.colorbar = self.fig.colorbar(sc, ax=self.ax, label=color_param)
-            
+
             # Mark best point
             best_idx = valid_df[color_param].idxmax()
             best = valid_df.loc[best_idx]
@@ -333,12 +444,12 @@ class DesignSpaceCanvas(FigureCanvas):
                           edgecolors='black', linewidths=2, zorder=10, label=f'Best: {best[color_param]:.4f}')
         else:
             self.ax.scatter(valid_df[x_param], valid_df[y_param], s=80, alpha=0.8)
-        
+
         # Plot invalid points
         if invalid_df is not None and len(invalid_df) > 0:
-            self.ax.scatter(invalid_df[x_param], invalid_df[y_param], c='red', marker='x', 
+            self.ax.scatter(invalid_df[x_param], invalid_df[y_param], c='red', marker='x',
                           s=50, alpha=0.5, label='Invalid')
-        
+
         self.ax.set_xlabel(x_param, fontsize=12, color='#FFFFFF')
         self.ax.set_ylabel(y_param, fontsize=12, color='#FFFFFF')
         self.ax.set_title(f'{color_param} vs ({x_param}, {y_param})', fontsize=14, color='#FFFFFF')
@@ -347,6 +458,44 @@ class DesignSpaceCanvas(FigureCanvas):
         self.ax.legend(loc='upper right')
         self.fig.tight_layout()
         self.draw()
+
+    def _plot_stability_overlay(self, df, x_param, y_param):
+        """Plot design space colored by stability criteria (thesis Figs 5.5-5.18)."""
+        # Count how many stability criteria each design meets
+        stab_count = (
+            df['pitch_stable'].astype(int) +
+            df['yaw_stable'].astype(int) +
+            df['roll_stable'].astype(int)
+        )
+
+        # Unstable (0 criteria)
+        unstable = df[stab_count == 0]
+        if len(unstable) > 0:
+            self.ax.scatter(unstable[x_param], unstable[y_param],
+                          c='#EF4444', s=60, alpha=0.6, marker='o',
+                          edgecolors='#991B1B', linewidths=0.5, label='Unstable (0/3)')
+
+        # Partially stable (1-2 criteria)
+        partial = df[(stab_count >= 1) & (stab_count <= 2)]
+        if len(partial) > 0:
+            self.ax.scatter(partial[x_param], partial[y_param],
+                          c='#F59E0B', s=80, alpha=0.7, marker='s',
+                          edgecolors='#92400E', linewidths=0.5, label='Partial (1-2/3)')
+
+        # Fully stable (all 3 criteria)
+        stable = df[stab_count == 3]
+        if len(stable) > 0:
+            self.ax.scatter(stable[x_param], stable[y_param],
+                          c='#10B981', s=100, alpha=0.9, marker='D',
+                          edgecolors='#065F46', linewidths=0.5, label='Stable (3/3)')
+
+            # Mark best L/D among fully stable
+            if 'L/D' in stable.columns and len(stable) > 0:
+                best_idx = stable['L/D'].idxmax()
+                best = stable.loc[best_idx]
+                self.ax.scatter([best[x_param]], [best[y_param]], c='gold', s=300, marker='*',
+                              edgecolors='black', linewidths=2, zorder=10,
+                              label=f'Best stable L/D: {best["L/D"]:.3f}')
 
 
 class ShadowWaveriderTab(QWidget):
@@ -415,6 +564,10 @@ class ShadowWaveriderTab(QWidget):
         # Design Space tab
         ds_widget = self._create_design_space_widget()
         right_panel.addTab(ds_widget, "Design Space")
+
+        # Gradient Optimization tab
+        opt_widget = self._create_gradient_opt_widget()
+        right_panel.addTab(opt_widget, "Gradient Opt")
 
         # Results tab
         results_widget = QWidget()
@@ -837,12 +990,26 @@ class ShadowWaveriderTab(QWidget):
             self.ds_include_aero.setToolTip("PySAGAS not available")
         else:
             self.ds_include_aero.setToolTip("Run PySAGAS for each design (slower but gives L/D)")
-        gl.addWidget(self.ds_include_aero, 3, 0, 1, 3)
+        gl.addWidget(self.ds_include_aero, 3, 0, 1, 2)
+
+        # Stability analysis checkbox
+        self.ds_include_stability = QCheckBox("Include Stability")
+        self.ds_include_stability.setEnabled(PYSAGAS_AVAILABLE)
+        if not PYSAGAS_AVAILABLE:
+            self.ds_include_stability.setToolTip("PySAGAS not available")
+        else:
+            self.ds_include_stability.setToolTip(
+                "Compute stability derivatives via perturbation (5x slower than aero-only)")
+        self.ds_include_stability.toggled.connect(
+            lambda checked: self.ds_include_aero.setChecked(True) if checked else None)
+        gl.addWidget(self.ds_include_stability, 3, 2)
 
         # Color-by selector
         gl.addWidget(QLabel("Color by:"), 3, 3)
         self.ds_color_combo = QComboBox()
-        self.ds_color_combo.addItems(["volume", "planform_area", "L/D", "CL", "CD"])
+        self.ds_color_combo.addItems([
+            "volume", "planform_area", "L/D", "CL", "CD",
+            "Cm_alpha", "Cl_beta", "Cn_beta", "stability"])
         self.ds_color_combo.currentTextChanged.connect(self.update_ds_plot)
         gl.addWidget(self.ds_color_combo, 3, 4)
 
@@ -922,11 +1089,28 @@ class ShadowWaveriderTab(QWidget):
         self.best_ld_label.setStyleSheet("font-weight: bold; color: #EF4444; font-size: 14px;")
         best_layout.addWidget(self.best_ld_label, 2, 1)
         
+        # Stability info (hidden until stability analysis is run)
+        self.best_stability_header = QLabel("Stable:")
+        self.best_stability_label = QLabel("--")
+        self.best_stability_label.setStyleSheet("font-weight: bold; color: #10B981;")
+        best_layout.addWidget(self.best_stability_header, 2, 2)
+        best_layout.addWidget(self.best_stability_label, 2, 3, 1, 2)
+        self.best_stability_header.setVisible(False)
+        self.best_stability_label.setVisible(False)
+
+        self.best_stable_ld_header = QLabel("Best Stable L/D:")
+        self.best_stable_ld_label = QLabel("--")
+        self.best_stable_ld_label.setStyleSheet("font-weight: bold; color: #10B981;")
+        best_layout.addWidget(self.best_stable_ld_header, 3, 0, 1, 2)
+        best_layout.addWidget(self.best_stable_ld_label, 3, 2, 1, 3)
+        self.best_stable_ld_header.setVisible(False)
+        self.best_stable_ld_label.setVisible(False)
+
         # Apply best design button
-        apply_best_btn = QPushButton("📋 Apply to Main Panel")
+        apply_best_btn = QPushButton("Apply to Main Panel")
         apply_best_btn.clicked.connect(self.apply_best_design)
         apply_best_btn.setStyleSheet("background-color: #F59E0B; color: #0A0A0A; font-weight: bold; padding: 5px;")
-        best_layout.addWidget(apply_best_btn, 2, 2, 1, 4)
+        best_layout.addWidget(apply_best_btn, 4, 0, 1, 6)
         
         self.best_design_group.setLayout(best_layout)
         self.best_design_group.setVisible(False)  # Hidden until we have results
@@ -942,7 +1126,210 @@ class ShadowWaveriderTab(QWidget):
         layout.addWidget(export_btn)
         
         return widget
-    
+
+    def _create_gradient_opt_widget(self):
+        """Create the gradient-based optimization panel."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        group = QGroupBox("Gradient-Based Optimization (SLSQP/COBYLA)")
+        gl = QGridLayout()
+
+        # Objective
+        gl.addWidget(QLabel("Objective:"), 0, 0)
+        self.opt_objective = QComboBox()
+        self.opt_objective.addItems(["L/D", "-CD", "CL"])
+        gl.addWidget(self.opt_objective, 0, 1)
+
+        # Method
+        gl.addWidget(QLabel("Method:"), 0, 2)
+        self.opt_method = QComboBox()
+        self.opt_method.addItems(["SLSQP", "COBYLA", "Nelder-Mead"])
+        gl.addWidget(self.opt_method, 0, 3)
+
+        # Max iterations
+        gl.addWidget(QLabel("Max Iter:"), 1, 0)
+        self.opt_maxiter = QSpinBox()
+        self.opt_maxiter.setRange(5, 500)
+        self.opt_maxiter.setValue(50)
+        gl.addWidget(self.opt_maxiter, 1, 1)
+
+        # Stability constraints
+        self.opt_stability = QCheckBox("Stability Constraints")
+        self.opt_stability.setToolTip("Enforce Cm_alpha<0, Cn_beta>0, Cl_beta<0")
+        self.opt_stability.setEnabled(PYSAGAS_AVAILABLE)
+        gl.addWidget(self.opt_stability, 1, 2, 1, 2)
+
+        # Save VTK
+        self.opt_save_vtk = QCheckBox("Save VTK")
+        self.opt_save_vtk.setToolTip("Save pressure VTK files at each iteration")
+        self.opt_save_vtk.setChecked(True)
+        gl.addWidget(self.opt_save_vtk, 2, 0)
+
+        # A2 bounds
+        gl.addWidget(QLabel("A2 bounds:"), 3, 0)
+        self.opt_a2_lo = QDoubleSpinBox()
+        self.opt_a2_lo.setRange(-50, 0); self.opt_a2_lo.setValue(-20)
+        gl.addWidget(self.opt_a2_lo, 3, 1)
+        self.opt_a2_hi = QDoubleSpinBox()
+        self.opt_a2_hi.setRange(-50, 0); self.opt_a2_hi.setValue(-0.5)
+        gl.addWidget(self.opt_a2_hi, 3, 2)
+
+        # A0 bounds
+        gl.addWidget(QLabel("A0 bounds:"), 4, 0)
+        self.opt_a0_lo = QDoubleSpinBox()
+        self.opt_a0_lo.setRange(-1, 0); self.opt_a0_lo.setValue(-0.5); self.opt_a0_lo.setDecimals(3)
+        gl.addWidget(self.opt_a0_lo, 4, 1)
+        self.opt_a0_hi = QDoubleSpinBox()
+        self.opt_a0_hi.setRange(-1, 0); self.opt_a0_hi.setValue(-0.01); self.opt_a0_hi.setDecimals(3)
+        gl.addWidget(self.opt_a0_hi, 4, 2)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        self.opt_run_btn = QPushButton("Run Optimization")
+        self.opt_run_btn.clicked.connect(self.run_gradient_opt)
+        self.opt_run_btn.setEnabled(PYSAGAS_AVAILABLE)
+        self.opt_run_btn.setStyleSheet(
+            "background-color: #10B981; color: white; font-weight: bold; padding: 8px;")
+        btn_layout.addWidget(self.opt_run_btn)
+
+        self.opt_cancel_btn = QPushButton("Cancel")
+        self.opt_cancel_btn.setEnabled(False)
+        btn_layout.addWidget(self.opt_cancel_btn)
+        gl.addLayout(btn_layout, 5, 0, 1, 4)
+
+        group.setLayout(gl)
+        layout.addWidget(group)
+
+        # Progress
+        self.opt_progress = QLabel("Ready")
+        layout.addWidget(self.opt_progress)
+
+        # Results log
+        self.opt_log = QTextEdit()
+        self.opt_log.setReadOnly(True)
+        self.opt_log.setFont(QFont("Courier", 9))
+        self.opt_log.setMaximumHeight(300)
+        layout.addWidget(self.opt_log)
+
+        # Convergence plot
+        self.opt_canvas = FigureCanvas(Figure(figsize=(8, 4), facecolor='#0A0A0A'))
+        self.opt_ax = self.opt_canvas.figure.add_subplot(111)
+        self.opt_ax.set_facecolor('#1A1A1A')
+        layout.addWidget(self.opt_canvas)
+
+        layout.addStretch()
+        return widget
+
+    def run_gradient_opt(self):
+        """Launch gradient-based optimization in a worker thread."""
+        if not PYSAGAS_AVAILABLE:
+            QMessageBox.warning(self, "Error", "PySAGAS is not available")
+            return
+
+        order = self.order_combo.currentIndex() + 2
+        mach = self.mach_spin.value()
+        shock = self.shock_spin.value()
+
+        # Build initial point from current panel values
+        if order == 2:
+            x0 = [self.a2_spin.value(), self.a0_spin.value()]
+            bounds = [(self.opt_a2_lo.value(), self.opt_a2_hi.value()),
+                      (self.opt_a0_lo.value(), self.opt_a0_hi.value())]
+        else:
+            x0 = [self.a3_spin.value(), self.a2_spin.value(), self.a0_spin.value()]
+            bounds = [(-50, 50),
+                      (self.opt_a2_lo.value(), self.opt_a2_hi.value()),
+                      (self.opt_a0_lo.value(), self.opt_a0_hi.value())]
+
+        self.opt_run_btn.setEnabled(False)
+        self.opt_log.clear()
+        self.opt_log.append(f"Starting {self.opt_method.currentText()} optimization...")
+        self.opt_log.append(f"  Mach={mach}, shock={shock}, order={order}")
+        self.opt_log.append(f"  Objective: maximize {self.opt_objective.currentText()}")
+        self.opt_log.append(f"  x0 = {x0}")
+        self.opt_log.append("")
+
+        # Run in thread
+        self._opt_worker = GradientOptWorker(
+            mach=mach, shock_angle=shock, poly_order=order,
+            x0=x0, bounds=bounds,
+            objective=self.opt_objective.currentText(),
+            method=self.opt_method.currentText(),
+            maxiter=self.opt_maxiter.value(),
+            stability_constrained=self.opt_stability.isChecked(),
+            save_vtk=self.opt_save_vtk.isChecked(),
+            pressure=self.p_spin.value(),
+            temperature=self.t_spin.value(),
+            alpha_deg=self.aoa_spin.value())
+        self._opt_worker.progress.connect(self._on_opt_progress)
+        self._opt_worker.finished_signal.connect(self._on_opt_done)
+        self._opt_worker.error.connect(lambda e: QMessageBox.critical(self, "Error", e))
+        self._opt_worker.start()
+
+    def _on_opt_progress(self, iteration, entry):
+        """Handle gradient optimization progress updates."""
+        self.opt_progress.setText(
+            f"Iter {iteration}: L/D={entry.get('L/D', 0):.4f}, "
+            f"obj={entry.get('objective', 0):.6f}")
+        self.opt_log.append(
+            f"Iter {iteration}: L/D={entry.get('L/D', 0):.4f} "
+            f"CD={entry.get('CD', 0):.6f}")
+
+        # Update convergence plot
+        if hasattr(self, '_opt_history'):
+            self._opt_history.append(entry)
+        else:
+            self._opt_history = [entry]
+
+        self.opt_ax.clear()
+        iters = [e['iteration'] for e in self._opt_history]
+        lds = [e.get('L/D', 0) for e in self._opt_history]
+        self.opt_ax.plot(iters, lds, 'o-', color='#10B981', linewidth=2)
+        self.opt_ax.set_xlabel('Iteration', color='#FFFFFF')
+        self.opt_ax.set_ylabel('L/D', color='#FFFFFF')
+        self.opt_ax.set_title('Convergence', color='#FFFFFF')
+        self.opt_ax.tick_params(colors='#888888')
+        self.opt_ax.grid(True, alpha=0.3)
+        self.opt_canvas.draw()
+
+    def _on_opt_done(self, result):
+        """Handle gradient optimization completion."""
+        self.opt_run_btn.setEnabled(True)
+        self._opt_history = []
+
+        if result.get('success', False):
+            x_opt = result['x_optimal']
+            final = result.get('final_evaluation', {})
+            self.opt_log.append(f"\nOptimization CONVERGED")
+            self.opt_log.append(f"  Optimal: {x_opt}")
+            self.opt_log.append(f"  L/D = {final.get('L/D', 'N/A')}")
+            self.opt_log.append(f"  CL = {final.get('CL', 'N/A')}")
+            self.opt_log.append(f"  CD = {final.get('CD', 'N/A')}")
+            if 'Cm_alpha' in final:
+                self.opt_log.append(f"  Cm_alpha = {final.get('Cm_alpha', 'N/A')}")
+                self.opt_log.append(f"  Cn_beta  = {final.get('Cn_beta', 'N/A')}")
+                self.opt_log.append(f"  Cl_beta  = {final.get('Cl_beta', 'N/A')}")
+
+            # Ask user if they want to apply optimal design
+            reply = QMessageBox.question(self, "Optimization Complete",
+                f"L/D = {final.get('L/D', 0):.4f}\n\n"
+                f"Apply optimal design to main panel?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if reply == QMessageBox.Yes:
+                if len(x_opt) == 2:
+                    self.a2_spin.setValue(x_opt[0])
+                    self.a0_spin.setValue(x_opt[1])
+                else:
+                    self.a3_spin.setValue(x_opt[0])
+                    self.a2_spin.setValue(x_opt[1])
+                    self.a0_spin.setValue(x_opt[2])
+                self.generate()
+        else:
+            self.opt_log.append(f"\nOptimization FAILED: {result.get('message', 'unknown')}")
+
+        self.opt_progress.setText("Done")
+
     def apply_best_design(self):
         """Apply the best design parameters to the main panel"""
         if not hasattr(self, 'best_design_params') or self.best_design_params is None:
@@ -1272,7 +1659,8 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
     def run_design_space(self):
         order = self.order_combo.currentIndex()
         include_aero = self.ds_include_aero.isChecked() and PYSAGAS_AVAILABLE
-        
+        include_stability = self.ds_include_stability.isChecked() and PYSAGAS_AVAILABLE
+
         params = {
             'mach': self.mach_spin.value(), 'shock_angle': self.shock_spin.value(),
             'poly_order': order + 2, 'n_le': 15, 'n_stream': 15,
@@ -1281,18 +1669,31 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             'A3_min': self.ds_a3_min.value(), 'A3_max': self.ds_a3_max.value(), 'n_A3': self.ds_a3_n.value(),
             'A0_fixed': self.a0_spin.value(),
             'include_aero': include_aero,
+            'include_stability': include_stability,
             'pressure': self.p_spin.value(),
             'temperature': self.t_spin.value(),
             'aoa': self.aoa_spin.value()
         }
         total = params['n_A2'] * params['n_A0'] if order == 0 else params['n_A3'] * params['n_A2']
-        
-        # Warn user if aero is enabled
-        if include_aero:
+
+        # Warn user about time estimates
+        if include_stability:
+            estimated_time = total * 25  # ~25 seconds per design (5 PySAGAS runs)
+            mins = estimated_time // 60
+            secs = estimated_time % 60
+            reply = QMessageBox.question(self, "Stability Analysis",
+                f"Running stability analysis for {total} designs.\n"
+                f"(5 PySAGAS runs per design for perturbation)\n"
+                f"Estimated time: ~{mins}m {secs}s\n\n"
+                f"Continue?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if reply == QMessageBox.No:
+                return
+        elif include_aero:
             estimated_time = total * 5  # ~5 seconds per design
             mins = estimated_time // 60
             secs = estimated_time % 60
-            reply = QMessageBox.question(self, "Aero Analysis", 
+            reply = QMessageBox.question(self, "Aero Analysis",
                 f"Running PySAGAS for {total} designs.\n"
                 f"Estimated time: ~{mins}m {secs}s\n\n"
                 f"Continue?",
@@ -1373,7 +1774,42 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             self.best_ld_label.setText(f"{best.get('L/D', 0):.3f}")
         else:
             self.best_ld_label.setText("--")
-        
+
+        # Show stability info if available
+        if 'fully_stable' in best:
+            stab_text = []
+            if best.get('pitch_stable', False):
+                stab_text.append("Pitch")
+            if best.get('yaw_stable', False):
+                stab_text.append("Yaw")
+            if best.get('roll_stable', False):
+                stab_text.append("Roll")
+            stab_str = ", ".join(stab_text) if stab_text else "None"
+            self.best_stability_label.setText(stab_str)
+            self.best_stability_label.setStyleSheet(
+                f"font-weight: bold; color: {'#10B981' if best.get('fully_stable') else '#F59E0B'};")
+            self.best_stability_label.setVisible(True)
+            self.best_stability_header.setVisible(True)
+
+            # Also find best L/D among fully stable designs
+            valid_stable = valid_df[valid_df.get('fully_stable', False) == True]
+            if len(valid_stable) > 0 and 'L/D' in valid_stable.columns:
+                best_stable_idx = valid_stable['L/D'].idxmax()
+                best_stable = valid_stable.loc[best_stable_idx]
+                self.best_stable_ld_label.setText(
+                    f"{best_stable['L/D']:.3f} (A2={best_stable.get('A2', 0):.2f})")
+                self.best_stable_ld_label.setVisible(True)
+                self.best_stable_ld_header.setVisible(True)
+            else:
+                self.best_stable_ld_label.setText("No fully stable designs")
+                self.best_stable_ld_label.setVisible(True)
+                self.best_stable_ld_header.setVisible(True)
+        else:
+            self.best_stability_label.setVisible(False)
+            self.best_stability_header.setVisible(False)
+            self.best_stable_ld_label.setVisible(False)
+            self.best_stable_ld_header.setVisible(False)
+
         self.best_design_group.setVisible(True)
     
     def update_ds_plot(self):
