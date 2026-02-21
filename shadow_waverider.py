@@ -245,7 +245,8 @@ class ShadowWaverider:
         
         # Normal Mach number upstream
         Mn1 = M * np.sin(beta)
-        
+        self.Mn1 = Mn1  # Store for pressure coefficient calculations
+
         # Check for detached shock
         if Mn1 < 1.0:
             raise ValueError("Invalid shock configuration: normal Mach number < 1")
@@ -699,45 +700,62 @@ class ShadowWaverider:
         return abs(volume)
     
     def _compute_mac(self) -> float:
-        """Compute mean aerodynamic chord."""
-        # Chord is in X direction (streamwise)
+        """
+        Compute mean aerodynamic chord using thesis formula:
+        mac = (2/S) * integral(c^2 dz)
+
+        where S is planform area, c is local chord, and z is span position.
+        """
         chord_lengths = []
-        
+        z_positions = []
+
         for i in range(len(self.upper_surface)):
             le_x = self.upper_surface[i, 0, 0]   # X at leading edge
             te_x = self.upper_surface[i, -1, 0]  # X at trailing edge
             chord = te_x - le_x
             chord_lengths.append(chord)
-            chord_lengths.append(chord)
-        
-        # Weight by local chord
-        weights = np.array(chord_lengths)**2
-        mac = np.sum(weights) / np.sum(chord_lengths)
-        
-        return mac
+            z_positions.append(self.leading_edge[i, 2])  # span position
+
+        chords = np.array(chord_lengths)
+        z_pos = np.array(z_positions)
+
+        # Integrate c^2 over half-span and multiply by 2 for symmetry
+        half = len(chords) // 2
+        try:
+            integral = np.trapezoid(chords[half:]**2, z_pos[half:])
+        except AttributeError:
+            integral = np.trapz(chords[half:]**2, z_pos[half:])
+
+        S = max(self.planform_area, 1e-10)
+        mac = (2.0 / S) * abs(integral) * 2  # *2 for both halves
+
+        return max(mac, 1e-6)
     
     def _compute_cg(self) -> np.ndarray:
         """
         Compute estimated center of gravity location.
-        
+
+        Uses thesis convention: CG at 0.75*MAC upstream from the base
+        (trailing edge), i.e. cg_x = x_end - 0.75*mac.
+
         After coordinate transformation:
         X = streamwise, Y = vertical, Z = span
         """
-        # CG at 25% MAC from leading edge along X (streamwise)
-        cg_x = self.x_start + 0.25 * self.mac
-        
+        # Thesis: CG at 0.75*MAC upstream from base (trailing edge)
+        cg_x = self.x_end - 0.75 * self.mac
+
         # Find y at centerline (z=0)
         center_idx = len(self.upper_surface) // 2
-        
+
         # Average y between upper and lower at CG x location
         frac = (cg_x - self.x_start) / (self.x_end - self.x_start)
         frac = np.clip(frac, 0, 1)
         idx = int(frac * (self.n_streamwise - 1))
-        
+
         y_upper = self.upper_surface[center_idx, idx, 1]
         y_lower = self.lower_surface[center_idx, idx, 1]
         cg_y = (y_upper + y_lower) / 2
-        
+
         # CG is at centerline (z=0), at cg_x streamwise, at average y
         return np.array([cg_x, cg_y, 0.0])
     
