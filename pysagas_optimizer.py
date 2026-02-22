@@ -164,6 +164,8 @@ class ShadowOptimizer:
             return {'success': False, 'error': f'Geometry failed: {e}'}
 
         cells = cells_from_waverider(wr)
+        if len(cells) == 0:
+            return {'success': False, 'error': 'All mesh cells are degenerate'}
         A_ref = max(wr.planform_area, 1e-10)
         c_ref = max(wr.mac, 1e-6)
 

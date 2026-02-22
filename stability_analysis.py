@@ -27,7 +27,7 @@ try:
     from pysagas.cfd import OPM
     from pysagas.cfd.solver import FlowSolver
     from pysagas.flow import FlowState
-    from pysagas.geometry import Cell, Vector
+    from pysagas.geometry import Cell, DegenerateCell, Vector
     PYSAGAS_AVAILABLE = True
 except ImportError:
     PYSAGAS_AVAILABLE = False
@@ -326,7 +326,10 @@ def cells_from_stl(stl_file: str):
         v0 = Vector(x=float(p0[0]), y=float(p0[1]), z=float(p0[2]))
         v1 = Vector(x=float(p1[0]), y=float(p1[1]), z=float(p1[2]))
         v2 = Vector(x=float(p2[0]), y=float(p2[1]), z=float(p2[2]))
-        cells.append(Cell.from_points([v0, v1, v2]))
+        try:
+            cells.append(Cell.from_points([v0, v1, v2]))
+        except DegenerateCell:
+            continue
 
     return cells
 
@@ -353,7 +356,10 @@ def cells_from_waverider(wr) -> list:
         v0 = Vector(x=float(p0[0]), y=float(p0[1]), z=float(p0[2]))
         v1 = Vector(x=float(p1[0]), y=float(p1[1]), z=float(p1[2]))
         v2 = Vector(x=float(p2[0]), y=float(p2[1]), z=float(p2[2]))
-        cells.append(Cell.from_points([v0, v1, v2]))
+        try:
+            cells.append(Cell.from_points([v0, v1, v2]))
+        except DegenerateCell:
+            continue
 
     return cells
 
