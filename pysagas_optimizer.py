@@ -127,6 +127,11 @@ class ShadowOptimizer:
         self.iteration = 0
         self.best_result = None
 
+        # Evaluation cache to avoid redundant PySAGAS calls
+        # (SLSQP evaluates constraints at the same point as objective)
+        self._eval_cache = {}
+        self._last_good_obj = 100.0  # Tracks last successful objective for smooth penalties
+
         # Callback for GUI progress updates
         self.progress_callback = None
 
@@ -164,6 +169,11 @@ class ShadowOptimizer:
         dict
             Results including CL, CD, Cm, L/D, and optionally stability derivatives
         """
+        # Check evaluation cache to avoid redundant PySAGAS calls
+        cache_key = (tuple(np.round(x, 10)), compute_stability)
+        if cache_key in self._eval_cache:
+            return self._eval_cache[cache_key]
+
         try:
             wr = self._create_waverider(x)
         except Exception as e:
@@ -225,8 +235,11 @@ class ShadowOptimizer:
             result['mac'] = wr.mac
 
         except Exception as e:
-            return {'success': False, 'error': f'PySAGAS failed: {e}'}
+            result = {'success': False, 'error': f'PySAGAS failed: {e}'}
+            self._eval_cache[cache_key] = result
+            return result
 
+        self._eval_cache[cache_key] = result
         return result
 
     def _export_step(self, wr, step_path):
@@ -293,17 +306,35 @@ class ShadowOptimizer:
         if not result.get('success', False):
             if self.verbose:
                 print(f"  Iter {self.iteration}: FAILED - {result.get('error', 'unknown')}")
-            return 1e6  # Large penalty for failed evaluations
+            # Use smooth penalty near the last good value to avoid corrupting
+            # finite-difference gradient estimates (1e6 creates discontinuities)
+            return self._last_good_obj + 10.0
 
         # Compute objective value (always minimize)
+        CL = result.get('CL', 0)
+        CD = result.get('CD', 1e-6)
+
         if self.objective == 'L/D':
-            obj = -result.get('L/D', 0)  # Minimize negative L/D = maximize L/D
+            if CL <= 0:
+                # Negative CL produces misleading L/D; apply smooth penalty
+                # proportional to how negative CL is, staying near the last
+                # good objective to preserve gradient continuity
+                obj = self._last_good_obj + 5.0 + abs(CL) * 100.0
+            else:
+                obj = -result.get('L/D', 0)  # Minimize negative L/D = maximize L/D
         elif self.objective == '-CD':
-            obj = result.get('CD', 1e6)  # Minimize CD
+            obj = CD  # Minimize CD
         elif self.objective == 'CL':
-            obj = -result.get('CL', 0)  # Maximize CL
+            obj = -CL  # Maximize CL
         else:
-            obj = -result.get('L/D', 0)
+            if CL <= 0:
+                obj = self._last_good_obj + 5.0 + abs(CL) * 100.0
+            else:
+                obj = -result.get('L/D', 0)
+
+        # Track last good objective for smooth failure penalties
+        if CL > 0 and result.get('success', False):
+            self._last_good_obj = obj
 
         elapsed = time.time() - start_time
 
@@ -339,21 +370,21 @@ class ShadowOptimizer:
         """Pitch stability constraint: Cm_alpha < 0 → return -Cm_alpha > 0."""
         result = self._evaluate(x, compute_stability=True)
         if not result.get('success', False):
-            return -1e6
+            return -1.0  # Smooth penalty (not -1e6 which corrupts gradients)
         return -result.get('Cm_alpha', 0)
 
     def _stability_constraint_yaw(self, x: np.ndarray) -> float:
         """Yaw stability constraint: Cn_beta > 0 → return Cn_beta > 0."""
         result = self._evaluate(x, compute_stability=True)
         if not result.get('success', False):
-            return -1e6
+            return -1.0
         return result.get('Cn_beta', 0)
 
     def _stability_constraint_roll(self, x: np.ndarray) -> float:
         """Roll stability constraint: Cl_beta < 0 → return -Cl_beta > 0."""
         result = self._evaluate(x, compute_stability=True)
         if not result.get('success', False):
-            return -1e6
+            return -1.0
         return -result.get('Cl_beta', 0)
 
     def optimize(
@@ -361,7 +392,8 @@ class ShadowOptimizer:
         x0: np.ndarray = None,
         bounds: List[Tuple[float, float]] = None,
         maxiter: int = 50,
-        tol: float = 1e-6
+        tol: float = 1e-6,
+        eps: float = 1e-4
     ) -> Dict:
         """
         Run the gradient-based optimization.
@@ -376,6 +408,9 @@ class ShadowOptimizer:
             Maximum number of iterations
         tol : float
             Convergence tolerance
+        eps : float
+            Finite-difference step size for gradient estimation.
+            Default 1e-4 (scipy default ~1.5e-8 is too small for noisy aero evaluations).
 
         Returns
         -------
@@ -389,17 +424,20 @@ class ShadowOptimizer:
             else:
                 x0 = np.array([0.0, -5.0, -0.15])
 
-        # Default bounds
+        # Default bounds (narrower than full range to avoid degenerate geometries
+        # where CL flips sign, which breaks gradient-based methods)
         if bounds is None:
             if self.poly_order == 2:
-                bounds = [(-20.0, -0.5), (-0.5, -0.01)]
+                bounds = [(-15.0, -0.5), (-0.4, -0.02)]
             else:
-                bounds = [(-50.0, 50.0), (-20.0, -0.5), (-0.5, -0.01)]
+                bounds = [(-30.0, 30.0), (-15.0, -0.5), (-0.4, -0.02)]
 
         # Reset state
         self.history = []
         self.iteration = 0
         self.best_result = None
+        self._eval_cache = {}
+        self._last_good_obj = 100.0
 
         if self.verbose:
             print(f"Starting {self.method} optimization")
@@ -433,17 +471,36 @@ class ShadowOptimizer:
                 'fun': lambda x: self._evaluate(x).get('volume', 0) - self.volume_min
             })
 
+        # Build optimizer options
+        options = {'maxiter': maxiter, 'ftol': tol, 'disp': self.verbose}
+        if self.method == 'SLSQP':
+            # Larger FD step for noisy aero evaluations (scipy default ~1.5e-8
+            # is too small and produces unreliable gradients)
+            options['eps'] = eps
+
         # Run optimization
         start_time = time.time()
 
-        opt_result = minimize(
-            self._objective_function,
-            x0,
-            method=self.method,
-            bounds=bounds,
-            constraints=constraints if constraints else (),
-            options={'maxiter': maxiter, 'ftol': tol, 'disp': self.verbose}
-        )
+        try:
+            opt_result = minimize(
+                self._objective_function,
+                x0,
+                method=self.method,
+                bounds=bounds,
+                constraints=constraints if constraints else (),
+                options=options
+            )
+        except Exception as e:
+            # Wrap scipy internal errors with helpful advice
+            if self.verbose:
+                print(f"\nOptimizer raised exception: {e}")
+                print("  Tip: Try 'Nelder-Mead' method which is gradient-free and more robust.")
+            opt_result = type('Result', (), {
+                'success': False,
+                'message': f'{e} (try Nelder-Mead for a gradient-free alternative)',
+                'x': x0,
+                'fun': self._last_good_obj,
+            })()
 
         total_time = time.time() - start_time
 
@@ -476,6 +533,7 @@ class ShadowOptimizer:
             'waverider': final_wr,
             'history': self.history,
             'scipy_result': opt_result,
+            'best_found': self.best_result,
         }
 
         if self.verbose:
@@ -490,6 +548,15 @@ class ShadowOptimizer:
                     print(f"  Cm_alpha = {final_eval.get('Cm_alpha', 0):.6f}")
                     print(f"  Cn_beta  = {final_eval.get('Cn_beta', 0):.6f}")
                     print(f"  Cl_beta  = {final_eval.get('Cl_beta', 0):.6f}")
+
+            if not opt_result.success and self.best_result is not None:
+                print(f"\n  Best design found before failure:")
+                print(f"    x = {self.best_result.get('x', 'N/A')}")
+                print(f"    L/D = {self.best_result.get('L/D', 'N/A')}")
+                print(f"  Suggestions:")
+                print(f"    - Try 'Nelder-Mead' method (gradient-free, more robust)")
+                print(f"    - Narrow the design variable bounds")
+                print(f"    - Use the best-found design as a new starting point")
 
         return result
 

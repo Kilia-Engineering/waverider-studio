@@ -1394,6 +1394,43 @@ class ShadowWaveriderTab(QWidget):
         else:
             self.opt_log.append(f"\nOptimization FAILED: {result.get('message', 'unknown')}")
 
+            # Show best design found before failure
+            best = result.get('best_found')
+            if best is not None:
+                self.opt_log.append(f"\nBest design found before failure:")
+                best_x = best.get('x', None)
+                if best_x is not None:
+                    x_str = ", ".join(f"{v:.4f}" for v in best_x)
+                    self.opt_log.append(f"  x = [{x_str}]")
+                self.opt_log.append(f"  L/D = {best.get('L/D', 'N/A'):.4f}")
+                self.opt_log.append(f"  CL  = {best.get('CL', 'N/A'):.6f}")
+                self.opt_log.append(f"  CD  = {best.get('CD', 'N/A'):.6f}")
+
+            self.opt_log.append(f"\nSuggestions:")
+            self.opt_log.append(f"  - Try 'Nelder-Mead' method (gradient-free, more robust)")
+            self.opt_log.append(f"  - Narrow the A2/A0 bounds")
+            self.opt_log.append(f"  - Try a different initial point")
+            if best is not None and best.get('x') is not None:
+                self.opt_log.append(f"  - Use the best-found design as new starting point")
+
+            # Offer to apply best-found design anyway
+            if best is not None and best.get('x') is not None:
+                reply = QMessageBox.question(self, "Optimization Failed",
+                    f"Optimization did not converge, but found:\n"
+                    f"L/D = {best.get('L/D', 0):.4f}\n\n"
+                    f"Apply best-found design to main panel?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    best_x = best['x']
+                    if len(best_x) == 2:
+                        self.a2_spin.setValue(best_x[0])
+                        self.a0_spin.setValue(best_x[1])
+                    else:
+                        self.a3_spin.setValue(best_x[0])
+                        self.a2_spin.setValue(best_x[1])
+                        self.a0_spin.setValue(best_x[2])
+                    self.generate()
+
         self.opt_progress.setText("Done")
 
     def apply_best_design(self):
