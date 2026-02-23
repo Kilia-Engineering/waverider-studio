@@ -876,6 +876,80 @@ finally:
             pass
 
 
+def generate_mesh_minmax(step_file: str, stl_file: str,
+                         mesh_min: float, mesh_max: float):
+    """
+    Generate STL mesh from STEP file using Gmsh with explicit min/max sizes.
+
+    Parameters
+    ----------
+    step_file : str
+        Path to STEP file
+    stl_file : str
+        Path to output STL file
+    mesh_min : float
+        Minimum element size in model units (mm, matching STEP scale)
+    mesh_max : float
+        Maximum element size in model units (mm, matching STEP scale)
+    """
+    import subprocess
+    import sys
+
+    mesh_script = f'''
+import gmsh
+import sys
+
+gmsh.initialize()
+gmsh.option.setNumber("General.Terminal", 0)
+gmsh.option.setNumber("General.Verbosity", 0)
+
+try:
+    gmsh.model.add("waverider")
+    gmsh.model.occ.importShapes(r"{step_file}")
+    gmsh.model.occ.synchronize()
+    gmsh.model.occ.removeAllDuplicates()
+    gmsh.model.occ.synchronize()
+
+    gmsh.option.setNumber("Mesh.MeshSizeMin", {mesh_min})
+    gmsh.option.setNumber("Mesh.MeshSizeMax", {mesh_max})
+    gmsh.option.setNumber("Mesh.Algorithm", 6)
+
+    gmsh.model.mesh.generate(2)
+    gmsh.write(r"{stl_file}")
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}")
+    sys.exit(1)
+finally:
+    gmsh.finalize()
+'''
+
+    script_file = os.path.join(os.path.dirname(step_file), "mesh_script.py")
+    with open(script_file, 'w') as f:
+        f.write(mesh_script)
+
+    try:
+        result = subprocess.run(
+            [sys.executable, script_file],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
+        if result.returncode != 0 or "ERROR" in result.stdout:
+            error_msg = result.stderr or result.stdout
+            raise RuntimeError(f"Gmsh subprocess failed: {error_msg}")
+
+        if not os.path.exists(stl_file):
+            raise RuntimeError("STL file was not created")
+
+    finally:
+        try:
+            os.remove(script_file)
+        except Exception:
+            pass
+
+
 def run_pysagas_analysis(
     stl_file: str,
     M_inf: float,

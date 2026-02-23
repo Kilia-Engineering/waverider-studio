@@ -727,7 +727,7 @@ class ShadowWaverider:
             integral = np.trapz(chords[half:]**2, z_pos[half:])
 
         S = max(self.planform_area, 1e-10)
-        mac = (2.0 / S) * abs(integral) * 2  # *2 for both halves
+        mac = (2.0 / S) * abs(integral)
 
         return max(mac, 1e-6)
     

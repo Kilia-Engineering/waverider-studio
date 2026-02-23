@@ -257,7 +257,8 @@ class GradientOptWorker(QThread):
     def __init__(self, mach, shock_angle, poly_order, x0, bounds,
                  objective='L/D', method='SLSQP', maxiter=50,
                  stability_constrained=False, save_vtk=True,
-                 pressure=101325.0, temperature=288.15, alpha_deg=0.0):
+                 pressure=101325.0, temperature=288.15, alpha_deg=0.0,
+                 mesh_min=0.005, mesh_max=0.05, save_geometry_vtk=True):
         super().__init__()
         self.mach = mach
         self.shock_angle = shock_angle
@@ -272,6 +273,9 @@ class GradientOptWorker(QThread):
         self.pressure = pressure
         self.temperature = temperature
         self.alpha_deg = alpha_deg
+        self.mesh_min = mesh_min
+        self.mesh_max = mesh_max
+        self.save_geometry_vtk = save_geometry_vtk
 
     def run(self):
         try:
@@ -289,7 +293,10 @@ class GradientOptWorker(QThread):
                 stability_constrained=self.stability_constrained,
                 save_vtk=self.save_vtk,
                 output_dir='optimization_results',
-                verbose=False
+                verbose=False,
+                mesh_min=self.mesh_min,
+                mesh_max=self.mesh_max,
+                save_geometry_vtk=self.save_geometry_vtk
             )
 
             # Wire progress callback to emit Qt signal
@@ -1161,28 +1168,87 @@ class ShadowWaveriderTab(QWidget):
         gl.addWidget(self.opt_stability, 1, 2, 1, 2)
 
         # Save VTK
-        self.opt_save_vtk = QCheckBox("Save VTK")
+        self.opt_save_vtk = QCheckBox("Save Pressure VTK")
         self.opt_save_vtk.setToolTip("Save pressure VTK files at each iteration")
         self.opt_save_vtk.setChecked(True)
         gl.addWidget(self.opt_save_vtk, 2, 0)
 
+        # Save geometry VTK for animation
+        self.opt_save_geom_vtk = QCheckBox("Save Geometry VTK (animation)")
+        self.opt_save_geom_vtk.setToolTip(
+            "Save waverider mesh as VTK at each iteration for ParaView animation")
+        self.opt_save_geom_vtk.setChecked(True)
+        gl.addWidget(self.opt_save_geom_vtk, 2, 2, 1, 2)
+
+        group.setLayout(gl)
+        layout.addWidget(group)
+
+        # Gmsh Mesh Settings group
+        mesh_group = QGroupBox("Gmsh Mesh Settings")
+        mg = QGridLayout()
+
+        mg.addWidget(QLabel("Min Element Size [m]:"), 0, 0)
+        self.opt_mesh_min = QDoubleSpinBox()
+        self.opt_mesh_min.setRange(0.00001, 10.0)
+        self.opt_mesh_min.setValue(0.005)
+        self.opt_mesh_min.setSingleStep(0.001)
+        self.opt_mesh_min.setDecimals(5)
+        self.opt_mesh_min.setToolTip("Minimum triangle edge length in meters")
+        mg.addWidget(self.opt_mesh_min, 0, 1)
+
+        mg.addWidget(QLabel("Max Element Size [m]:"), 1, 0)
+        self.opt_mesh_max = QDoubleSpinBox()
+        self.opt_mesh_max.setRange(0.0001, 100.0)
+        self.opt_mesh_max.setValue(0.05)
+        self.opt_mesh_max.setSingleStep(0.005)
+        self.opt_mesh_max.setDecimals(5)
+        self.opt_mesh_max.setToolTip("Maximum triangle edge length in meters")
+        mg.addWidget(self.opt_mesh_max, 1, 1)
+
+        preset_layout = QHBoxLayout()
+        preset_layout.addWidget(QLabel("Presets:"))
+        coarse_btn = QPushButton("Coarse")
+        coarse_btn.clicked.connect(lambda: (
+            self.opt_mesh_min.setValue(0.01), self.opt_mesh_max.setValue(0.1)))
+        preset_layout.addWidget(coarse_btn)
+        medium_btn = QPushButton("Medium")
+        medium_btn.clicked.connect(lambda: (
+            self.opt_mesh_min.setValue(0.005), self.opt_mesh_max.setValue(0.05)))
+        preset_layout.addWidget(medium_btn)
+        fine_btn = QPushButton("Fine")
+        fine_btn.clicked.connect(lambda: (
+            self.opt_mesh_min.setValue(0.002), self.opt_mesh_max.setValue(0.02)))
+        preset_layout.addWidget(fine_btn)
+        preset_layout.addStretch()
+        mg.addLayout(preset_layout, 2, 0, 1, 2)
+
+        mesh_group.setLayout(mg)
+        layout.addWidget(mesh_group)
+
+        # Bounds group
+        bounds_group = QGroupBox("Design Variable Bounds")
+        gl2 = QGridLayout()
+
         # A2 bounds
-        gl.addWidget(QLabel("A2 bounds:"), 3, 0)
+        gl2.addWidget(QLabel("A2 bounds:"), 0, 0)
         self.opt_a2_lo = QDoubleSpinBox()
         self.opt_a2_lo.setRange(-50, 0); self.opt_a2_lo.setValue(-20)
-        gl.addWidget(self.opt_a2_lo, 3, 1)
+        gl2.addWidget(self.opt_a2_lo, 0, 1)
         self.opt_a2_hi = QDoubleSpinBox()
         self.opt_a2_hi.setRange(-50, 0); self.opt_a2_hi.setValue(-0.5)
-        gl.addWidget(self.opt_a2_hi, 3, 2)
+        gl2.addWidget(self.opt_a2_hi, 0, 2)
 
         # A0 bounds
-        gl.addWidget(QLabel("A0 bounds:"), 4, 0)
+        gl2.addWidget(QLabel("A0 bounds:"), 1, 0)
         self.opt_a0_lo = QDoubleSpinBox()
         self.opt_a0_lo.setRange(-1, 0); self.opt_a0_lo.setValue(-0.5); self.opt_a0_lo.setDecimals(3)
-        gl.addWidget(self.opt_a0_lo, 4, 1)
+        gl2.addWidget(self.opt_a0_lo, 1, 1)
         self.opt_a0_hi = QDoubleSpinBox()
         self.opt_a0_hi.setRange(-1, 0); self.opt_a0_hi.setValue(-0.01); self.opt_a0_hi.setDecimals(3)
-        gl.addWidget(self.opt_a0_hi, 4, 2)
+        gl2.addWidget(self.opt_a0_hi, 1, 2)
+
+        bounds_group.setLayout(gl2)
+        layout.addWidget(bounds_group)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -1196,10 +1262,7 @@ class ShadowWaveriderTab(QWidget):
         self.opt_cancel_btn = QPushButton("Cancel")
         self.opt_cancel_btn.setEnabled(False)
         btn_layout.addWidget(self.opt_cancel_btn)
-        gl.addLayout(btn_layout, 5, 0, 1, 4)
-
-        group.setLayout(gl)
-        layout.addWidget(group)
+        layout.addLayout(btn_layout)
 
         # Progress
         self.opt_progress = QLabel("Ready")
@@ -1261,7 +1324,10 @@ class ShadowWaveriderTab(QWidget):
             save_vtk=self.opt_save_vtk.isChecked(),
             pressure=self.p_spin.value(),
             temperature=self.t_spin.value(),
-            alpha_deg=self.aoa_spin.value())
+            alpha_deg=self.aoa_spin.value(),
+            mesh_min=self.opt_mesh_min.value(),
+            mesh_max=self.opt_mesh_max.value(),
+            save_geometry_vtk=self.opt_save_geom_vtk.isChecked())
         self._opt_worker.progress.connect(self._on_opt_progress)
         self._opt_worker.finished_signal.connect(self._on_opt_done)
         self._opt_worker.error.connect(lambda e: QMessageBox.critical(self, "Error", e))

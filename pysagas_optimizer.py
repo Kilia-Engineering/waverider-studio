@@ -34,7 +34,7 @@ from shadow_waverider import (
 try:
     from stability_analysis import (
         compute_stability_derivatives, cells_from_waverider,
-        _run_pysagas_at_condition
+        cells_from_stl, _run_pysagas_at_condition
     )
     STABILITY_AVAILABLE = True
 except ImportError:
@@ -98,7 +98,10 @@ class ShadowOptimizer:
         output_dir: str = 'optimization_results',
         n_le: int = 15,
         n_stream: int = 15,
-        verbose: bool = True
+        verbose: bool = True,
+        mesh_min: float = 0.005,
+        mesh_max: float = 0.05,
+        save_geometry_vtk: bool = True
     ):
         self.mach = mach
         self.shock_angle = shock_angle
@@ -115,6 +118,9 @@ class ShadowOptimizer:
         self.n_le = n_le
         self.n_stream = n_stream
         self.verbose = verbose
+        self.mesh_min = mesh_min
+        self.mesh_max = mesh_max
+        self.save_geometry_vtk = save_geometry_vtk
 
         # Convergence history
         self.history = []
@@ -144,7 +150,7 @@ class ShadowOptimizer:
 
     def _evaluate(self, x: np.ndarray, compute_stability: bool = False) -> Dict:
         """
-        Evaluate a design point: generate waverider and run PySAGAS.
+        Evaluate a design point: generate waverider, mesh with Gmsh, run PySAGAS.
 
         Parameters
         ----------
@@ -163,7 +169,32 @@ class ShadowOptimizer:
         except Exception as e:
             return {'success': False, 'error': f'Geometry failed: {e}'}
 
-        cells = cells_from_waverider(wr)
+        # Save geometry VTK for animation
+        if self.save_geometry_vtk:
+            try:
+                vtk_path = os.path.join(
+                    self.output_dir, f'geometry_{self.iteration:04d}.vtu')
+                self._export_geometry_vtk(wr, vtk_path)
+            except Exception:
+                pass  # Geometry VTK is optional
+
+        # Generate cells via STEP → Gmsh → STL pipeline
+        try:
+            iter_tag = f'iter_{self.iteration:04d}'
+            step_path = os.path.join(self.output_dir, f'{iter_tag}.step')
+            stl_path = os.path.join(self.output_dir, f'{iter_tag}.stl')
+
+            self._export_step(wr, step_path)
+            self._run_gmsh(step_path, stl_path)
+            cells = cells_from_stl(stl_path)
+        except Exception as e:
+            # Fallback to direct triangulation if Gmsh pipeline fails
+            if self.verbose:
+                print(f"  Gmsh pipeline failed ({e}), falling back to direct mesh")
+            cells = cells_from_waverider(wr)
+
+        if len(cells) == 0:
+            return {'success': False, 'error': 'All mesh cells are degenerate'}
         A_ref = max(wr.planform_area, 1e-10)
         c_ref = max(wr.mac, 1e-6)
 
@@ -197,6 +228,60 @@ class ShadowOptimizer:
             return {'success': False, 'error': f'PySAGAS failed: {e}'}
 
         return result
+
+    def _export_step(self, wr, step_path):
+        """Export ShadowWaverider to STEP via NURBS solid."""
+        import cadquery as cq
+        from waverider_generator.cad_export import build_waverider_solid
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+
+        upper = wr.upper_surface
+        lower = wr.lower_surface
+        n_le = upper.shape[0]
+        center = n_le // 2
+
+        upper_half = upper[center:, :, :]
+        lower_half = lower[center:, :, :]
+
+        le_curve = upper_half[:, 0, :]
+        cl_upper = upper_half[0, :, :]
+        cl_lower = lower_half[0, :, :]
+        te_upper = upper_half[:, -1, :]
+        te_lower = lower_half[:, -1, :]
+        upper_streams = [upper_half[i] for i in range(upper_half.shape[0])]
+        lower_streams = [lower_half[i] for i in range(lower_half.shape[0])]
+
+        right = build_waverider_solid(
+            upper_streams, lower_streams, le_curve,
+            cl_upper, cl_lower, te_upper, te_lower)
+        right = right.scale(1000.0)  # m -> mm for STEP
+
+        left = right.mirror(mirrorPlane='XY')
+
+        sew = BRepBuilderAPI_Sewing(1e-2)
+        sew.Add(right.wrapped)
+        sew.Add(left.wrapped)
+        sew.Perform()
+        result = cq.Shape(sew.SewedShape())
+        cq.exporters.export(cq.Workplane("XY").newObject([result]), step_path)
+
+    def _run_gmsh(self, step_path, stl_path):
+        """Mesh STEP file with Gmsh -> STL."""
+        from optimization_engine import generate_mesh_minmax
+        # Convert mesh sizes from meters to mm (STEP is in mm)
+        generate_mesh_minmax(
+            step_path, stl_path,
+            self.mesh_min * 1000.0, self.mesh_max * 1000.0)
+
+    def _export_geometry_vtk(self, wr, vtk_path):
+        """Save waverider triangular mesh as VTK for ParaView animation."""
+        import meshio
+        verts, tris = wr.get_mesh()
+        mesh = meshio.Mesh(
+            points=verts,
+            cells=[("triangle", tris)]
+        )
+        meshio.write(vtk_path, mesh)
 
     def _objective_function(self, x: np.ndarray) -> float:
         """Objective function for scipy.optimize."""
