@@ -356,7 +356,7 @@ class ShadowOptimizer:
 
         if self.verbose:
             x_str = ", ".join(f"{v:.4f}" for v in x)
-            print(f"  Iter {self.iteration}: obj={obj:.6f}, "
+            print(f"  Eval {self.iteration}: obj={obj:.6f}, "
                   f"L/D={result.get('L/D', 0):.4f}, "
                   f"x=[{x_str}] ({elapsed:.1f}s)")
 
@@ -439,6 +439,7 @@ class ShadowOptimizer:
         self._eval_cache = {}
         self._last_good_obj = 100.0
 
+        n_vars = len(x0)
         if self.verbose:
             print(f"Starting {self.method} optimization")
             print(f"  Mach={self.mach}, shock={self.shock_angle}, order={self.poly_order}")
@@ -446,6 +447,10 @@ class ShadowOptimizer:
             print(f"  Stability constrained: {self.stability_constrained}")
             print(f"  x0 = {x0}")
             print(f"  bounds = {bounds}")
+            print(f"  maxiter = {maxiter} optimizer iterations")
+            if self.method == 'SLSQP':
+                print(f"  (SLSQP uses ~{n_vars+1} function evals per iteration "
+                      f"for FD gradients, so expect ~{maxiter*(n_vars+1)} evals)")
             print()
 
         # Build constraints
@@ -472,11 +477,15 @@ class ShadowOptimizer:
             })
 
         # Build optimizer options
+        # Note: for SLSQP, 'maxiter' counts optimizer iterations, not function
+        # evaluations. Each iteration uses ~(n_vars+1) evaluations for FD gradients.
+        # We cap total function evaluations via maxiter * (n_vars+1) equivalent.
         options = {'maxiter': maxiter, 'ftol': tol, 'disp': self.verbose}
         if self.method == 'SLSQP':
             # Larger FD step for noisy aero evaluations (scipy default ~1.5e-8
             # is too small and produces unreliable gradients)
             options['eps'] = eps
+        self._maxfev = maxiter  # Track for logging purposes
 
         # Run optimization
         start_time = time.time()

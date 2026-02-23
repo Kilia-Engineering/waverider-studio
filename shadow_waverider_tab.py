@@ -1336,10 +1336,10 @@ class ShadowWaveriderTab(QWidget):
     def _on_opt_progress(self, iteration, entry):
         """Handle gradient optimization progress updates."""
         self.opt_progress.setText(
-            f"Iter {iteration}: L/D={entry.get('L/D', 0):.4f}, "
+            f"Eval {iteration}: L/D={entry.get('L/D', 0):.4f}, "
             f"obj={entry.get('objective', 0):.6f}")
         self.opt_log.append(
-            f"Iter {iteration}: L/D={entry.get('L/D', 0):.4f} "
+            f"Eval {iteration}: L/D={entry.get('L/D', 0):.4f} "
             f"CD={entry.get('CD', 0):.6f}")
 
         # Update convergence plot
