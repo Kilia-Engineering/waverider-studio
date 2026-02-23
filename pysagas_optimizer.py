@@ -179,15 +179,6 @@ class ShadowOptimizer:
         except Exception as e:
             return {'success': False, 'error': f'Geometry failed: {e}'}
 
-        # Save geometry VTK for animation
-        if self.save_geometry_vtk:
-            try:
-                vtk_path = os.path.join(
-                    self.output_dir, f'geometry_{self.iteration:04d}.vtu')
-                self._export_geometry_vtk(wr, vtk_path)
-            except Exception:
-                pass  # Geometry VTK is optional
-
         # Generate cells via STEP → Gmsh → STL pipeline
         try:
             iter_tag = f'iter_{self.iteration:04d}'
@@ -239,6 +230,15 @@ class ShadowOptimizer:
             self._eval_cache[cache_key] = result
             return result
 
+        # Save geometry VTK with flow data (after PySAGAS run)
+        if self.save_geometry_vtk:
+            try:
+                vtk_path = os.path.join(
+                    self.output_dir, f'geometry_{self.iteration:04d}.vtu')
+                self._export_geometry_vtk(wr, vtk_path, cells=cells)
+            except Exception:
+                pass  # Geometry VTK is optional
+
         self._eval_cache[cache_key] = result
         return result
 
@@ -286,13 +286,40 @@ class ShadowOptimizer:
             step_path, stl_path,
             self.mesh_min * 1000.0, self.mesh_max * 1000.0)
 
-    def _export_geometry_vtk(self, wr, vtk_path):
-        """Save waverider triangular mesh as VTK for ParaView animation."""
+    def _export_geometry_vtk(self, wr, vtk_path, cells=None):
+        """Save waverider triangular mesh as VTK for ParaView animation.
+
+        If solved PySAGAS cells are provided, includes per-cell flow data
+        (pressure, Mach, temperature, Cp) on the geometry mesh.
+        """
         import meshio
         verts, tris = wr.get_mesh()
+
+        cell_data = {}
+        if cells is not None:
+            # Map flow data from PySAGAS cells onto the geometry triangles.
+            # cells_from_waverider() produces cells in the same order as
+            # get_mesh() triangles, so the indices correspond directly.
+            pressure = []
+            mach_field = []
+            temperature = []
+            for i, tri in enumerate(tris):
+                if i < len(cells) and cells[i].flowstate is not None:
+                    pressure.append(cells[i].flowstate.P)
+                    mach_field.append(cells[i].flowstate.M)
+                    temperature.append(cells[i].flowstate.T)
+                else:
+                    pressure.append(0.0)
+                    mach_field.append(0.0)
+                    temperature.append(0.0)
+            cell_data['pressure'] = [np.array(pressure)]
+            cell_data['Mach'] = [np.array(mach_field)]
+            cell_data['temperature'] = [np.array(temperature)]
+
         mesh = meshio.Mesh(
             points=verts,
-            cells=[("triangle", tris)]
+            cells=[("triangle", tris)],
+            cell_data=cell_data if cell_data else {},
         )
         meshio.write(vtk_path, mesh)
 
@@ -573,6 +600,53 @@ class ShadowOptimizer:
         # Save convergence history
         self._save_history()
 
+        # Generate shape evolution GIF
+        gif_path = None
+        try:
+            from animation_utils import generate_optimization_gif
+            gif_path = os.path.join(self.output_dir, 'waverider_evolution.gif')
+            gif_result = generate_optimization_gif(
+                history=self.history,
+                mach=self.mach,
+                shock_angle=self.shock_angle,
+                poly_order=self.poly_order,
+                output_path=gif_path,
+                n_le=self.n_le,
+                n_stream=self.n_stream,
+            )
+            if gif_result and self.verbose:
+                print(f"  Animation saved to {gif_result}")
+        except Exception as e:
+            if self.verbose:
+                print(f"  Animation generation skipped: {e}")
+
+        # Compute shape sensitivities on final optimized design
+        sensitivity_result = None
+        if final_wr is not None:
+            try:
+                from stability_analysis import compute_shape_sensitivities
+                sens_vtk = os.path.join(self.output_dir, 'optimized')
+                sensitivity_result = compute_shape_sensitivities(
+                    wr=final_wr,
+                    mach=self.mach,
+                    shock_angle=self.shock_angle,
+                    poly_order=self.poly_order,
+                    x=final_x,
+                    pressure=self.pressure,
+                    temperature=self.temperature,
+                    alpha_deg=self.alpha_deg,
+                    n_le=self.n_le,
+                    n_stream=self.n_stream,
+                    save_vtk=sens_vtk,
+                )
+                if self.verbose:
+                    print(f"\n  Shape sensitivities (dF/dp):")
+                    print(f"  {sensitivity_result['f_sens']}")
+                    print(f"  Sensitivity VTK saved to {sens_vtk}_sensitivities.vtu")
+            except Exception as e:
+                if self.verbose:
+                    print(f"  Sensitivity computation skipped: {e}")
+
         result = {
             'success': opt_result.success,
             'message': opt_result.message,
@@ -585,6 +659,8 @@ class ShadowOptimizer:
             'history': self.history,
             'scipy_result': opt_result,
             'best_found': self.best_result,
+            'gif_path': gif_path,
+            'sensitivity': sensitivity_result,
         }
 
         if self.verbose:

@@ -312,6 +312,17 @@ class GradientOptWorker(QThread):
             # Remove non-serializable items before emitting
             result.pop('waverider', None)
             result.pop('scipy_result', None)
+            # Convert sensitivity DataFrames to dicts for Qt signal
+            sens = result.get('sensitivity')
+            if sens is not None:
+                try:
+                    result['sensitivity'] = {
+                        'f_sens': sens['f_sens'].to_dict(),
+                        'm_sens': sens['m_sens'].to_dict(),
+                        'parameters': sens['parameters'],
+                    }
+                except Exception:
+                    result.pop('sensitivity', None)
             self.finished_signal.emit(result)
 
         except Exception as e:
@@ -1262,6 +1273,14 @@ class ShadowWaveriderTab(QWidget):
         self.opt_cancel_btn = QPushButton("Cancel")
         self.opt_cancel_btn.setEnabled(False)
         btn_layout.addWidget(self.opt_cancel_btn)
+
+        self.opt_anim_btn = QPushButton("Generate Animation GIF")
+        self.opt_anim_btn.setToolTip(
+            "Generate a GIF showing waverider shape evolution from the last optimization")
+        self.opt_anim_btn.clicked.connect(self._generate_animation)
+        self.opt_anim_btn.setEnabled(False)
+        btn_layout.addWidget(self.opt_anim_btn)
+
         layout.addLayout(btn_layout)
 
         # Progress
@@ -1431,7 +1450,58 @@ class ShadowWaveriderTab(QWidget):
                         self.a0_spin.setValue(best_x[2])
                     self.generate()
 
+        # Log GIF and sensitivity results
+        gif_path = result.get('gif_path')
+        if gif_path and os.path.exists(gif_path):
+            self.opt_log.append(f"\nAnimation saved: {gif_path}")
+
+        sens = result.get('sensitivity')
+        if sens is not None:
+            self.opt_log.append(f"\nShape sensitivities (dF/dp):")
+            try:
+                f_sens = sens['f_sens']
+                params = sens.get('parameters', [])
+                for param in params:
+                    dFx = f_sens.get('dFx/dp', {}).get(param, 0)
+                    dFy = f_sens.get('dFy/dp', {}).get(param, 0)
+                    dFz = f_sens.get('dFz/dp', {}).get(param, 0)
+                    self.opt_log.append(
+                        f"  {param}: dFx={dFx:.4e}, dFy={dFy:.4e}, dFz={dFz:.4e}")
+            except Exception:
+                self.opt_log.append("  (see console for details)")
+            self.opt_log.append(
+                f"  Sensitivity VTK: optimization_results/optimized_sensitivities.vtu")
+
+        # Enable animation button for regeneration
+        self.opt_anim_btn.setEnabled(True)
+
         self.opt_progress.setText("Done")
+
+    def _generate_animation(self):
+        """Generate or regenerate animation GIF from last optimization."""
+        history_path = os.path.join('optimization_results', 'convergence_history.json')
+        if not os.path.exists(history_path):
+            QMessageBox.warning(self, "No History",
+                                "No optimization history found. Run optimization first.")
+            return
+
+        try:
+            from animation_utils import generate_gif_from_history_file
+            gif_path = generate_gif_from_history_file(
+                history_json_path=history_path,
+                mach=self.mach_spin.value(),
+                shock_angle=self.shock_spin.value(),
+                poly_order=self.order_combo.currentIndex() + 2,
+            )
+            if gif_path:
+                self.opt_log.append(f"\nAnimation saved: {gif_path}")
+                QMessageBox.information(self, "Animation Complete",
+                                        f"GIF saved to:\n{gif_path}")
+            else:
+                QMessageBox.warning(self, "Animation Failed",
+                                    "Could not generate animation. Check console for details.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Animation generation failed:\n{e}")
 
     def apply_best_design(self):
         """Apply the best design parameters to the main panel"""
