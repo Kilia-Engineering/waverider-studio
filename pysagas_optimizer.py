@@ -356,7 +356,7 @@ class ShadowOptimizer:
 
         if self.verbose:
             x_str = ", ".join(f"{v:.4f}" for v in x)
-            print(f"  Iter {self.iteration}: obj={obj:.6f}, "
+            print(f"  Eval {self.iteration}: obj={obj:.6f}, "
                   f"L/D={result.get('L/D', 0):.4f}, "
                   f"x=[{x_str}] ({elapsed:.1f}s)")
 
@@ -392,7 +392,7 @@ class ShadowOptimizer:
         x0: np.ndarray = None,
         bounds: List[Tuple[float, float]] = None,
         maxiter: int = 50,
-        tol: float = 1e-6,
+        tol: float = 1e-4,
         eps: float = 1e-4
     ) -> Dict:
         """
@@ -439,6 +439,7 @@ class ShadowOptimizer:
         self._eval_cache = {}
         self._last_good_obj = 100.0
 
+        n_vars = len(x0)
         if self.verbose:
             print(f"Starting {self.method} optimization")
             print(f"  Mach={self.mach}, shock={self.shock_angle}, order={self.poly_order}")
@@ -446,6 +447,10 @@ class ShadowOptimizer:
             print(f"  Stability constrained: {self.stability_constrained}")
             print(f"  x0 = {x0}")
             print(f"  bounds = {bounds}")
+            print(f"  maxiter = {maxiter} optimizer iterations")
+            if self.method == 'SLSQP':
+                print(f"  (SLSQP uses ~{n_vars+1} function evals per iteration "
+                      f"for FD gradients, so expect ~{maxiter*(n_vars+1)} evals)")
             print()
 
         # Build constraints
@@ -472,11 +477,15 @@ class ShadowOptimizer:
             })
 
         # Build optimizer options
+        # Note: for SLSQP, 'maxiter' counts optimizer iterations, not function
+        # evaluations. Each iteration uses ~(n_vars+1) evaluations for FD gradients.
+        # We cap total function evaluations via maxiter * (n_vars+1) equivalent.
         options = {'maxiter': maxiter, 'ftol': tol, 'disp': self.verbose}
         if self.method == 'SLSQP':
             # Larger FD step for noisy aero evaluations (scipy default ~1.5e-8
             # is too small and produces unreliable gradients)
             options['eps'] = eps
+        self._maxfev = maxiter  # Track for logging purposes
 
         # Run optimization
         start_time = time.time()
@@ -501,6 +510,48 @@ class ShadowOptimizer:
                 'x': x0,
                 'fun': self._last_good_obj,
             })()
+
+        # Auto-retry with Nelder-Mead if gradient-based method failed
+        if not opt_result.success and self.method in ('SLSQP', 'COBYLA'):
+            if self.verbose:
+                print(f"\n  {self.method} did not converge. Auto-retrying with Nelder-Mead...")
+
+            # Use the best point found so far as starting point for Nelder-Mead
+            retry_x0 = self.best_result['x'] if self.best_result is not None else x0
+            prev_best_obj = self.best_result['objective'] if self.best_result else None
+            prev_history = list(self.history)
+
+            # Reset state for retry (keep best_result for comparison)
+            self._eval_cache = {}
+            self.iteration = 0
+            retry_history_start = len(prev_history)
+
+            try:
+                nm_result = minimize(
+                    self._objective_function,
+                    retry_x0,
+                    method='Nelder-Mead',
+                    options={
+                        'maxiter': maxiter,
+                        'xatol': 1e-3,
+                        'fatol': 1e-4,
+                        'adaptive': True,
+                        'disp': self.verbose
+                    }
+                )
+                # Use Nelder-Mead result if it's better
+                if nm_result.success or (prev_best_obj is not None and nm_result.fun < prev_best_obj):
+                    opt_result = nm_result
+                    if self.verbose:
+                        print(f"  Nelder-Mead improved result: obj={nm_result.fun:.6f}")
+                elif self.verbose:
+                    print(f"  Nelder-Mead did not improve (obj={nm_result.fun:.6f})")
+            except Exception as e:
+                if self.verbose:
+                    print(f"  Nelder-Mead retry also failed: {e}")
+
+            # Merge histories
+            self.history = prev_history + self.history
 
         total_time = time.time() - start_time
 

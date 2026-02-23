@@ -1229,22 +1229,22 @@ class ShadowWaveriderTab(QWidget):
         bounds_group = QGroupBox("Design Variable Bounds")
         gl2 = QGridLayout()
 
-        # A2 bounds
+        # A2 bounds (tighter defaults to avoid degenerate geometries)
         gl2.addWidget(QLabel("A2 bounds:"), 0, 0)
         self.opt_a2_lo = QDoubleSpinBox()
-        self.opt_a2_lo.setRange(-50, 0); self.opt_a2_lo.setValue(-20)
+        self.opt_a2_lo.setRange(-50, 0); self.opt_a2_lo.setValue(-15)
         gl2.addWidget(self.opt_a2_lo, 0, 1)
         self.opt_a2_hi = QDoubleSpinBox()
         self.opt_a2_hi.setRange(-50, 0); self.opt_a2_hi.setValue(-0.5)
         gl2.addWidget(self.opt_a2_hi, 0, 2)
 
-        # A0 bounds
+        # A0 bounds (tighter defaults to avoid CL sign flips)
         gl2.addWidget(QLabel("A0 bounds:"), 1, 0)
         self.opt_a0_lo = QDoubleSpinBox()
-        self.opt_a0_lo.setRange(-1, 0); self.opt_a0_lo.setValue(-0.5); self.opt_a0_lo.setDecimals(3)
+        self.opt_a0_lo.setRange(-1, 0); self.opt_a0_lo.setValue(-0.4); self.opt_a0_lo.setDecimals(3)
         gl2.addWidget(self.opt_a0_lo, 1, 1)
         self.opt_a0_hi = QDoubleSpinBox()
-        self.opt_a0_hi.setRange(-1, 0); self.opt_a0_hi.setValue(-0.01); self.opt_a0_hi.setDecimals(3)
+        self.opt_a0_hi.setRange(-1, 0); self.opt_a0_hi.setValue(-0.02); self.opt_a0_hi.setDecimals(3)
         gl2.addWidget(self.opt_a0_hi, 1, 2)
 
         bounds_group.setLayout(gl2)
@@ -1336,10 +1336,10 @@ class ShadowWaveriderTab(QWidget):
     def _on_opt_progress(self, iteration, entry):
         """Handle gradient optimization progress updates."""
         self.opt_progress.setText(
-            f"Iter {iteration}: L/D={entry.get('L/D', 0):.4f}, "
+            f"Eval {iteration}: L/D={entry.get('L/D', 0):.4f}, "
             f"obj={entry.get('objective', 0):.6f}")
         self.opt_log.append(
-            f"Iter {iteration}: L/D={entry.get('L/D', 0):.4f} "
+            f"Eval {iteration}: L/D={entry.get('L/D', 0):.4f} "
             f"CD={entry.get('CD', 0):.6f}")
 
         # Update convergence plot
