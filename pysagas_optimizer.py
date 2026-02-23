@@ -392,7 +392,7 @@ class ShadowOptimizer:
         x0: np.ndarray = None,
         bounds: List[Tuple[float, float]] = None,
         maxiter: int = 50,
-        tol: float = 1e-6,
+        tol: float = 1e-4,
         eps: float = 1e-4
     ) -> Dict:
         """
