@@ -502,6 +502,48 @@ class ShadowOptimizer:
                 'fun': self._last_good_obj,
             })()
 
+        # Auto-retry with Nelder-Mead if gradient-based method failed
+        if not opt_result.success and self.method in ('SLSQP', 'COBYLA'):
+            if self.verbose:
+                print(f"\n  {self.method} did not converge. Auto-retrying with Nelder-Mead...")
+
+            # Use the best point found so far as starting point for Nelder-Mead
+            retry_x0 = self.best_result['x'] if self.best_result is not None else x0
+            prev_best_obj = self.best_result['objective'] if self.best_result else None
+            prev_history = list(self.history)
+
+            # Reset state for retry (keep best_result for comparison)
+            self._eval_cache = {}
+            self.iteration = 0
+            retry_history_start = len(prev_history)
+
+            try:
+                nm_result = minimize(
+                    self._objective_function,
+                    retry_x0,
+                    method='Nelder-Mead',
+                    options={
+                        'maxiter': maxiter,
+                        'xatol': 1e-3,
+                        'fatol': 1e-4,
+                        'adaptive': True,
+                        'disp': self.verbose
+                    }
+                )
+                # Use Nelder-Mead result if it's better
+                if nm_result.success or (prev_best_obj is not None and nm_result.fun < prev_best_obj):
+                    opt_result = nm_result
+                    if self.verbose:
+                        print(f"  Nelder-Mead improved result: obj={nm_result.fun:.6f}")
+                elif self.verbose:
+                    print(f"  Nelder-Mead did not improve (obj={nm_result.fun:.6f})")
+            except Exception as e:
+                if self.verbose:
+                    print(f"  Nelder-Mead retry also failed: {e}")
+
+            # Merge histories
+            self.history = prev_history + self.history
+
         total_time = time.time() - start_time
 
         # Generate final waverider at optimum
