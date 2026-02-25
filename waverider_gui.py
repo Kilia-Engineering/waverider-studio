@@ -1070,7 +1070,8 @@ class WaveriderGUI(QMainWindow):
                 self.aero_geo_status.setText("STL loaded — ready to analyze")
                 self.aero_geo_status.setStyleSheet("color: #4ADE80;")
             elif ext in (".step", ".stp"):
-                # STEP must be meshed first
+                # STEP must be meshed first — clear any stale STL reference
+                self.last_stl_file = None
                 self.aero_geo_info.setText(
                     f"STEP: {name} | {n_faces:,} triangles (tessellation), {n_verts:,} vertices"
                 )
@@ -1087,8 +1088,16 @@ class WaveriderGUI(QMainWindow):
 
             self._update_aero_tab_state()
 
-            # Auto-calculate A_ref if we have an STL
-            if self.last_stl_file and os.path.exists(self.last_stl_file):
+            # Auto-calculate A_ref from the best available source
+            if ext in (".step", ".stp"):
+                # For STEP: compute planform from the STEP geometry directly
+                try:
+                    area = self._calc_aref_from_imported_geometry()
+                    if area and area > 0:
+                        self.aref_spin.setValue(area)
+                except Exception as e:
+                    print(f"[Aero] STEP A_ref auto-calc failed: {e}")
+            elif self.last_stl_file and os.path.exists(self.last_stl_file):
                 self._auto_aref_from_mesh()
 
         except Exception as e:
@@ -3697,15 +3706,42 @@ class WaveriderGUI(QMainWindow):
 
         # Check if we have an STL file
         if self.last_stl_file is None or not os.path.exists(self.last_stl_file):
-            QMessageBox.warning(
-                self, "No STL file",
-                "No STL mesh found.\n\n"
-                "Import geometry first:\n"
-                "1. Click 'Import Geometry' (STEP or STL)\n"
-                "2. If STEP: Generate mesh with Gmsh\n"
-                "3. Then run analysis"
-            )
+            # If a STEP file is loaded but no mesh generated, guide the user
+            if (self.imported_step_path is not None
+                    and os.path.exists(self.imported_step_path)):
+                QMessageBox.warning(
+                    self, "Mesh Required",
+                    "A STEP file is loaded but no mesh has been generated.\n\n"
+                    "Click 'Generate Mesh' first to create an STL mesh\n"
+                    "from the STEP file, then run analysis."
+                )
+            else:
+                QMessageBox.warning(
+                    self, "No STL file",
+                    "No STL mesh found.\n\n"
+                    "Import geometry first:\n"
+                    "1. Click 'Import Geometry' (STEP or STL)\n"
+                    "2. If STEP: Generate mesh with Gmsh\n"
+                    "3. Then run analysis"
+                )
             return
+
+        # Warn if STL might be stale (generated before current STEP was imported)
+        if (self.imported_step_path is not None
+                and os.path.exists(self.imported_step_path)
+                and os.path.exists(self.last_stl_file)):
+            step_mtime = os.path.getmtime(self.imported_step_path)
+            stl_mtime = os.path.getmtime(self.last_stl_file)
+            if stl_mtime < step_mtime:
+                reply = QMessageBox.question(
+                    self, "Mesh may be outdated",
+                    "The current STL mesh is older than the imported STEP file.\n"
+                    "The mesh may not match the current geometry.\n\n"
+                    "Regenerate mesh before analysis?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    return  # User should regenerate mesh first
 
         # Get analysis parameters
         aoa = self.aoa_spin.value()
