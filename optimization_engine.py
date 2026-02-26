@@ -408,6 +408,9 @@ class WaveriderProblem(Problem):
                     
                     if obj_name in ['LD', 'CL/CD', 'L/D']:  # Accept all L/D variants
                         value = result['CL'] / (result['CD'] + 1e-10)
+                    elif obj_name == 'VolEff':
+                        planform = result.get('planform_area', 0.0)
+                        value = (result['Volume'] ** (2.0/3.0)) / planform if planform > 0 else 0.0
                     else:
                         value = result[obj_name]
                     
@@ -706,6 +709,7 @@ def evaluate_single_design(
             'CD': CD,
             'Cm': Cm,
             'Volume': volume,
+            'planform_area': A_ref_calc,
             'time': eval_time
         }
         

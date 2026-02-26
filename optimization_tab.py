@@ -760,6 +760,7 @@ class OptimizationTab(QWidget):
             ('CD', 'Drag Coefficient', 'Aerodynamic drag force'),
             ('Cm', 'Pitching Moment Coefficient', 'Rotational stability'),
             ('Volume', 'Internal Volume [m³]', 'Available internal space'),
+            ('VolEff', 'Volumetric Efficiency', 'V^(2/3) / Planform Area'),
             ('CL/CD', 'Lift-to-Drag Ratio', 'Aerodynamic efficiency')
         ]
         
@@ -777,7 +778,7 @@ class OptimizationTab(QWidget):
             # Mode combo box
             mode_combo = QComboBox()
             mode_combo.addItems(['Minimize', 'Maximize'])
-            if obj_name in ['CL', 'Volume', 'CL/CD']:
+            if obj_name in ['CL', 'Volume', 'VolEff', 'CL/CD']:
                 mode_combo.setCurrentText('Maximize')
             else:
                 mode_combo.setCurrentText('Minimize')

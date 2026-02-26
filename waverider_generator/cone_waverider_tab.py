@@ -354,6 +354,7 @@ class DesignSpaceWorker(QThread):
                                 'cone_angle': wr.cone_angle_deg,
                                 'planform_area': wr.planform_area,
                                 'volume': wr.volume,
+                                'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 0 else 0.0,
                                 'mac': wr.mac,
                                 'valid': True
                             }
@@ -411,6 +412,7 @@ class DesignSpaceWorker(QThread):
                                 'cone_angle': wr.cone_angle_deg,
                                 'planform_area': wr.planform_area,
                                 'volume': wr.volume,
+                                'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 0 else 0.0,
                                 'mac': wr.mac,
                                 'valid': True
                             }
@@ -861,57 +863,80 @@ class ConeWaveriderTab(QWidget):
         self.ds_a2_min.setRange(-50, 50)
         self.ds_a2_min.setValue(-10)
         ranges_layout.addWidget(self.ds_a2_min, 0, 1)
-        
+
         ranges_layout.addWidget(QLabel("to"), 0, 2)
         self.ds_a2_max = QDoubleSpinBox()
         self.ds_a2_max.setRange(-50, 50)
         self.ds_a2_max.setValue(10)
         ranges_layout.addWidget(self.ds_a2_max, 0, 3)
-        
+
         ranges_layout.addWidget(QLabel("Steps:"), 0, 4)
         self.ds_a2_steps = QSpinBox()
         self.ds_a2_steps.setRange(3, 50)
         self.ds_a2_steps.setValue(10)
         ranges_layout.addWidget(self.ds_a2_steps, 0, 5)
-        
-        ranges_layout.addWidget(QLabel("A₀ Range:"), 1, 0)
+
+        # A0 range widgets (visible in 2nd order, hidden in 3rd order)
+        self.ds_a0_label = QLabel("A₀ Range:")
+        ranges_layout.addWidget(self.ds_a0_label, 1, 0)
         self.ds_a0_min = QDoubleSpinBox()
         self.ds_a0_min.setRange(-1, 0)
         self.ds_a0_min.setValue(-0.3)
         self.ds_a0_min.setDecimals(3)
         ranges_layout.addWidget(self.ds_a0_min, 1, 1)
-        
-        ranges_layout.addWidget(QLabel("to"), 1, 2)
+
+        self.ds_a0_to_label = QLabel("to")
+        ranges_layout.addWidget(self.ds_a0_to_label, 1, 2)
         self.ds_a0_max = QDoubleSpinBox()
         self.ds_a0_max.setRange(-1, 0)
         self.ds_a0_max.setValue(-0.05)
         self.ds_a0_max.setDecimals(3)
         ranges_layout.addWidget(self.ds_a0_max, 1, 3)
-        
-        ranges_layout.addWidget(QLabel("Steps:"), 1, 4)
+
+        self.ds_a0_steps_label = QLabel("Steps:")
+        ranges_layout.addWidget(self.ds_a0_steps_label, 1, 4)
         self.ds_a0_steps = QSpinBox()
         self.ds_a0_steps.setRange(3, 50)
         self.ds_a0_steps.setValue(10)
         ranges_layout.addWidget(self.ds_a0_steps, 1, 5)
-        
-        # Third order parameters
-        ranges_layout.addWidget(QLabel("A₃ Range:"), 2, 0)
+
+        # A0 fixed label (visible in 3rd order, hidden in 2nd order)
+        self.ds_a0_fixed_label = QLabel(f"A₀ fixed at: {self.a0_spin.value():.3f}")
+        self.ds_a0_fixed_label.setStyleSheet("color: #888888; font-style: italic;")
+        self.ds_a0_fixed_label.setVisible(False)
+        ranges_layout.addWidget(self.ds_a0_fixed_label, 1, 0, 1, 6)
+
+        # Third order parameters (hidden by default for 2nd order)
+        self.ds_a3_label = QLabel("A₃ Range:")
+        ranges_layout.addWidget(self.ds_a3_label, 2, 0)
         self.ds_a3_min = QDoubleSpinBox()
         self.ds_a3_min.setRange(-100, 100)
         self.ds_a3_min.setValue(-50)
         ranges_layout.addWidget(self.ds_a3_min, 2, 1)
-        
-        ranges_layout.addWidget(QLabel("to"), 2, 2)
+
+        self.ds_a3_to_label = QLabel("to")
+        ranges_layout.addWidget(self.ds_a3_to_label, 2, 2)
         self.ds_a3_max = QDoubleSpinBox()
         self.ds_a3_max.setRange(-100, 100)
         self.ds_a3_max.setValue(50)
         ranges_layout.addWidget(self.ds_a3_max, 2, 3)
-        
-        ranges_layout.addWidget(QLabel("Steps:"), 2, 4)
+
+        self.ds_a3_steps_label = QLabel("Steps:")
+        ranges_layout.addWidget(self.ds_a3_steps_label, 2, 4)
         self.ds_a3_steps = QSpinBox()
         self.ds_a3_steps.setRange(3, 50)
         self.ds_a3_steps.setValue(10)
         ranges_layout.addWidget(self.ds_a3_steps, 2, 5)
+
+        # Store widget groups for visibility toggling
+        self.ds_a0_widgets = [self.ds_a0_label, self.ds_a0_min, self.ds_a0_to_label,
+                              self.ds_a0_max, self.ds_a0_steps_label, self.ds_a0_steps]
+        self.ds_a3_widgets = [self.ds_a3_label, self.ds_a3_min, self.ds_a3_to_label,
+                              self.ds_a3_max, self.ds_a3_steps_label, self.ds_a3_steps]
+
+        # Default: 2nd order selected, hide A3 widgets
+        for w in self.ds_a3_widgets:
+            w.setVisible(False)
         
         ranges_group.setLayout(ranges_layout)
         controls_layout.addWidget(ranges_group)
@@ -957,13 +982,21 @@ class ConeWaveriderTab(QWidget):
         viz_layout.addWidget(self.ds_toolbar)
         viz_layout.addWidget(self.ds_canvas)
         
-        # Export results button
-        export_layout = QHBoxLayout()
+        # Color by dropdown and export button
+        controls_bar = QHBoxLayout()
+
+        controls_bar.addWidget(QLabel("Color by:"))
+        self.ds_color_combo = QComboBox()
+        self.ds_color_combo.addItems(['vol_efficiency', 'volume', 'planform_area', 'mac', 'cone_angle'])
+        self.ds_color_combo.currentTextChanged.connect(self.update_design_space_plot)
+        controls_bar.addWidget(self.ds_color_combo)
+
+        controls_bar.addStretch()
+
         export_results_btn = QPushButton("Export Results to CSV")
         export_results_btn.clicked.connect(self.export_design_space_results)
-        export_layout.addWidget(export_results_btn)
-        export_layout.addStretch()
-        viz_layout.addLayout(export_layout)
+        controls_bar.addWidget(export_results_btn)
+        viz_layout.addLayout(controls_bar)
         
         splitter.addWidget(viz_widget)
         
@@ -975,6 +1008,16 @@ class ConeWaveriderTab(QWidget):
     def on_order_changed(self, index):
         """Handle polynomial order change"""
         self.a3_spin.setEnabled(index == 1)
+
+        # Toggle design space parameter range visibility
+        is_3rd = (index == 1)
+        for w in self.ds_a3_widgets:
+            w.setVisible(is_3rd)
+        for w in self.ds_a0_widgets:
+            w.setVisible(not is_3rd)
+        self.ds_a0_fixed_label.setVisible(is_3rd)
+        if is_3rd:
+            self.ds_a0_fixed_label.setText(f"A\u2080 fixed at: {self.a0_spin.value():.3f}")
         
     def auto_shock_angle(self):
         """Automatically set optimal shock angle"""
@@ -1070,6 +1113,7 @@ GEOMETRY (Non-dimensional)
 Length:             {self.waverider.length:.4f}
 Planform Area:      {self.waverider.planform_area:.4f}
 Volume:             {self.waverider.volume:.6f}
+Vol Efficiency:     {(self.waverider.volume ** (2.0/3.0)) / self.waverider.planform_area if self.waverider.planform_area > 0 else 0:.6f}
 MAC:                {self.waverider.mac:.4f}
 CG Location:        [{self.waverider.cg[0]:.4f}, {self.waverider.cg[1]:.4f}, {self.waverider.cg[2]:.4f}]
 
@@ -1492,13 +1536,23 @@ L/D:        {results['L/D']:.3f}
             x_param = 'A3'
             y_param = 'A2'
         
-        # Color by L/D if available, otherwise volume
-        if 'L/D' in df.columns and df['L/D'].notna().any():
-            color_param = 'L/D'
-        elif 'volume' in df.columns:
-            color_param = 'volume'
-        else:
-            color_param = 'planform_area'
+        # Color by user-selected metric from dropdown
+        color_param = self.ds_color_combo.currentText()
+
+        # Dynamically add aero metrics to dropdown if available
+        self.ds_color_combo.blockSignals(True)
+        for metric in ['L/D', 'CL', 'CD', 'Cm']:
+            if metric in df.columns and df[metric].notna().any():
+                if self.ds_color_combo.findText(metric) == -1:
+                    self.ds_color_combo.addItem(metric)
+        self.ds_color_combo.blockSignals(False)
+
+        # Validate selected metric exists in data
+        if color_param not in df.columns or not df[color_param].notna().any():
+            for fallback in ['vol_efficiency', 'volume', 'planform_area']:
+                if fallback in df.columns and df[fallback].notna().any():
+                    color_param = fallback
+                    break
         
         self.ds_canvas.plot_design_space(df, x_param, y_param, color_param)
     
