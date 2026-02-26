@@ -212,6 +212,7 @@ class DesignSpaceWorker(QThread):
                 n_streamwise=self.params.get('n_stream', 15))
             result = {'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
                    'planform_area': wr.planform_area, 'volume': wr.volume,
+                   'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 0 else 0.0,
                    'mac': wr.mac, 'valid': True}
 
             include_stability = self.params.get('include_stability', False)
@@ -233,6 +234,7 @@ class DesignSpaceWorker(QThread):
                 n_streamwise=self.params.get('n_stream', 15))
             result = {'A3': A3, 'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
                    'planform_area': wr.planform_area, 'volume': wr.volume,
+                   'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 0 else 0.0,
                    'mac': wr.mac, 'valid': True}
 
             include_stability = self.params.get('include_stability', False)
@@ -1026,7 +1028,7 @@ class ShadowWaveriderTab(QWidget):
         gl.addWidget(QLabel("Color by:"), 3, 3)
         self.ds_color_combo = QComboBox()
         self.ds_color_combo.addItems([
-            "volume", "planform_area", "L/D", "CL", "CD",
+            "volume", "planform_area", "vol_efficiency", "L/D", "CL", "CD",
             "Cm_alpha", "Cl_beta", "Cn_beta", "stability"])
         self.ds_color_combo.currentTextChanged.connect(self.update_ds_plot)
         gl.addWidget(self.ds_color_combo, 3, 4)
@@ -1156,7 +1158,7 @@ class ShadowWaveriderTab(QWidget):
         # Objective
         gl.addWidget(QLabel("Objective:"), 0, 0)
         self.opt_objective = QComboBox()
-        self.opt_objective.addItems(["L/D", "-CD", "CL"])
+        self.opt_objective.addItems(["L/D", "-CD", "CL", "Vol Efficiency"])
         gl.addWidget(self.opt_objective, 0, 1)
 
         # Method

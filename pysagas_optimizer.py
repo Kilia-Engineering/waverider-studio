@@ -223,6 +223,7 @@ class ShadowOptimizer:
             result['success'] = True
             result['volume'] = wr.volume
             result['planform_area'] = wr.planform_area
+            result['vol_efficiency'] = (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 0 else 0.0
             result['mac'] = wr.mac
 
         except Exception as e:
@@ -353,6 +354,9 @@ class ShadowOptimizer:
             obj = CD  # Minimize CD
         elif self.objective == 'CL':
             obj = -CL  # Maximize CL
+        elif self.objective == 'Vol Efficiency':
+            vol_eff = result.get('vol_efficiency', 0.0)
+            obj = -vol_eff  # Maximize volumetric efficiency
         else:
             if CL <= 0:
                 obj = self._last_good_obj + 5.0 + abs(CL) * 100.0

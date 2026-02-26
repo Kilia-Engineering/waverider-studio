@@ -982,21 +982,13 @@ class ConeWaveriderTab(QWidget):
         viz_layout.addWidget(self.ds_toolbar)
         viz_layout.addWidget(self.ds_canvas)
         
-        # Color by dropdown and export button
-        controls_bar = QHBoxLayout()
-
-        controls_bar.addWidget(QLabel("Color by:"))
-        self.ds_color_combo = QComboBox()
-        self.ds_color_combo.addItems(['vol_efficiency', 'volume', 'planform_area', 'mac', 'cone_angle'])
-        self.ds_color_combo.currentTextChanged.connect(self.update_design_space_plot)
-        controls_bar.addWidget(self.ds_color_combo)
-
-        controls_bar.addStretch()
-
+        # Export results button
+        export_layout = QHBoxLayout()
         export_results_btn = QPushButton("Export Results to CSV")
         export_results_btn.clicked.connect(self.export_design_space_results)
-        controls_bar.addWidget(export_results_btn)
-        viz_layout.addLayout(controls_bar)
+        export_layout.addWidget(export_results_btn)
+        export_layout.addStretch()
+        viz_layout.addLayout(export_layout)
         
         splitter.addWidget(viz_widget)
         
@@ -1536,23 +1528,15 @@ L/D:        {results['L/D']:.3f}
             x_param = 'A3'
             y_param = 'A2'
         
-        # Color by user-selected metric from dropdown
-        color_param = self.ds_color_combo.currentText()
-
-        # Dynamically add aero metrics to dropdown if available
-        self.ds_color_combo.blockSignals(True)
-        for metric in ['L/D', 'CL', 'CD', 'Cm']:
-            if metric in df.columns and df[metric].notna().any():
-                if self.ds_color_combo.findText(metric) == -1:
-                    self.ds_color_combo.addItem(metric)
-        self.ds_color_combo.blockSignals(False)
-
-        # Validate selected metric exists in data
-        if color_param not in df.columns or not df[color_param].notna().any():
-            for fallback in ['vol_efficiency', 'volume', 'planform_area']:
-                if fallback in df.columns and df[fallback].notna().any():
-                    color_param = fallback
-                    break
+        # Color by L/D if available, otherwise vol_efficiency, then volume
+        if 'L/D' in df.columns and df['L/D'].notna().any():
+            color_param = 'L/D'
+        elif 'vol_efficiency' in df.columns:
+            color_param = 'vol_efficiency'
+        elif 'volume' in df.columns:
+            color_param = 'volume'
+        else:
+            color_param = 'planform_area'
         
         self.ds_canvas.plot_design_space(df, x_param, y_param, color_param)
     
