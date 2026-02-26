@@ -341,8 +341,15 @@ class ShadowWaveriderCanvas(FigureCanvas):
         super().__init__(self.fig)
         self.setParent(parent)
         
-    def plot_waverider(self, wr, show_upper=True, show_lower=True, show_le=True, show_cg=True):
+    def plot_waverider(self, wr, show_upper=True, show_lower=True, show_le=True, show_cg=True, show_info=True):
         self.ax.clear()
+        # Remove previous info text
+        if hasattr(self, '_info_text') and self._info_text is not None:
+            try:
+                self._info_text.remove()
+            except Exception:
+                pass
+            self._info_text = None
         if wr is None:
             self.ax.set_title('No waverider generated')
             self.draw()
@@ -399,9 +406,46 @@ class ShadowWaveriderCanvas(FigureCanvas):
         if legend_elements:
             self.ax.legend(handles=legend_elements, loc='upper left')
         self._set_axes_equal()
+        if show_info:
+            self._draw_info_panel(wr)
         self.fig.tight_layout()
         self.draw()
-    
+
+    def _draw_info_panel(self, wr):
+        """Draw waverider info overlay on the 3D view."""
+        if wr is None:
+            return
+
+        vol_eff = (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 0 else 0.0
+
+        info = (
+            "WAVERIDER INFO\n"
+            f"  Method          Shadow (Cone-Derived)\n"
+            f"  Mach            {wr.mach:.1f}\n"
+            f"  Shock \u03b2         {wr.shock_angle:.1f}\u00b0\n"
+            f"  Cone \u03b8c         {wr.cone_angle_deg:.2f}\u00b0\n"
+            f"  Post-shock M    {wr.post_shock_mach:.2f}\n"
+            f"  Length           {wr.length:.4f} m\n"
+            f"  Planform Area    {wr.planform_area:.4f} m\u00b2\n"
+            f"  Volume           {wr.volume:.6f} m\u00b3\n"
+            f"  Vol Efficiency   {vol_eff:.6f}\n"
+            f"  CG              [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]"
+        )
+
+        self._info_text = self.fig.text(
+            0.02, 0.98, info,
+            transform=self.fig.transFigure,
+            fontsize=8, fontfamily='monospace',
+            verticalalignment='top',
+            color='white',
+            bbox=dict(
+                boxstyle='round,pad=0.5',
+                facecolor='#1A1A1A',
+                edgecolor='#D97706',
+                alpha=0.85
+            )
+        )
+
     def _set_axes_equal(self):
         """Set equal aspect ratio for 3D plot"""
         try:
@@ -567,8 +611,10 @@ class ShadowWaveriderTab(QWidget):
         self.show_lower = QCheckBox("Lower"); self.show_lower.setChecked(True)
         self.show_le = QCheckBox("LE"); self.show_le.setChecked(True)
         self.show_cg = QCheckBox("CG"); self.show_cg.setChecked(True)
+        self.show_info = QCheckBox("Info"); self.show_info.setChecked(True)
         opts.addWidget(self.show_upper); opts.addWidget(self.show_lower)
         opts.addWidget(self.show_le); opts.addWidget(self.show_cg)
+        opts.addWidget(self.show_info)
         opts.addStretch()
         update_btn = QPushButton("Update")
         update_btn.clicked.connect(self.update_view)
@@ -1569,7 +1615,8 @@ class ShadowWaveriderTab(QWidget):
     
     def update_view(self):
         self.canvas_3d.plot_waverider(self.waverider, self.show_upper.isChecked(),
-            self.show_lower.isChecked(), self.show_le.isChecked(), self.show_cg.isChecked())
+            self.show_lower.isChecked(), self.show_le.isChecked(), self.show_cg.isChecked(),
+            self.show_info.isChecked())
     
     def update_results(self):
         if self.waverider is None: return
