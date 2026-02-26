@@ -74,7 +74,17 @@ class DesignSpaceWorker(QThread):
             shock_angle = self.params['shock_angle']
             poly_order = self.params['poly_order']
             include_aero = self.params.get('include_aero', False)
-            
+
+            # Cone angle depends only on Mach/shock_angle, not polynomial coefficients.
+            # Compute once and reuse for all designs to guarantee constancy.
+            try:
+                ref_wr = create_second_order_waverider(
+                    mach=mach, shock_angle=shock_angle,
+                    A2=-5.0, A0=-0.1, n_leading_edge=5, n_streamwise=5)
+                constant_cone_angle = ref_wr.cone_angle_deg
+            except Exception:
+                constant_cone_angle = None
+
             if poly_order == 2:
                 A2_range = np.linspace(self.params['A2_min'], self.params['A2_max'], self.params['n_A2'])
                 A0_range = np.linspace(self.params['A0_min'], self.params['A0_max'], self.params['n_A0'])
@@ -89,25 +99,30 @@ class DesignSpaceWorker(QThread):
                         current += 1
                         self.progress.emit(current, total, f"A2={A2:.2f}, A0={A0:.3f}")
                         result = self._eval_2nd(mach, shock_angle, A2, A0, include_aero)
+                        if constant_cone_angle is not None:
+                            result['cone_angle'] = constant_cone_angle
                         results.append(result)
                         self.point_complete.emit(result)
             else:
                 A3_range = np.linspace(self.params['A3_min'], self.params['A3_max'], self.params['n_A3'])
                 A2_range = np.linspace(self.params['A2_min'], self.params['A2_max'], self.params['n_A2'])
-                A0 = self.params['A0_fixed']
-                total = len(A3_range) * len(A2_range)
+                A0_range = np.linspace(self.params['A0_min'], self.params['A0_max'], self.params['n_A0'])
+                total = len(A3_range) * len(A2_range) * len(A0_range)
                 current = 0
-                
+
                 for A3 in A3_range:
                     for A2 in A2_range:
-                        if self._is_cancelled:
-                            self.finished.emit(results)
-                            return
-                        current += 1
-                        self.progress.emit(current, total, f"A3={A3:.1f}, A2={A2:.2f}, A0={A0:.3f}")
-                        result = self._eval_3rd(mach, shock_angle, A3, A2, A0, include_aero)
-                        results.append(result)
-                        self.point_complete.emit(result)
+                        for A0 in A0_range:
+                            if self._is_cancelled:
+                                self.finished.emit(results)
+                                return
+                            current += 1
+                            self.progress.emit(current, total, f"A3={A3:.1f}, A2={A2:.2f}, A0={A0:.3f}")
+                            result = self._eval_3rd(mach, shock_angle, A3, A2, A0, include_aero)
+                            if constant_cone_angle is not None:
+                                result['cone_angle'] = constant_cone_angle
+                            results.append(result)
+                            self.point_complete.emit(result)
             
             self.finished.emit(results)
         except Exception as e:
@@ -212,7 +227,7 @@ class DesignSpaceWorker(QThread):
                 n_streamwise=self.params.get('n_stream', 15))
             result = {'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
                    'planform_area': wr.planform_area, 'volume': wr.volume,
-                   'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 0 else 0.0,
+                   'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 1e-6 else 0.0,
                    'mac': wr.mac, 'valid': True}
 
             include_stability = self.params.get('include_stability', False)
@@ -234,7 +249,7 @@ class DesignSpaceWorker(QThread):
                 n_streamwise=self.params.get('n_stream', 15))
             result = {'A3': A3, 'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
                    'planform_area': wr.planform_area, 'volume': wr.volume,
-                   'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 0 else 0.0,
+                   'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 1e-6 else 0.0,
                    'mac': wr.mac, 'valid': True}
 
             include_stability = self.params.get('include_stability', False)
@@ -473,11 +488,15 @@ class DesignSpaceCanvas(FigureCanvas):
         self._click_highlight = None  # Highlight ring for clicked point
         self._x_param = None
         self._y_param = None
+        self._z_param = None   # Z-axis parameter for 3D mode
+        self._is_3d = False    # Track current plot dimensionality
         super().__init__(self.fig)
         self.setParent(parent)
         self.mpl_connect('pick_event', self._on_pick)
         
-    def plot_design_space(self, df, x_param, y_param, color_param):
+    def plot_design_space(self, df, x_param, y_param, color_param, z_param=None):
+        need_3d = z_param is not None
+
         # Remove old colorbar if it exists
         if self.colorbar is not None:
             try:
@@ -486,7 +505,15 @@ class DesignSpaceCanvas(FigureCanvas):
                 pass
             self.colorbar = None
 
-        self.ax.clear()
+        # Recreate axes (2D↔3D axes can't be converted in-place)
+        self.fig.clear()
+        if need_3d:
+            self.ax = self.fig.add_subplot(111, projection='3d')
+            self._is_3d = True
+        else:
+            self.ax = self.fig.add_subplot(111)
+            self._is_3d = False
+        self.ax.set_facecolor('#1A1A1A')
 
         if df is None or len(df) == 0:
             self.ax.set_title('No results')
@@ -505,42 +532,88 @@ class DesignSpaceCanvas(FigureCanvas):
         self._valid_df = valid_df.reset_index(drop=True)
         self._x_param = x_param
         self._y_param = y_param
+        self._z_param = z_param
         self._scatter = None
         self._click_highlight = None
 
         # Special handling for "stability" color mode
         if color_param == 'stability' and 'fully_stable' in valid_df.columns:
-            self._plot_stability_overlay(valid_df, x_param, y_param)
+            self._plot_stability_overlay(valid_df, x_param, y_param, z_param)
         elif color_param in valid_df.columns:
-            self._scatter = self.ax.scatter(valid_df[x_param], valid_df[y_param], c=valid_df[color_param],
-                               cmap='viridis', s=80, alpha=0.8, edgecolors='white', linewidths=0.5,
-                               picker=True)
-            self.colorbar = self.fig.colorbar(self._scatter, ax=self.ax, label=color_param)
+            if need_3d:
+                self._scatter = self.ax.scatter(
+                    valid_df[x_param], valid_df[y_param], valid_df[z_param],
+                    c=valid_df[color_param], cmap='viridis', s=80, alpha=0.8,
+                    edgecolors='white', linewidths=0.5, picker=True)
+            else:
+                self._scatter = self.ax.scatter(
+                    valid_df[x_param], valid_df[y_param],
+                    c=valid_df[color_param], cmap='viridis', s=80, alpha=0.8,
+                    edgecolors='white', linewidths=0.5, picker=True)
+            self.colorbar = self.fig.colorbar(
+                self._scatter, ax=self.ax, label=color_param,
+                shrink=0.7 if need_3d else 1.0)
 
             # Mark best point
             best_idx = valid_df[color_param].idxmax()
             best = valid_df.loc[best_idx]
-            self.ax.scatter([best[x_param]], [best[y_param]], c='gold', s=300, marker='*',
-                          edgecolors='black', linewidths=2, zorder=10, label=f'Best: {best[color_param]:.4f}')
+            if need_3d:
+                self.ax.scatter([best[x_param]], [best[y_param]], [best[z_param]],
+                    c='gold', s=300, marker='*', edgecolors='black', linewidths=2,
+                    zorder=10, label=f'Best: {best[color_param]:.4f}')
+            else:
+                self.ax.scatter([best[x_param]], [best[y_param]],
+                    c='gold', s=300, marker='*', edgecolors='black', linewidths=2,
+                    zorder=10, label=f'Best: {best[color_param]:.4f}')
         else:
-            self._scatter = self.ax.scatter(valid_df[x_param], valid_df[y_param], s=80, alpha=0.8, picker=True)
+            if need_3d:
+                self._scatter = self.ax.scatter(
+                    valid_df[x_param], valid_df[y_param], valid_df[z_param],
+                    s=80, alpha=0.8, picker=True)
+            else:
+                self._scatter = self.ax.scatter(
+                    valid_df[x_param], valid_df[y_param], s=80, alpha=0.8, picker=True)
 
         # Plot invalid points
         if invalid_df is not None and len(invalid_df) > 0:
-            self.ax.scatter(invalid_df[x_param], invalid_df[y_param], c='red', marker='x',
-                          s=50, alpha=0.5, label='Invalid')
+            if need_3d:
+                self.ax.scatter(invalid_df[x_param], invalid_df[y_param], invalid_df[z_param],
+                    c='red', marker='x', s=50, alpha=0.5, label='Invalid')
+            else:
+                self.ax.scatter(invalid_df[x_param], invalid_df[y_param],
+                    c='red', marker='x', s=50, alpha=0.5, label='Invalid')
 
+        # Axis labels and styling
         self.ax.set_xlabel(x_param, fontsize=12, color='#FFFFFF')
         self.ax.set_ylabel(y_param, fontsize=12, color='#FFFFFF')
-        self.ax.set_title(f'{color_param} vs ({x_param}, {y_param})', fontsize=14, color='#FFFFFF')
-        self.ax.tick_params(colors='#888888')
-        self.ax.grid(True, alpha=0.3)
+        if need_3d:
+            self.ax.set_zlabel(z_param, fontsize=12, color='#FFFFFF')
+            self.ax.set_title(f'{color_param} vs ({x_param}, {y_param}, {z_param})',
+                              fontsize=14, color='#FFFFFF')
+            # Dark theme for 3D panes
+            self.ax.xaxis.pane.fill = False
+            self.ax.yaxis.pane.fill = False
+            self.ax.zaxis.pane.fill = False
+            self.ax.xaxis.pane.set_edgecolor('#333333')
+            self.ax.yaxis.pane.set_edgecolor('#333333')
+            self.ax.zaxis.pane.set_edgecolor('#333333')
+            self.ax.tick_params(axis='x', colors='#888888')
+            self.ax.tick_params(axis='y', colors='#888888')
+            self.ax.tick_params(axis='z', colors='#888888')
+            self.ax.grid(True, alpha=0.2)
+        else:
+            self.ax.set_title(f'{color_param} vs ({x_param}, {y_param})',
+                              fontsize=14, color='#FFFFFF')
+            self.ax.tick_params(colors='#888888')
+            self.ax.grid(True, alpha=0.3)
         self.ax.legend(loc='upper right')
         self.fig.tight_layout()
         self.draw()
 
-    def _plot_stability_overlay(self, df, x_param, y_param):
+    def _plot_stability_overlay(self, df, x_param, y_param, z_param=None):
         """Plot design space colored by stability criteria (thesis Figs 5.5-5.18)."""
+        use_3d = z_param is not None
+
         # Count how many stability criteria each design meets
         stab_count = (
             df['pitch_stable'].astype(int) +
@@ -551,21 +624,27 @@ class DesignSpaceCanvas(FigureCanvas):
         # Unstable (0 criteria)
         unstable = df[stab_count == 0]
         if len(unstable) > 0:
-            self.ax.scatter(unstable[x_param], unstable[y_param],
+            args = (unstable[x_param], unstable[y_param])
+            if use_3d: args = args + (unstable[z_param],)
+            self.ax.scatter(*args,
                           c='#EF4444', s=60, alpha=0.6, marker='o',
                           edgecolors='#991B1B', linewidths=0.5, label='Unstable (0/3)')
 
         # Partially stable (1-2 criteria)
         partial = df[(stab_count >= 1) & (stab_count <= 2)]
         if len(partial) > 0:
-            self.ax.scatter(partial[x_param], partial[y_param],
+            args = (partial[x_param], partial[y_param])
+            if use_3d: args = args + (partial[z_param],)
+            self.ax.scatter(*args,
                           c='#F59E0B', s=80, alpha=0.7, marker='s',
                           edgecolors='#92400E', linewidths=0.5, label='Partial (1-2/3)')
 
         # Fully stable (all 3 criteria)
         stable = df[stab_count == 3]
         if len(stable) > 0:
-            self.ax.scatter(stable[x_param], stable[y_param],
+            args = (stable[x_param], stable[y_param])
+            if use_3d: args = args + (stable[z_param],)
+            self.ax.scatter(*args,
                           c='#10B981', s=100, alpha=0.9, marker='D',
                           edgecolors='#065F46', linewidths=0.5, label='Stable (3/3)')
 
@@ -573,7 +652,9 @@ class DesignSpaceCanvas(FigureCanvas):
             if 'L/D' in stable.columns and len(stable) > 0:
                 best_idx = stable['L/D'].idxmax()
                 best = stable.loc[best_idx]
-                self.ax.scatter([best[x_param]], [best[y_param]], c='gold', s=300, marker='*',
+                star_args = ([best[x_param]], [best[y_param]])
+                if use_3d: star_args = star_args + ([best[z_param]],)
+                self.ax.scatter(*star_args, c='gold', s=300, marker='*',
                               edgecolors='black', linewidths=2, zorder=10,
                               label=f'Best stable L/D: {best["L/D"]:.3f}')
 
@@ -594,11 +675,17 @@ class DesignSpaceCanvas(FigureCanvas):
                 self._click_highlight.remove()
             except Exception:
                 pass
-        # Draw cyan ring around clicked point
-        self._click_highlight = self.ax.scatter(
-            [row[self._x_param]], [row[self._y_param]],
-            s=200, facecolors='none', edgecolors='cyan', linewidths=2.5, zorder=9
-        )
+        # Draw cyan ring around clicked point (2D or 3D)
+        if self._is_3d and self._z_param is not None:
+            self._click_highlight = self.ax.scatter(
+                [row[self._x_param]], [row[self._y_param]], [row[self._z_param]],
+                s=200, facecolors='none', edgecolors='cyan', linewidths=2.5, zorder=9
+            )
+        else:
+            self._click_highlight = self.ax.scatter(
+                [row[self._x_param]], [row[self._y_param]],
+                s=200, facecolors='none', edgecolors='cyan', linewidths=2.5, zorder=9
+            )
         self.draw()
 
         # Emit the clicked point's data
@@ -1970,7 +2057,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             'temperature': self.t_spin.value(),
             'aoa': self.aoa_spin.value()
         }
-        total = params['n_A2'] * params['n_A0'] if order == 0 else params['n_A3'] * params['n_A2']
+        total = params['n_A2'] * params['n_A0'] if order == 0 else params['n_A3'] * params['n_A2'] * params['n_A0']
 
         # Warn user about time estimates
         if include_stability:
@@ -2113,16 +2200,19 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         if not self.design_space_results or not PANDAS_AVAILABLE: return
         df = pd.DataFrame(self.design_space_results)
         order = self.order_combo.currentIndex()
-        x, y = ('A2', 'A0') if order == 0 else ('A3', 'A2')
-        
+        if order == 0:
+            x, y, z = 'A2', 'A0', None       # 2nd order: 2D scatter
+        else:
+            x, y, z = 'A3', 'A2', 'A0'       # 3rd order: 3D scatter
+
         # Use selected color parameter
         color = self.ds_color_combo.currentText()
         valid_df = df[df['valid'] == True] if 'valid' in df.columns else df
         if color not in valid_df.columns:
             # Fallback if selected metric not available
             color = 'volume' if 'volume' in valid_df.columns else 'planform_area'
-        
-        self.ds_canvas.plot_design_space(df, x, y, color)
+
+        self.ds_canvas.plot_design_space(df, x, y, color, z_param=z)
     
     def export_ds_csv(self):
         if not self.design_space_results:

@@ -616,15 +616,22 @@ class ShadowWaverider:
         X = streamwise, Y = vertical, Z = span
         """
         # Planform area (projection onto X-Z plane)
-        # After transform: X is streamwise, Z is span
-        z_le = self.leading_edge[:, 2]  # Spanwise positions
-        x_le = self.leading_edge[:, 0]  # Streamwise positions (at LE)
-        
-        # Approximate planform area using trapezoidal integration
-        # Width at each span station times length
-        dz = np.abs(np.diff(z_le))
-        avg_lengths = np.array([self.length] * (len(z_le) - 1))
-        self.planform_area = np.sum(dz * avg_lengths) / 2
+        # Integrate actual local chord (te_x - le_x) across the span
+        chord_lengths = []
+        z_positions = []
+        for i in range(len(self.upper_surface)):
+            le_x = self.upper_surface[i, 0, 0]   # X at leading edge
+            te_x = self.upper_surface[i, -1, 0]  # X at trailing edge
+            chord_lengths.append(te_x - le_x)
+            z_positions.append(self.leading_edge[i, 2])
+
+        chords = np.array(chord_lengths)
+        z_pos = np.array(z_positions)
+
+        try:
+            self.planform_area = abs(np.trapezoid(chords, z_pos))
+        except AttributeError:
+            self.planform_area = abs(np.trapz(chords, z_pos))
         
         # Volume (simplified estimate using cross-sections)
         self.volume = self._estimate_volume()
