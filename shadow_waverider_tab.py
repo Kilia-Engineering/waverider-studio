@@ -104,7 +104,7 @@ class DesignSpaceWorker(QThread):
                             self.finished.emit(results)
                             return
                         current += 1
-                        self.progress.emit(current, total, f"A3={A3:.1f}, A2={A2:.2f}")
+                        self.progress.emit(current, total, f"A3={A3:.1f}, A2={A2:.2f}, A0={A0:.3f}")
                         result = self._eval_3rd(mach, shock_angle, A3, A2, A0, include_aero)
                         results.append(result)
                         self.point_complete.emit(result)
@@ -461,13 +461,21 @@ class ShadowWaveriderCanvas(FigureCanvas):
 
 class DesignSpaceCanvas(FigureCanvas):
     """Canvas for design space visualization"""
+    point_clicked = pyqtSignal(dict)  # Emits clicked design's result dict
+
     def __init__(self, parent=None):
         self.fig = Figure(figsize=(10, 8), facecolor='#0A0A0A')
         self.ax = self.fig.add_subplot(111)
         self.ax.set_facecolor('#1A1A1A')
         self.colorbar = None  # Track colorbar to remove it on updates
+        self._scatter = None  # Main scatter artist for pick events
+        self._valid_df = None  # DataFrame for looking up clicked points
+        self._click_highlight = None  # Highlight ring for clicked point
+        self._x_param = None
+        self._y_param = None
         super().__init__(self.fig)
         self.setParent(parent)
+        self.mpl_connect('pick_event', self._on_pick)
         
     def plot_design_space(self, df, x_param, y_param, color_param):
         # Remove old colorbar if it exists
@@ -493,13 +501,21 @@ class DesignSpaceCanvas(FigureCanvas):
             self.draw()
             return
 
+        # Store references for click-to-inspect
+        self._valid_df = valid_df.reset_index(drop=True)
+        self._x_param = x_param
+        self._y_param = y_param
+        self._scatter = None
+        self._click_highlight = None
+
         # Special handling for "stability" color mode
         if color_param == 'stability' and 'fully_stable' in valid_df.columns:
             self._plot_stability_overlay(valid_df, x_param, y_param)
         elif color_param in valid_df.columns:
-            sc = self.ax.scatter(valid_df[x_param], valid_df[y_param], c=valid_df[color_param],
-                               cmap='viridis', s=80, alpha=0.8, edgecolors='white', linewidths=0.5)
-            self.colorbar = self.fig.colorbar(sc, ax=self.ax, label=color_param)
+            self._scatter = self.ax.scatter(valid_df[x_param], valid_df[y_param], c=valid_df[color_param],
+                               cmap='viridis', s=80, alpha=0.8, edgecolors='white', linewidths=0.5,
+                               picker=True)
+            self.colorbar = self.fig.colorbar(self._scatter, ax=self.ax, label=color_param)
 
             # Mark best point
             best_idx = valid_df[color_param].idxmax()
@@ -507,7 +523,7 @@ class DesignSpaceCanvas(FigureCanvas):
             self.ax.scatter([best[x_param]], [best[y_param]], c='gold', s=300, marker='*',
                           edgecolors='black', linewidths=2, zorder=10, label=f'Best: {best[color_param]:.4f}')
         else:
-            self.ax.scatter(valid_df[x_param], valid_df[y_param], s=80, alpha=0.8)
+            self._scatter = self.ax.scatter(valid_df[x_param], valid_df[y_param], s=80, alpha=0.8, picker=True)
 
         # Plot invalid points
         if invalid_df is not None and len(invalid_df) > 0:
@@ -560,6 +576,33 @@ class DesignSpaceCanvas(FigureCanvas):
                 self.ax.scatter([best[x_param]], [best[y_param]], c='gold', s=300, marker='*',
                               edgecolors='black', linewidths=2, zorder=10,
                               label=f'Best stable L/D: {best["L/D"]:.3f}')
+
+    def _on_pick(self, event):
+        """Handle click on scatter plot point."""
+        if self._scatter is None or event.artist != self._scatter:
+            return
+        if self._valid_df is None or len(event.ind) == 0:
+            return
+        ind = event.ind[0]
+        if ind >= len(self._valid_df):
+            return
+        row = self._valid_df.iloc[ind]
+
+        # Remove previous highlight
+        if self._click_highlight is not None:
+            try:
+                self._click_highlight.remove()
+            except Exception:
+                pass
+        # Draw cyan ring around clicked point
+        self._click_highlight = self.ax.scatter(
+            [row[self._x_param]], [row[self._y_param]],
+            s=200, facecolors='none', edgecolors='cyan', linewidths=2.5, zorder=9
+        )
+        self.draw()
+
+        # Emit the clicked point's data
+        self.point_clicked.emit(row.to_dict())
 
 
 class ShadowWaveriderTab(QWidget):
@@ -1176,13 +1219,20 @@ class ShadowWaveriderTab(QWidget):
         apply_best_btn = QPushButton("Apply to Main Panel")
         apply_best_btn.clicked.connect(self.apply_best_design)
         apply_best_btn.setStyleSheet("background-color: #F59E0B; color: #0A0A0A; font-weight: bold; padding: 5px;")
-        best_layout.addWidget(apply_best_btn, 4, 0, 1, 6)
+        best_layout.addWidget(apply_best_btn, 4, 0, 1, 3)
+
+        # Show best design button (useful after clicking a different point)
+        show_best_btn = QPushButton("Show Best Design")
+        show_best_btn.clicked.connect(self.update_best_design_panel)
+        show_best_btn.setStyleSheet("padding: 5px; color: #F59E0B; border: 1px solid #F59E0B;")
+        best_layout.addWidget(show_best_btn, 4, 3, 1, 3)
         
         self.best_design_group.setLayout(best_layout)
         self.best_design_group.setVisible(False)  # Hidden until we have results
         layout.addWidget(self.best_design_group)
         
         self.ds_canvas = DesignSpaceCanvas()
+        self.ds_canvas.point_clicked.connect(self._on_ds_point_clicked)
         self.ds_toolbar = NavigationToolbar(self.ds_canvas, widget)
         layout.addWidget(self.ds_toolbar)
         layout.addWidget(self.ds_canvas)
@@ -1564,8 +1614,32 @@ class ShadowWaveriderTab(QWidget):
         if 'A0' in params:
             self.a0_spin.setValue(params['A0'])
         
-        self.info_label.setText("✓ Applied best design parameters")
-    
+        self.info_label.setText("\u2713 Applied best design parameters")
+
+    def _on_ds_point_clicked(self, result):
+        """Update the best design panel to show a clicked point's data."""
+        self.best_design_group.setTitle("\U0001f4cd Selected Design")
+        self.best_a3_label.setText(f"{result.get('A3', 0):.3f}" if 'A3' in result else "N/A")
+        self.best_a2_label.setText(f"{result.get('A2', 0):.3f}")
+        self.best_a0_label.setText(f"{result.get('A0', 0):.4f}")
+        self.best_volume_label.setText(f"{result.get('volume', 0):.4f}")
+        self.best_area_label.setText(f"{result.get('planform_area', 0):.4f}")
+        self.best_cone_label.setText(f"{result.get('cone_angle', 0):.2f}\u00b0")
+        if 'L/D' in result and result.get('L/D') is not None:
+            try:
+                self.best_ld_label.setText(f"{float(result['L/D']):.3f}")
+            except (ValueError, TypeError):
+                self.best_ld_label.setText("--")
+        else:
+            self.best_ld_label.setText("--")
+        # Update apply button to use clicked design's params
+        self.best_design_params = {
+            'A3': result.get('A3', 0),
+            'A2': result.get('A2', 0),
+            'A0': result.get('A0', 0)
+        }
+        self.best_design_group.setVisible(True)
+
     # === Slot methods ===
     def on_order_change(self, idx):
         self.a3_spin.setEnabled(idx == 1)
@@ -1956,7 +2030,8 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         self.update_best_design_panel()
     
     def update_best_design_panel(self):
-        """Update the best design info panel"""
+        """Update the best design info panel (resets to best design)"""
+        self.best_design_group.setTitle("\u2b50 Best Design Found")
         if not self.design_space_results or not PANDAS_AVAILABLE:
             self.best_design_group.setVisible(False)
             return
