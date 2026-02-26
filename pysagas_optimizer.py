@@ -90,7 +90,7 @@ class ShadowOptimizer:
         pressure: float = 101325.0,
         temperature: float = 288.15,
         alpha_deg: float = 0.0,
-        objective: str = 'L/D',
+        objective: str = 'CL/CD',
         method: str = 'SLSQP',
         stability_constrained: bool = False,
         volume_min: float = 0.0,
@@ -342,7 +342,7 @@ class ShadowOptimizer:
         CL = result.get('CL', 0)
         CD = result.get('CD', 1e-6)
 
-        if self.objective == 'L/D':
+        if self.objective in ('CL/CD', 'L/D'):
             if CL <= 0:
                 # Negative CL produces misleading L/D; apply smooth penalty
                 # proportional to how negative CL is, staying near the last
@@ -712,7 +712,7 @@ def run_shadow_optimization(
     poly_order: int = 2,
     x0: np.ndarray = None,
     bounds: List[Tuple[float, float]] = None,
-    objective: str = 'L/D',
+    objective: str = 'CL/CD',
     method: str = 'SLSQP',
     stability_constrained: bool = False,
     maxiter: int = 50,

@@ -272,7 +272,7 @@ class GradientOptWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, mach, shock_angle, poly_order, x0, bounds,
-                 objective='L/D', method='SLSQP', maxiter=50,
+                 objective='CL/CD', method='SLSQP', maxiter=50,
                  stability_constrained=False, save_vtk=True,
                  pressure=101325.0, temperature=288.15, alpha_deg=0.0,
                  mesh_min=0.005, mesh_max=0.05, save_geometry_vtk=True):
@@ -648,7 +648,7 @@ class DesignSpaceCanvas(FigureCanvas):
                           c='#10B981', s=100, alpha=0.9, marker='D',
                           edgecolors='#065F46', linewidths=0.5, label='Stable (3/3)')
 
-            # Mark best L/D among fully stable
+            # Mark best CL/CD among fully stable
             if 'L/D' in stable.columns and len(stable) > 0:
                 best_idx = stable['L/D'].idxmax()
                 best = stable.loc[best_idx]
@@ -656,7 +656,7 @@ class DesignSpaceCanvas(FigureCanvas):
                 if use_3d: star_args = star_args + ([best[z_param]],)
                 self.ax.scatter(*star_args, c='gold', s=300, marker='*',
                               edgecolors='black', linewidths=2, zorder=10,
-                              label=f'Best stable L/D: {best["L/D"]:.3f}')
+                              label=f'Best stable CL/CD: {best["L/D"]:.3f}')
 
     def _on_pick(self, event):
         """Handle click on scatter plot point."""
@@ -694,7 +694,16 @@ class DesignSpaceCanvas(FigureCanvas):
 
 class ShadowWaveriderTab(QWidget):
     """Main tab for cone-derived waverider design"""
-    
+
+    # Mapping: objective name → (dict_key, display_label, higher_is_better)
+    _OBJ_MAP = {
+        'CL/CD':          ('L/D',            'CL/CD',          True),
+        'L/D':            ('L/D',            'CL/CD',          True),
+        '-CD':            ('CD',             'CD',             False),
+        'CL':             ('CL',             'CL',             True),
+        'Vol Efficiency': ('vol_efficiency', 'Vol Efficiency', True),
+    }
+
     waverider_generated = pyqtSignal(object)
     
     def __init__(self, parent=None):
@@ -1185,7 +1194,7 @@ class ShadowWaveriderTab(QWidget):
         if not PYSAGAS_AVAILABLE:
             self.ds_include_aero.setToolTip("PySAGAS not available")
         else:
-            self.ds_include_aero.setToolTip("Run PySAGAS for each design (slower but gives L/D)")
+            self.ds_include_aero.setToolTip("Run PySAGAS for each design (slower but gives CL/CD)")
         gl.addWidget(self.ds_include_aero, 3, 0, 1, 2)
 
         # Stability analysis checkbox
@@ -1204,7 +1213,7 @@ class ShadowWaveriderTab(QWidget):
         gl.addWidget(QLabel("Color by:"), 3, 3)
         self.ds_color_combo = QComboBox()
         self.ds_color_combo.addItems([
-            "volume", "planform_area", "vol_efficiency", "L/D", "CL", "CD",
+            "volume", "planform_area", "vol_efficiency", "CL/CD", "CL", "CD",
             "Cm_alpha", "Cl_beta", "Cn_beta", "stability"])
         self.ds_color_combo.currentTextChanged.connect(self.update_ds_plot)
         gl.addWidget(self.ds_color_combo, 3, 4)
@@ -1280,7 +1289,7 @@ class ShadowWaveriderTab(QWidget):
         self.best_cone_label.setStyleSheet("font-weight: bold; color: #4ADE80;")
         best_layout.addWidget(self.best_cone_label, 1, 5)
         
-        best_layout.addWidget(QLabel("L/D:"), 2, 0)
+        best_layout.addWidget(QLabel("CL/CD:"), 2, 0)
         self.best_ld_label = QLabel("--")
         self.best_ld_label.setStyleSheet("font-weight: bold; color: #EF4444; font-size: 14px;")
         best_layout.addWidget(self.best_ld_label, 2, 1)
@@ -1294,7 +1303,7 @@ class ShadowWaveriderTab(QWidget):
         self.best_stability_header.setVisible(False)
         self.best_stability_label.setVisible(False)
 
-        self.best_stable_ld_header = QLabel("Best Stable L/D:")
+        self.best_stable_ld_header = QLabel("Best Stable CL/CD:")
         self.best_stable_ld_label = QLabel("--")
         self.best_stable_ld_label.setStyleSheet("font-weight: bold; color: #10B981;")
         best_layout.addWidget(self.best_stable_ld_header, 3, 0, 1, 2)
@@ -1341,7 +1350,7 @@ class ShadowWaveriderTab(QWidget):
         # Objective
         gl.addWidget(QLabel("Objective:"), 0, 0)
         self.opt_objective = QComboBox()
-        self.opt_objective.addItems(["L/D", "-CD", "CL", "Vol Efficiency"])
+        self.opt_objective.addItems(["CL/CD", "-CD", "CL", "Vol Efficiency"])
         gl.addWidget(self.opt_objective, 0, 1)
 
         # Method
@@ -1511,9 +1520,10 @@ class ShadowWaveriderTab(QWidget):
 
         self.opt_run_btn.setEnabled(False)
         self.opt_log.clear()
+        self._opt_objective_name = self.opt_objective.currentText()
         self.opt_log.append(f"Starting {self.opt_method.currentText()} optimization...")
         self.opt_log.append(f"  Mach={mach}, shock={shock}, order={order}")
-        self.opt_log.append(f"  Objective: maximize {self.opt_objective.currentText()}")
+        self.opt_log.append(f"  Objective: maximize {self._opt_objective_name}")
         self.opt_log.append(f"  x0 = {x0}")
         self.opt_log.append("")
 
@@ -1539,11 +1549,15 @@ class ShadowWaveriderTab(QWidget):
 
     def _on_opt_progress(self, iteration, entry):
         """Handle gradient optimization progress updates."""
+        obj_name = getattr(self, '_opt_objective_name', 'CL/CD')
+        dict_key, label, _ = self._OBJ_MAP.get(obj_name, ('L/D', 'CL/CD', True))
+        val = entry.get(dict_key, 0)
+
         self.opt_progress.setText(
-            f"Eval {iteration}: L/D={entry.get('L/D', 0):.4f}, "
+            f"Eval {iteration}: {label}={val:.4f}, "
             f"obj={entry.get('objective', 0):.6f}")
         self.opt_log.append(
-            f"Eval {iteration}: L/D={entry.get('L/D', 0):.4f} "
+            f"Eval {iteration}: {label}={val:.4f} "
             f"CD={entry.get('CD', 0):.6f}")
 
         # Update convergence plot
@@ -1554,10 +1568,10 @@ class ShadowWaveriderTab(QWidget):
 
         self.opt_ax.clear()
         iters = [e['iteration'] for e in self._opt_history]
-        lds = [e.get('L/D', 0) for e in self._opt_history]
-        self.opt_ax.plot(iters, lds, 'o-', color='#10B981', linewidth=2)
+        vals = [e.get(dict_key, 0) for e in self._opt_history]
+        self.opt_ax.plot(iters, vals, 'o-', color='#10B981', linewidth=2)
         self.opt_ax.set_xlabel('Iteration', color='#FFFFFF')
-        self.opt_ax.set_ylabel('L/D', color='#FFFFFF')
+        self.opt_ax.set_ylabel(label, color='#FFFFFF')
         self.opt_ax.set_title('Convergence', color='#FFFFFF')
         self.opt_ax.tick_params(colors='#888888')
         self.opt_ax.grid(True, alpha=0.3)
@@ -1568,12 +1582,15 @@ class ShadowWaveriderTab(QWidget):
         self.opt_run_btn.setEnabled(True)
         self._opt_history = []
 
+        obj_name = getattr(self, '_opt_objective_name', 'CL/CD')
+        dict_key, label, _ = self._OBJ_MAP.get(obj_name, ('L/D', 'CL/CD', True))
+
         if result.get('success', False):
             x_opt = result['x_optimal']
             final = result.get('final_evaluation', {})
             self.opt_log.append(f"\nOptimization CONVERGED")
             self.opt_log.append(f"  Optimal: {x_opt}")
-            self.opt_log.append(f"  L/D = {final.get('L/D', 'N/A')}")
+            self.opt_log.append(f"  {label} = {final.get(dict_key, 'N/A')}")
             self.opt_log.append(f"  CL = {final.get('CL', 'N/A')}")
             self.opt_log.append(f"  CD = {final.get('CD', 'N/A')}")
             if 'Cm_alpha' in final:
@@ -1582,8 +1599,13 @@ class ShadowWaveriderTab(QWidget):
                 self.opt_log.append(f"  Cl_beta  = {final.get('Cl_beta', 'N/A')}")
 
             # Ask user if they want to apply optimal design
+            obj_val = final.get(dict_key, 0)
+            try:
+                obj_str = f"{float(obj_val):.4f}"
+            except (ValueError, TypeError):
+                obj_str = str(obj_val)
             reply = QMessageBox.question(self, "Optimization Complete",
-                f"L/D = {final.get('L/D', 0):.4f}\n\n"
+                f"{label} = {obj_str}\n\n"
                 f"Apply optimal design to main panel?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
             if reply == QMessageBox.Yes:
@@ -1606,9 +1628,12 @@ class ShadowWaveriderTab(QWidget):
                 if best_x is not None:
                     x_str = ", ".join(f"{v:.4f}" for v in best_x)
                     self.opt_log.append(f"  x = [{x_str}]")
-                self.opt_log.append(f"  L/D = {best.get('L/D', 'N/A'):.4f}")
-                self.opt_log.append(f"  CL  = {best.get('CL', 'N/A'):.6f}")
-                self.opt_log.append(f"  CD  = {best.get('CD', 'N/A'):.6f}")
+                try:
+                    self.opt_log.append(f"  {label} = {float(best.get(dict_key, 0)):.4f}")
+                except (ValueError, TypeError):
+                    self.opt_log.append(f"  {label} = N/A")
+                self.opt_log.append(f"  CL  = {best.get('CL', 'N/A')}")
+                self.opt_log.append(f"  CD  = {best.get('CD', 'N/A')}")
 
             self.opt_log.append(f"\nSuggestions:")
             self.opt_log.append(f"  - Try 'Nelder-Mead' method (gradient-free, more robust)")
@@ -1619,9 +1644,14 @@ class ShadowWaveriderTab(QWidget):
 
             # Offer to apply best-found design anyway
             if best is not None and best.get('x') is not None:
+                best_val = best.get(dict_key, 0)
+                try:
+                    best_str = f"{float(best_val):.4f}"
+                except (ValueError, TypeError):
+                    best_str = str(best_val)
                 reply = QMessageBox.question(self, "Optimization Failed",
                     f"Optimization did not converge, but found:\n"
-                    f"L/D = {best.get('L/D', 0):.4f}\n\n"
+                    f"{label} = {best_str}\n\n"
                     f"Apply best-found design to main panel?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if reply == QMessageBox.Yes:
@@ -2206,13 +2236,16 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             x, y, z = 'A3', 'A2', 'A0'       # 3rd order: 3D scatter
 
         # Use selected color parameter
+        # Map display names to DataFrame column names
+        _DISPLAY_TO_COL = {'CL/CD': 'L/D'}
         color = self.ds_color_combo.currentText()
+        color_col = _DISPLAY_TO_COL.get(color, color)  # Translate for DataFrame indexing
         valid_df = df[df['valid'] == True] if 'valid' in df.columns else df
-        if color not in valid_df.columns:
+        if color_col not in valid_df.columns:
             # Fallback if selected metric not available
-            color = 'volume' if 'volume' in valid_df.columns else 'planform_area'
+            color_col = 'volume' if 'volume' in valid_df.columns else 'planform_area'
 
-        self.ds_canvas.plot_design_space(df, x, y, color, z_param=z)
+        self.ds_canvas.plot_design_space(df, x, y, color_col, z_param=z)
     
     def export_ds_csv(self):
         if not self.design_space_results:
