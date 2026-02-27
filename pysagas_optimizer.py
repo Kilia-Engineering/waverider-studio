@@ -101,7 +101,8 @@ class ShadowOptimizer:
         verbose: bool = True,
         mesh_min: float = 0.005,
         mesh_max: float = 0.05,
-        save_geometry_vtk: bool = True
+        save_geometry_vtk: bool = True,
+        top_surface_control: float = 0.0
     ):
         self.mach = mach
         self.shock_angle = shock_angle
@@ -121,6 +122,7 @@ class ShadowOptimizer:
         self.mesh_min = mesh_min
         self.mesh_max = mesh_max
         self.save_geometry_vtk = save_geometry_vtk
+        self.top_surface_control = top_surface_control
 
         # Convergence history
         self.history = []
@@ -145,13 +147,15 @@ class ShadowOptimizer:
             return create_second_order_waverider(
                 mach=self.mach, shock_angle=self.shock_angle,
                 A2=A2, A0=A0, n_leading_edge=self.n_le,
-                n_streamwise=self.n_stream)
+                n_streamwise=self.n_stream,
+                top_surface_control=self.top_surface_control)
         else:
             A3, A2, A0 = x
             return create_third_order_waverider(
                 mach=self.mach, shock_angle=self.shock_angle,
                 A3=A3, A2=A2, A0=A0, n_leading_edge=self.n_le,
-                n_streamwise=self.n_stream)
+                n_streamwise=self.n_stream,
+                top_surface_control=self.top_surface_control)
 
     def _evaluate(self, x: np.ndarray, compute_stability: bool = False) -> Dict:
         """

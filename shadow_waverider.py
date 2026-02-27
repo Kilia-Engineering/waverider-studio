@@ -59,7 +59,8 @@ class ShadowWaverider:
         n_leading_edge: int = 21,
         n_streamwise: int = 20,
         gamma: float = 1.4,
-        length: float = 1.0
+        length: float = 1.0,
+        top_surface_control: float = 0.0
     ):
         # Validate inputs
         if mach <= 1.0:
@@ -75,6 +76,7 @@ class ShadowWaverider:
         self.shock_angle_rad = np.radians(shock_angle)
         self.gamma = float(gamma)
         self.length = float(length)
+        self.top_surface_control = float(top_surface_control)
         
         # Process polynomial coefficients
         self.poly_coeffs = list(poly_coeffs)
@@ -591,21 +593,34 @@ class ShadowWaverider:
         self.lower_surface = np.array(lower_surface)
     
     def _generate_upper_surface(self):
-        """Generate freestream (flat) upper surface."""
+        """
+        Generate upper surface.
+
+        When top_surface_control == 0 (default), produces a flat freestream
+        upper surface matching the thesis.
+
+        When top_surface_control > 0, applies exponential lifting from
+        CoDe WAVE v2.0: y += |y_LE| * (exp(A/100 * dz) - 1)
+        """
+        A = self.top_surface_control
         upper_surface = []
-        
+
         for i, le_point in enumerate(self.leading_edge):
             x_start, y_start, z_start = le_point
-            
-            # Upper surface is a straight line in z direction
+
             z_vals = np.linspace(z_start, self.z_end, self.n_streamwise)
-            
+
             streamline = []
             for z in z_vals:
-                streamline.append([x_start, y_start, z])
-            
+                if A == 0.0:
+                    y = y_start
+                else:
+                    dz = z - z_start
+                    y = y_start + abs(y_start) * (np.exp((A / 100.0) * dz) - 1.0)
+                streamline.append([x_start, y, z])
+
             upper_surface.append(streamline)
-        
+
         self.upper_surface = np.array(upper_surface)
     
     def _compute_geometry_metrics(self):
@@ -965,6 +980,7 @@ class ShadowWaverider:
         print("-" * 50)
         print(f"Polynomial Order:   {self.poly_order}")
         print(f"Polynomial Coeffs:  {self.poly_coeffs}")
+        print(f"Top Surface A:      {self.top_surface_control:.1f}")
         print(f"Leading Edge Pts:   {self.n_leading_edge}")
         print(f"Streamwise Pts:     {self.n_streamwise}")
         print("=" * 50)

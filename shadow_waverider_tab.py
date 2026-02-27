@@ -224,7 +224,8 @@ class DesignSpaceWorker(QThread):
         try:
             wr = create_second_order_waverider(mach=mach, shock_angle=shock_angle,
                 A2=A2, A0=A0, n_leading_edge=self.params.get('n_le', 15),
-                n_streamwise=self.params.get('n_stream', 15))
+                n_streamwise=self.params.get('n_stream', 15),
+                top_surface_control=self.params.get('top_surface_control', 0.0))
             result = {'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
                    'planform_area': wr.planform_area, 'volume': wr.volume,
                    'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 1e-6 else 0.0,
@@ -246,7 +247,8 @@ class DesignSpaceWorker(QThread):
         try:
             wr = create_third_order_waverider(mach=mach, shock_angle=shock_angle,
                 A3=A3, A2=A2, A0=A0, n_leading_edge=self.params.get('n_le', 15),
-                n_streamwise=self.params.get('n_stream', 15))
+                n_streamwise=self.params.get('n_stream', 15),
+                top_surface_control=self.params.get('top_surface_control', 0.0))
             result = {'A3': A3, 'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
                    'planform_area': wr.planform_area, 'volume': wr.volume,
                    'vol_efficiency': (wr.volume ** (2.0/3.0)) / wr.planform_area if wr.planform_area > 1e-6 else 0.0,
@@ -275,7 +277,8 @@ class GradientOptWorker(QThread):
                  objective='CL/CD', method='SLSQP', maxiter=50,
                  stability_constrained=False, save_vtk=True,
                  pressure=101325.0, temperature=288.15, alpha_deg=0.0,
-                 mesh_min=0.005, mesh_max=0.05, save_geometry_vtk=True):
+                 mesh_min=0.005, mesh_max=0.05, save_geometry_vtk=True,
+                 top_surface_control=0.0):
         super().__init__()
         self.mach = mach
         self.shock_angle = shock_angle
@@ -293,6 +296,7 @@ class GradientOptWorker(QThread):
         self.mesh_min = mesh_min
         self.mesh_max = mesh_max
         self.save_geometry_vtk = save_geometry_vtk
+        self.top_surface_control = top_surface_control
 
     def run(self):
         try:
@@ -313,7 +317,8 @@ class GradientOptWorker(QThread):
                 verbose=False,
                 mesh_min=self.mesh_min,
                 mesh_max=self.mesh_max,
-                save_geometry_vtk=self.save_geometry_vtk
+                save_geometry_vtk=self.save_geometry_vtk,
+                top_surface_control=self.top_surface_control
             )
 
             # Wire progress callback to emit Qt signal
@@ -440,6 +445,7 @@ class ShadowWaveriderCanvas(FigureCanvas):
             f"  Shock \u03b2         {wr.shock_angle:.1f}\u00b0\n"
             f"  Cone \u03b8c         {wr.cone_angle_deg:.2f}\u00b0\n"
             f"  Post-shock M    {wr.post_shock_mach:.2f}\n"
+            f"  Top Surface A   {wr.top_surface_control:.1f}\n"
             f"  Length           {wr.length:.4f} m\n"
             f"  Planform Area    {wr.planform_area:.4f} m\u00b2\n"
             f"  Volume           {wr.volume:.6f} m\u00b3\n"
@@ -917,7 +923,21 @@ class ShadowWaveriderTab(QWidget):
         self.scale_spin.setRange(0.001, 10000); self.scale_spin.setValue(1.0); self.scale_spin.setDecimals(3)
         self.scale_spin.setToolTip("Additional scale factor for export (1.0 = SI meters).\nSTEP mm conversion is applied automatically.")
         layout.addWidget(self.scale_spin, 3, 1)
-        
+
+        layout.addWidget(QLabel("Top Surface A:"), 4, 0)
+        self.top_surface_spin = QDoubleSpinBox()
+        self.top_surface_spin.setRange(0.0, 100.0)
+        self.top_surface_spin.setValue(0.0)
+        self.top_surface_spin.setSingleStep(1.0)
+        self.top_surface_spin.setDecimals(1)
+        self.top_surface_spin.setToolTip(
+            "Top surface control from CoDe WAVE v2.0\n"
+            "A=0: Flat freestream surface (thesis default)\n"
+            "A>0: Exponential lift of upper surface\n"
+            "Formula: y += |y_LE| * (exp(A/100 * dz) - 1)\n"
+            "Typical range: 0 to 50")
+        layout.addWidget(self.top_surface_spin, 4, 1)
+
         group.setLayout(layout)
         return group
     
@@ -1541,7 +1561,8 @@ class ShadowWaveriderTab(QWidget):
             alpha_deg=self.aoa_spin.value(),
             mesh_min=self.opt_mesh_min.value(),
             mesh_max=self.opt_mesh_max.value(),
-            save_geometry_vtk=self.opt_save_geom_vtk.isChecked())
+            save_geometry_vtk=self.opt_save_geom_vtk.isChecked(),
+            top_surface_control=self.top_surface_spin.value())
         self._opt_worker.progress.connect(self._on_opt_progress)
         self._opt_worker.finished_signal.connect(self._on_opt_done)
         self._opt_worker.error.connect(lambda e: QMessageBox.critical(self, "Error", e))
@@ -1771,18 +1792,20 @@ class ShadowWaveriderTab(QWidget):
             mach = self.mach_spin.value()
             shock = self.shock_spin.value()
             length = self.length_spin.value()
-            
+            tsc = self.top_surface_spin.value()
+
             if self.order_combo.currentIndex() == 0:
                 self.waverider = create_second_order_waverider(
                     mach=mach, shock_angle=shock, A2=self.a2_spin.value(),
                     A0=self.a0_spin.value(), n_leading_edge=self.n_le_spin.value(),
-                    n_streamwise=self.n_stream_spin.value(), length=length)
+                    n_streamwise=self.n_stream_spin.value(), length=length,
+                    top_surface_control=tsc)
             else:
                 self.waverider = create_third_order_waverider(
                     mach=mach, shock_angle=shock, A3=self.a3_spin.value(),
                     A2=self.a2_spin.value(), A0=self.a0_spin.value(),
                     n_leading_edge=self.n_le_spin.value(), n_streamwise=self.n_stream_spin.value(),
-                    length=length)
+                    length=length, top_surface_control=tsc)
             
             self.cone_label.setText(f"{self.waverider.cone_angle_deg:.2f}")
             self.update_view()
@@ -1823,6 +1846,7 @@ Post-shock M:   {wr.post_shock_mach:.2f}
 
 Polynomial:     Order {wr.poly_order}
 Coefficients:   {wr.poly_coeffs}
+Top Surface A:  {wr.top_surface_control:.1f}
 
 Length:         {wr.length:.4f}
 Planform Area:  {wr.planform_area:.4f}
@@ -2081,6 +2105,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             'A0_min': self.ds_a0_min.value(), 'A0_max': self.ds_a0_max.value(), 'n_A0': self.ds_a0_n.value(),
             'A3_min': self.ds_a3_min.value(), 'A3_max': self.ds_a3_max.value(), 'n_A3': self.ds_a3_n.value(),
             'A0_fixed': self.a0_spin.value(),
+            'top_surface_control': self.top_surface_spin.value(),
             'include_aero': include_aero,
             'include_stability': include_stability,
             'pressure': self.p_spin.value(),
