@@ -2733,6 +2733,9 @@ class WaveriderGUI(QMainWindow):
 
         outer_layout.addWidget(splitter)
 
+        # Enable buttons to their correct initial state (dialog handles source selection)
+        self._update_aero_tab_state()
+
         return tab
 
     def _on_main_tab_changed(self, index):
