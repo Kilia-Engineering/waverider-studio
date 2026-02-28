@@ -172,7 +172,7 @@ class DesignSpaceWorker(QThread):
             aoa = self.params.get('aoa', 0)
 
             flow = FlowState(mach=mach, pressure=pressure,
-                           temperature=temperature, aoa=np.radians(aoa))
+                           temperature=temperature, aoa=aoa)
             solver = OPM(cells=cells, freestream=flow, verbosity=0)
             solver.solve()
 
