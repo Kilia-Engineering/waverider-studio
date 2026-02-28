@@ -1228,26 +1228,163 @@ class WaveriderGUI(QMainWindow):
 
     def _update_aero_tab_state(self):
         """Update button enabled states on the Aero Analysis tab."""
-        has_step = (self.imported_step_path is not None
-                    and os.path.exists(self.imported_step_path))
-        has_stl = (self.last_stl_file is not None
-                   and os.path.exists(self.last_stl_file))
+        source = self.mesh_source_combo.currentData() if hasattr(self, 'mesh_source_combo') else "imported"
 
-        self.generate_mesh_btn.setEnabled(has_step)
-        self.load_mesh_btn.setEnabled(has_stl)
-        self.run_analysis_btn.setEnabled(has_stl)
+        if source == "shadow":
+            has_shadow = (hasattr(self, 'shadow_waverider_tab')
+                          and self.shadow_waverider_tab.waverider is not None)
+            self.generate_mesh_btn.setEnabled(False)
+            self.load_mesh_btn.setEnabled(False)
+            self.run_analysis_btn.setEnabled(has_shadow and PYSAGAS_AVAILABLE)
+            # Enable sweep if shadow waverider is available
+            if hasattr(self, 'enable_sweep_check') and hasattr(self, 'run_sweep_btn'):
+                self.run_sweep_btn.setEnabled(
+                    self.enable_sweep_check.isChecked() and has_shadow and PYSAGAS_AVAILABLE)
+        else:
+            has_step = (self.imported_step_path is not None
+                        and os.path.exists(self.imported_step_path))
+            has_stl = (self.last_stl_file is not None
+                       and os.path.exists(self.last_stl_file))
 
-        if has_stl:
-            self.mesh_gen_info.setText("Ready to generate mesh" if has_step else "STL loaded directly")
-            self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
-        elif has_step:
-            self.mesh_gen_info.setText("STEP loaded — click Generate to create mesh")
-            self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
+            self.generate_mesh_btn.setEnabled(has_step)
+            self.load_mesh_btn.setEnabled(has_stl)
+            self.run_analysis_btn.setEnabled(has_stl and PYSAGAS_AVAILABLE)
 
-        # Enable sweep button if sweep is checked and STL exists
-        if hasattr(self, 'enable_sweep_check') and hasattr(self, 'run_sweep_btn'):
-            if self.enable_sweep_check.isChecked() and has_stl:
-                self.run_sweep_btn.setEnabled(True)
+            if has_stl:
+                self.mesh_gen_info.setText("Ready to generate mesh" if has_step else "STL loaded directly")
+                self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
+            elif has_step:
+                self.mesh_gen_info.setText("STEP loaded — click Generate to create mesh")
+                self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
+
+            # Enable sweep button if sweep is checked and STL exists
+            if hasattr(self, 'enable_sweep_check') and hasattr(self, 'run_sweep_btn'):
+                self.run_sweep_btn.setEnabled(
+                    self.enable_sweep_check.isChecked() and has_stl and PYSAGAS_AVAILABLE)
+
+    def _on_mesh_source_changed(self, index):
+        """Handle mesh source combo box change."""
+        source = self.mesh_source_combo.currentData()
+        if source == "imported":
+            # Show import button and mesh generation controls
+            self.aero_import_btn.setVisible(True)
+            if hasattr(self, 'mesh_gen_group'):
+                self.mesh_gen_group.setVisible(True)
+            # Restore imported file info
+            if self.last_stl_file and os.path.exists(self.last_stl_file):
+                self.aero_geo_info.setText(
+                    f"STL: {os.path.basename(self.last_stl_file)}")
+                self.aero_geo_status.setText("STL loaded — ready to analyze")
+                self.aero_geo_status.setStyleSheet("color: #4ADE80;")
+            elif (self.imported_step_path is not None
+                  and os.path.exists(self.imported_step_path)):
+                self.aero_geo_info.setText(
+                    f"STEP: {os.path.basename(self.imported_step_path)}")
+                self.aero_geo_status.setText("STEP loaded — generate mesh to analyze")
+                self.aero_geo_status.setStyleSheet("color: #F59E0B;")
+            else:
+                self.aero_geo_info.setText("No geometry loaded")
+                self.aero_geo_info.setStyleSheet("color: #888888; font-style: italic;")
+                self.aero_geo_status.setText("Import a file to begin")
+                self.aero_geo_status.setStyleSheet("color: #888888;")
+        elif source == "shadow":
+            # Hide import button and mesh generation (not needed for cone-derived source)
+            self.aero_import_btn.setVisible(False)
+            if hasattr(self, 'mesh_gen_group'):
+                self.mesh_gen_group.setVisible(False)
+            if (hasattr(self, 'shadow_waverider_tab')
+                    and self.shadow_waverider_tab.waverider is not None):
+                wr = self.shadow_waverider_tab.waverider
+                self.aero_geo_info.setText(
+                    f"Cone-Derived: M={wr.mach}, "
+                    f"\u03b2={wr.shock_angle:.1f}\u00b0, "
+                    f"L={wr.length:.2f}")
+                self.aero_geo_info.setStyleSheet("color: #e0e0e0;")
+                self.aero_geo_status.setText("Ready for analysis (mesh from get_mesh())")
+                self.aero_geo_status.setStyleSheet("color: #4ADE80;")
+            else:
+                self.aero_geo_info.setText("No cone-derived waverider generated")
+                self.aero_geo_info.setStyleSheet("color: #888888; font-style: italic;")
+                self.aero_geo_status.setText(
+                    "Generate a waverider in the Cone-Derived tab first")
+                self.aero_geo_status.setStyleSheet("color: #F59E0B;")
+        self._update_aero_tab_state()
+
+    def _refresh_mesh_sources(self):
+        """Refresh the mesh source combo box info labels for the current selection."""
+        if not hasattr(self, 'mesh_source_combo'):
+            return
+        # Re-trigger the current selection handler to update labels/states
+        self._on_mesh_source_changed(self.mesh_source_combo.currentIndex())
+
+    def _prepare_stl_from_source(self):
+        """Prepare an STL file path based on the selected mesh source.
+        Returns the STL file path or None if unavailable."""
+        source = self.mesh_source_combo.currentData() if hasattr(self, 'mesh_source_combo') else "imported"
+
+        if source == "imported":
+            if self.last_stl_file and os.path.exists(self.last_stl_file):
+                return self.last_stl_file
+            # Check if STEP is loaded but no mesh
+            if (self.imported_step_path is not None
+                    and os.path.exists(self.imported_step_path)):
+                QMessageBox.warning(
+                    self, "Mesh Required",
+                    "A STEP file is loaded but no mesh has been generated.\n\n"
+                    "Click 'Generate Mesh' first to create an STL mesh\n"
+                    "from the STEP file, then run analysis."
+                )
+            else:
+                QMessageBox.warning(
+                    self, "No STL file",
+                    "No STL mesh found.\n\n"
+                    "Import geometry first:\n"
+                    "1. Click 'Import Geometry' (STEP or STL)\n"
+                    "2. If STEP: Generate mesh with Gmsh\n"
+                    "3. Then run analysis"
+                )
+            return None
+
+        elif source == "shadow":
+            if (not hasattr(self, 'shadow_waverider_tab')
+                    or self.shadow_waverider_tab.waverider is None):
+                QMessageBox.warning(
+                    self, "No Waverider",
+                    "No cone-derived waverider has been generated.\n\n"
+                    "Go to the 'Cone-Derived Waverider' tab and\n"
+                    "generate a waverider first."
+                )
+                return None
+            try:
+                verts, tris = self.shadow_waverider_tab.waverider.get_mesh()
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix='.stl', delete=False, mode='w')
+                tmp.write("solid waverider\n")
+                for tri in tris:
+                    v0, v1, v2 = verts[tri[0]], verts[tri[1]], verts[tri[2]]
+                    n = np.cross(v1 - v0, v2 - v0)
+                    norm = np.linalg.norm(n)
+                    n = n / norm if norm > 1e-10 else np.array([0, 0, 1])
+                    tmp.write(f"  facet normal {n[0]:.6e} {n[1]:.6e} {n[2]:.6e}\n")
+                    tmp.write("    outer loop\n")
+                    for v in [v0, v1, v2]:
+                        tmp.write(
+                            f"      vertex {v[0]:.6e} {v[1]:.6e} {v[2]:.6e}\n")
+                    tmp.write("    endloop\n  endfacet\n")
+                tmp.write("endsolid waverider\n")
+                tmp.close()
+                print(f"[Aero] Generated temp STL from cone-derived waverider: "
+                      f"{len(tris)} triangles")
+                return tmp.name
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Mesh Error",
+                    f"Failed to generate mesh from cone-derived waverider:\n\n{e}"
+                )
+                return None
+
+        return None
 
     def _visualize_imported_geometry(self):
         """Plot the imported geometry in the 3D canvas."""
@@ -2279,22 +2416,39 @@ class WaveriderGUI(QMainWindow):
         geo_group = QGroupBox("Geometry Source")
         geo_layout = QGridLayout()
 
+        source_label = QLabel("Mesh Source:")
+        source_label.setStyleSheet("color: #e0e0e0; font-weight: bold;")
+        geo_layout.addWidget(source_label, 0, 0)
+
+        self.mesh_source_combo = QComboBox()
+        self.mesh_source_combo.addItem("Imported File", "imported")
+        self.mesh_source_combo.addItem("Cone-Derived Waverider", "shadow")
+        self.mesh_source_combo.setStyleSheet(
+            "QComboBox { background-color: #1A1A1A; color: #FFFFFF; "
+            "border: 1px solid #78350F; padding: 4px; }"
+            "QComboBox::drop-down { border-left: 1px solid #78350F; }"
+            "QComboBox QAbstractItemView { background-color: #1A1A1A; "
+            "color: #FFFFFF; selection-background-color: #78350F; }"
+        )
+        self.mesh_source_combo.currentIndexChanged.connect(self._on_mesh_source_changed)
+        geo_layout.addWidget(self.mesh_source_combo, 0, 1)
+
         self.aero_import_btn = QPushButton("Import Geometry (STEP / STL / OBJ)")
         self.aero_import_btn.setStyleSheet(
             "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
             "font-weight: bold; padding: 8px; } QPushButton:hover { background-color: #D97706; }"
         )
         self.aero_import_btn.clicked.connect(self._aero_import_geometry)
-        geo_layout.addWidget(self.aero_import_btn, 0, 0, 1, 2)
+        geo_layout.addWidget(self.aero_import_btn, 1, 0, 1, 2)
 
         self.aero_geo_info = QLabel("No geometry loaded")
         self.aero_geo_info.setStyleSheet("color: #888888; font-style: italic;")
         self.aero_geo_info.setWordWrap(True)
-        geo_layout.addWidget(self.aero_geo_info, 1, 0, 1, 2)
+        geo_layout.addWidget(self.aero_geo_info, 2, 0, 1, 2)
 
         self.aero_geo_status = QLabel("")
         self.aero_geo_status.setStyleSheet("color: #888888;")
-        geo_layout.addWidget(self.aero_geo_status, 2, 0, 1, 2)
+        geo_layout.addWidget(self.aero_geo_status, 3, 0, 1, 2)
 
         geo_group.setLayout(geo_layout)
         left_layout.addWidget(geo_group)
@@ -2360,7 +2514,8 @@ class WaveriderGUI(QMainWindow):
         left_layout.addWidget(params_group)
 
         # STL Mesh Generation Group
-        mesh_gen_group = QGroupBox("STL Mesh Generation (Gmsh)")
+        self.mesh_gen_group = QGroupBox("STL Mesh Generation (Gmsh)")
+        mesh_gen_group = self.mesh_gen_group
         mesh_gen_layout = QGridLayout()
 
         mesh_gen_layout.addWidget(QLabel("Min Element Size [m]:"), 0, 0)
@@ -2600,6 +2755,9 @@ class WaveriderGUI(QMainWindow):
             self.oc_param_panel.hide()
         else:
             self.oc_param_panel.show()
+        # Refresh mesh source info when switching to the Aero Analysis tab
+        if index == 1:  # Aero Analysis is tab index 1
+            self._refresh_mesh_sources()
 
     def set_default_parameters(self):
         """Set default parameters from example"""
@@ -2907,6 +3065,26 @@ class WaveriderGUI(QMainWindow):
 
     def auto_set_aref(self):
         """Automatically calculate accurate A_ref from waverider geometry or STL mesh"""
+        # If cone-derived waverider source is selected, use its planform area
+        source = self.mesh_source_combo.currentData() if hasattr(self, 'mesh_source_combo') else "imported"
+        if source == "shadow":
+            if (hasattr(self, 'shadow_waverider_tab')
+                    and self.shadow_waverider_tab.waverider is not None):
+                area = self.shadow_waverider_tab.waverider.planform_area
+                if area and area > 0:
+                    self.aref_spin.setValue(area)
+                    QMessageBox.information(
+                        self, "A_ref Calculated",
+                        f"A_ref = {area:.4f} m² (planform area from cone-derived waverider)"
+                    )
+                    return
+            QMessageBox.warning(
+                self, "No Waverider",
+                "No cone-derived waverider generated.\n\n"
+                "Generate a waverider in the Cone-Derived tab first."
+            )
+            return
+
         # Try mesh-based calculation first (works with imported STL)
         if self.last_stl_file and os.path.exists(self.last_stl_file):
             area = self._auto_aref_from_mesh()
@@ -3704,44 +3882,29 @@ class WaveriderGUI(QMainWindow):
             )
             return
 
-        # Check if we have an STL file
-        if self.last_stl_file is None or not os.path.exists(self.last_stl_file):
-            # If a STEP file is loaded but no mesh generated, guide the user
-            if (self.imported_step_path is not None
-                    and os.path.exists(self.imported_step_path)):
-                QMessageBox.warning(
-                    self, "Mesh Required",
-                    "A STEP file is loaded but no mesh has been generated.\n\n"
-                    "Click 'Generate Mesh' first to create an STL mesh\n"
-                    "from the STEP file, then run analysis."
-                )
-            else:
-                QMessageBox.warning(
-                    self, "No STL file",
-                    "No STL mesh found.\n\n"
-                    "Import geometry first:\n"
-                    "1. Click 'Import Geometry' (STEP or STL)\n"
-                    "2. If STEP: Generate mesh with Gmsh\n"
-                    "3. Then run analysis"
-                )
+        # Get STL file from selected source (shows warnings if unavailable)
+        stl_file = self._prepare_stl_from_source()
+        if stl_file is None:
             return
 
-        # Warn if STL might be stale (generated before current STEP was imported)
-        if (self.imported_step_path is not None
-                and os.path.exists(self.imported_step_path)
-                and os.path.exists(self.last_stl_file)):
-            step_mtime = os.path.getmtime(self.imported_step_path)
-            stl_mtime = os.path.getmtime(self.last_stl_file)
-            if stl_mtime < step_mtime:
-                reply = QMessageBox.question(
-                    self, "Mesh may be outdated",
-                    "The current STL mesh is older than the imported STEP file.\n"
-                    "The mesh may not match the current geometry.\n\n"
-                    "Regenerate mesh before analysis?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-                )
-                if reply == QMessageBox.Yes:
-                    return  # User should regenerate mesh first
+        # For imported source: warn if STL might be stale
+        source = self.mesh_source_combo.currentData() if hasattr(self, 'mesh_source_combo') else "imported"
+        if source == "imported":
+            if (self.imported_step_path is not None
+                    and os.path.exists(self.imported_step_path)
+                    and os.path.exists(stl_file)):
+                step_mtime = os.path.getmtime(self.imported_step_path)
+                stl_mtime = os.path.getmtime(stl_file)
+                if stl_mtime < step_mtime:
+                    reply = QMessageBox.question(
+                        self, "Mesh may be outdated",
+                        "The current STL mesh is older than the imported STEP file.\n"
+                        "The mesh may not match the current geometry.\n\n"
+                        "Regenerate mesh before analysis?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+                    )
+                    if reply == QMessageBox.Yes:
+                        return  # User should regenerate mesh first
 
         # Get analysis parameters
         aoa = self.aoa_spin.value()
@@ -3767,7 +3930,7 @@ class WaveriderGUI(QMainWindow):
 
         # Create and start worker thread
         self.analysis_worker = AnalysisWorker(
-            self.last_stl_file,
+            stl_file,
             freestream_dict,
             aoa,
             A_ref,
@@ -3945,20 +4108,21 @@ class WaveriderGUI(QMainWindow):
     def run_aerodeck_sweep(self):
         """Run AeroDeck sweep analysis using PySAGAS"""
         if not PYSAGAS_AVAILABLE:
-            QMessageBox.warning(self, "PySAGAS unavailable", 
+            QMessageBox.warning(self, "PySAGAS unavailable",
                               "PySAGAS is not installed.")
             return
-        
-        if self.last_stl_file is None or not os.path.exists(self.last_stl_file):
-            QMessageBox.warning(self, "No STL", "Generate STL mesh first.")
+
+        # Get STL file from selected source
+        stl_file = self._prepare_stl_from_source()
+        if stl_file is None:
             return
-        
+
         # Get sweep ranges
-        aoa_list = list(np.arange(self.aoa_min_spin.value(), 
-                              self.aoa_max_spin.value() + 0.01, 
+        aoa_list = list(np.arange(self.aoa_min_spin.value(),
+                              self.aoa_max_spin.value() + 0.01,
                               self.aoa_step_spin.value()))
-        mach_list = list(np.arange(self.mach_min_spin.value(), 
-                               self.mach_max_spin.value() + 0.01, 
+        mach_list = list(np.arange(self.mach_min_spin.value(),
+                               self.mach_max_spin.value() + 0.01,
                                self.mach_step_spin.value()))
         
         n_points = len(aoa_list) * len(mach_list)
@@ -3999,24 +4163,24 @@ class WaveriderGUI(QMainWindow):
         self.results_text.append("=" * 50)
         self.results_text.append("AERODECK SWEEP ANALYSIS")
         self.results_text.append("=" * 50)
-        self.results_text.append(f"\nSTL File: {self.last_stl_file}")
+        self.results_text.append(f"\nSTL File: {stl_file}")
         self.results_text.append(f"Pressure: {pressure:.0f} Pa")
         self.results_text.append(f"Temperature: {temperature:.2f} K")
         self.results_text.append(f"A_ref: {A_ref:.4f} m²")
         self.results_text.append(f"\nRunning {n_points} analysis points...\n")
         QApplication.processEvents()
-        
+
         # Run sweep using PySAGAS - matching their AeroDeck example exactly
         try:
             from pysagas.flow import FlowState
             from pysagas.geometry.parsers import MeshIO
             from pysagas.cfd import OPM, AeroDeck
-            
+
             # Load mesh using MeshIO
             self.results_text.append("Loading mesh...")
             QApplication.processEvents()
-            
-            cells = MeshIO.load_from_file(self.last_stl_file)
+
+            cells = MeshIO.load_from_file(stl_file)
             self.results_text.append(f"  Loaded {len(cells)} cells")
             self.results_text.append(f"  Using A_ref = {A_ref:.4f} m²\n")
             QApplication.processEvents()
