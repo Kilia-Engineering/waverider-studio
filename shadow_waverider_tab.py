@@ -280,7 +280,9 @@ class GradientOptWorker(QThread):
                  stability_constrained=False, save_vtk=True,
                  pressure=101325.0, temperature=288.15, alpha_deg=0.0,
                  mesh_min=0.005, mesh_max=0.05, save_geometry_vtk=True,
-                 top_surface_control=0.0, length=1.0):
+                 top_surface_control=0.0, length=1.0,
+                 optimize_top_surface=False, vol_eff_min=0.0,
+                 vol_eff_max=0.0, cl_cd_min=0.0, volume_min=0.0):
         super().__init__()
         self.mach = mach
         self.shock_angle = shock_angle
@@ -300,6 +302,11 @@ class GradientOptWorker(QThread):
         self.save_geometry_vtk = save_geometry_vtk
         self.top_surface_control = top_surface_control
         self.length = length
+        self.optimize_top_surface = optimize_top_surface
+        self.vol_eff_min = vol_eff_min
+        self.vol_eff_max = vol_eff_max
+        self.cl_cd_min = cl_cd_min
+        self.volume_min = volume_min
 
     def run(self):
         try:
@@ -322,7 +329,12 @@ class GradientOptWorker(QThread):
                 mesh_max=self.mesh_max,
                 save_geometry_vtk=self.save_geometry_vtk,
                 top_surface_control=self.top_surface_control,
-                length=self.length
+                length=self.length,
+                optimize_top_surface=self.optimize_top_surface,
+                vol_eff_min=self.vol_eff_min,
+                vol_eff_max=self.vol_eff_max,
+                cl_cd_min=self.cl_cd_min,
+                volume_min=self.volume_min
             )
 
             # Wire progress callback to emit Qt signal
@@ -1458,26 +1470,102 @@ class ShadowWaveriderTab(QWidget):
         bounds_group = QGroupBox("Design Variable Bounds")
         gl2 = QGridLayout()
 
+        # A3 bounds (for 3rd order)
+        self._opt_a3_label = QLabel("A3 bounds:")
+        gl2.addWidget(self._opt_a3_label, 0, 0)
+        self.opt_a3_lo = QDoubleSpinBox()
+        self.opt_a3_lo.setRange(-100, 100); self.opt_a3_lo.setValue(-30)
+        gl2.addWidget(self.opt_a3_lo, 0, 1)
+        self.opt_a3_hi = QDoubleSpinBox()
+        self.opt_a3_hi.setRange(-100, 100); self.opt_a3_hi.setValue(30)
+        gl2.addWidget(self.opt_a3_hi, 0, 2)
+        # Show/hide A3 bounds based on polynomial order
+        is_3rd = self.order_combo.currentIndex() == 1
+        self._opt_a3_label.setVisible(is_3rd)
+        self.opt_a3_lo.setVisible(is_3rd)
+        self.opt_a3_hi.setVisible(is_3rd)
+
         # A2 bounds (tighter defaults to avoid degenerate geometries)
-        gl2.addWidget(QLabel("A2 bounds:"), 0, 0)
+        gl2.addWidget(QLabel("A2 bounds:"), 1, 0)
         self.opt_a2_lo = QDoubleSpinBox()
         self.opt_a2_lo.setRange(-50, 0); self.opt_a2_lo.setValue(-15)
-        gl2.addWidget(self.opt_a2_lo, 0, 1)
+        gl2.addWidget(self.opt_a2_lo, 1, 1)
         self.opt_a2_hi = QDoubleSpinBox()
         self.opt_a2_hi.setRange(-50, 0); self.opt_a2_hi.setValue(-0.5)
-        gl2.addWidget(self.opt_a2_hi, 0, 2)
+        gl2.addWidget(self.opt_a2_hi, 1, 2)
 
         # A0 bounds (tighter defaults to avoid CL sign flips)
-        gl2.addWidget(QLabel("A0 bounds:"), 1, 0)
+        gl2.addWidget(QLabel("A0 bounds:"), 2, 0)
         self.opt_a0_lo = QDoubleSpinBox()
         self.opt_a0_lo.setRange(-1, 0); self.opt_a0_lo.setValue(-0.4); self.opt_a0_lo.setDecimals(3)
-        gl2.addWidget(self.opt_a0_lo, 1, 1)
+        gl2.addWidget(self.opt_a0_lo, 2, 1)
         self.opt_a0_hi = QDoubleSpinBox()
         self.opt_a0_hi.setRange(-1, 0); self.opt_a0_hi.setValue(-0.02); self.opt_a0_hi.setDecimals(3)
-        gl2.addWidget(self.opt_a0_hi, 1, 2)
+        gl2.addWidget(self.opt_a0_hi, 2, 2)
+
+        # Top Surface A as design variable (optional)
+        self.opt_top_surface_check = QCheckBox("Optimize Top Surface A")
+        self.opt_top_surface_check.setToolTip("Include Top Surface Control (A) as a design variable")
+        gl2.addWidget(self.opt_top_surface_check, 3, 0)
+        self.opt_a_lo = QDoubleSpinBox()
+        self.opt_a_lo.setRange(0, 100); self.opt_a_lo.setValue(0); self.opt_a_lo.setDecimals(1)
+        gl2.addWidget(self.opt_a_lo, 3, 1)
+        self.opt_a_hi = QDoubleSpinBox()
+        self.opt_a_hi.setRange(0, 100); self.opt_a_hi.setValue(50); self.opt_a_hi.setDecimals(1)
+        gl2.addWidget(self.opt_a_hi, 3, 2)
+        self.opt_a_lo.setVisible(False); self.opt_a_hi.setVisible(False)
+        self.opt_top_surface_check.toggled.connect(
+            lambda checked: (self.opt_a_lo.setVisible(checked), self.opt_a_hi.setVisible(checked)))
 
         bounds_group.setLayout(gl2)
         layout.addWidget(bounds_group)
+
+        # Constraints group (epsilon-constraint approach)
+        constr_group = QGroupBox("Optimization Constraints")
+        cg = QGridLayout()
+
+        self.opt_vol_eff_min_check = QCheckBox("Vol Efficiency min:")
+        self.opt_vol_eff_min_check.setToolTip("Constrain volumetric efficiency >= value")
+        cg.addWidget(self.opt_vol_eff_min_check, 0, 0)
+        self.opt_vol_eff_min_spin = QDoubleSpinBox()
+        self.opt_vol_eff_min_spin.setRange(0, 1); self.opt_vol_eff_min_spin.setValue(0.25)
+        self.opt_vol_eff_min_spin.setDecimals(3); self.opt_vol_eff_min_spin.setSingleStep(0.01)
+        self.opt_vol_eff_min_spin.setEnabled(False)
+        cg.addWidget(self.opt_vol_eff_min_spin, 0, 1)
+        self.opt_vol_eff_min_check.toggled.connect(self.opt_vol_eff_min_spin.setEnabled)
+
+        self.opt_vol_eff_max_check = QCheckBox("Vol Efficiency max:")
+        self.opt_vol_eff_max_check.setToolTip("Constrain volumetric efficiency <= value")
+        cg.addWidget(self.opt_vol_eff_max_check, 0, 2)
+        self.opt_vol_eff_max_spin = QDoubleSpinBox()
+        self.opt_vol_eff_max_spin.setRange(0, 1); self.opt_vol_eff_max_spin.setValue(0.38)
+        self.opt_vol_eff_max_spin.setDecimals(3); self.opt_vol_eff_max_spin.setSingleStep(0.01)
+        self.opt_vol_eff_max_spin.setEnabled(False)
+        cg.addWidget(self.opt_vol_eff_max_spin, 0, 3)
+        self.opt_vol_eff_max_check.toggled.connect(self.opt_vol_eff_max_spin.setEnabled)
+
+        self.opt_cl_cd_min_check = QCheckBox("CL/CD min:")
+        self.opt_cl_cd_min_check.setToolTip("Constrain CL/CD >= value")
+        cg.addWidget(self.opt_cl_cd_min_check, 1, 0)
+        self.opt_cl_cd_min_spin = QDoubleSpinBox()
+        self.opt_cl_cd_min_spin.setRange(0, 50); self.opt_cl_cd_min_spin.setValue(3.0)
+        self.opt_cl_cd_min_spin.setDecimals(2); self.opt_cl_cd_min_spin.setSingleStep(0.5)
+        self.opt_cl_cd_min_spin.setEnabled(False)
+        cg.addWidget(self.opt_cl_cd_min_spin, 1, 1)
+        self.opt_cl_cd_min_check.toggled.connect(self.opt_cl_cd_min_spin.setEnabled)
+
+        self.opt_volume_min_check = QCheckBox("Volume min:")
+        self.opt_volume_min_check.setToolTip("Constrain volume >= value (m³)")
+        cg.addWidget(self.opt_volume_min_check, 1, 2)
+        self.opt_volume_min_spin = QDoubleSpinBox()
+        self.opt_volume_min_spin.setRange(0, 100); self.opt_volume_min_spin.setValue(0.01)
+        self.opt_volume_min_spin.setDecimals(4); self.opt_volume_min_spin.setSingleStep(0.001)
+        self.opt_volume_min_spin.setEnabled(False)
+        cg.addWidget(self.opt_volume_min_spin, 1, 3)
+        self.opt_volume_min_check.toggled.connect(self.opt_volume_min_spin.setEnabled)
+
+        constr_group.setLayout(cg)
+        layout.addWidget(constr_group)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -1518,6 +1606,31 @@ class ShadowWaveriderTab(QWidget):
         self.opt_ax.set_facecolor('#1A1A1A')
         layout.addWidget(self.opt_canvas)
 
+        # Pareto front plot (populated after optimization finishes)
+        pareto_group = QGroupBox("Design Exploration (Pareto Front)")
+        pareto_layout = QVBoxLayout()
+        self.pareto_canvas = FigureCanvas(Figure(figsize=(8, 4), facecolor='#0A0A0A'))
+        self.pareto_ax = self.pareto_canvas.figure.add_subplot(111)
+        self.pareto_ax.set_facecolor('#1A1A1A')
+        self.pareto_canvas.mpl_connect('pick_event', self._on_pareto_pick)
+        pareto_layout.addWidget(self.pareto_canvas)
+
+        # Selected design info + apply button
+        pareto_info = QHBoxLayout()
+        self.pareto_info_label = QLabel("Click a point on the Pareto plot to inspect a design")
+        self.pareto_info_label.setStyleSheet("color: #9CA3AF;")
+        pareto_info.addWidget(self.pareto_info_label, 1)
+        self.pareto_apply_btn = QPushButton("Apply Selected Design")
+        self.pareto_apply_btn.setEnabled(False)
+        self.pareto_apply_btn.setStyleSheet(
+            "background-color: #F59E0B; color: black; font-weight: bold; padding: 6px;")
+        self.pareto_apply_btn.clicked.connect(self._apply_pareto_design)
+        pareto_info.addWidget(self.pareto_apply_btn)
+        pareto_layout.addLayout(pareto_info)
+
+        pareto_group.setLayout(pareto_layout)
+        layout.addWidget(pareto_group)
+
         layout.addStretch()
         return widget
 
@@ -1530,6 +1643,7 @@ class ShadowWaveriderTab(QWidget):
         order = self.order_combo.currentIndex() + 2
         mach = self.mach_spin.value()
         shock = self.shock_spin.value()
+        opt_top_surface = self.opt_top_surface_check.isChecked()
 
         # Build initial point from current panel values
         if order == 2:
@@ -1538,17 +1652,37 @@ class ShadowWaveriderTab(QWidget):
                       (self.opt_a0_lo.value(), self.opt_a0_hi.value())]
         else:
             x0 = [self.a3_spin.value(), self.a2_spin.value(), self.a0_spin.value()]
-            bounds = [(-50, 50),
+            bounds = [(self.opt_a3_lo.value(), self.opt_a3_hi.value()),
                       (self.opt_a2_lo.value(), self.opt_a2_hi.value()),
                       (self.opt_a0_lo.value(), self.opt_a0_hi.value())]
+
+        # Append Top Surface A as design variable if enabled
+        if opt_top_surface:
+            x0.append(self.top_surface_spin.value())
+            bounds.append((self.opt_a_lo.value(), self.opt_a_hi.value()))
+
+        # Read constraint values
+        vol_eff_min = self.opt_vol_eff_min_spin.value() if self.opt_vol_eff_min_check.isChecked() else 0.0
+        vol_eff_max = self.opt_vol_eff_max_spin.value() if self.opt_vol_eff_max_check.isChecked() else 0.0
+        cl_cd_min = self.opt_cl_cd_min_spin.value() if self.opt_cl_cd_min_check.isChecked() else 0.0
+        volume_min = self.opt_volume_min_spin.value() if self.opt_volume_min_check.isChecked() else 0.0
 
         self.opt_run_btn.setEnabled(False)
         self.opt_log.clear()
         self._opt_objective_name = self.opt_objective.currentText()
+        self._opt_top_surface = opt_top_surface
+        self._opt_poly_order = order
         self.opt_log.append(f"Starting {self.opt_method.currentText()} optimization...")
         self.opt_log.append(f"  Mach={mach}, shock={shock}, order={order}")
         self.opt_log.append(f"  Objective: maximize {self._opt_objective_name}")
         self.opt_log.append(f"  x0 = {x0}")
+        if vol_eff_min > 0 or vol_eff_max > 0 or cl_cd_min > 0 or volume_min > 0:
+            constraints_str = []
+            if vol_eff_min > 0: constraints_str.append(f"vol_eff>={vol_eff_min:.3f}")
+            if vol_eff_max > 0: constraints_str.append(f"vol_eff<={vol_eff_max:.3f}")
+            if cl_cd_min > 0: constraints_str.append(f"CL/CD>={cl_cd_min:.2f}")
+            if volume_min > 0: constraints_str.append(f"vol>={volume_min:.4f}")
+            self.opt_log.append(f"  Constraints: {', '.join(constraints_str)}")
         self.opt_log.append("")
 
         # Run in thread
@@ -1567,7 +1701,12 @@ class ShadowWaveriderTab(QWidget):
             mesh_max=self.opt_mesh_max.value(),
             save_geometry_vtk=self.opt_save_geom_vtk.isChecked(),
             top_surface_control=self.top_surface_spin.value(),
-            length=self.length_spin.value())
+            length=self.length_spin.value(),
+            optimize_top_surface=opt_top_surface,
+            vol_eff_min=vol_eff_min,
+            vol_eff_max=vol_eff_max,
+            cl_cd_min=cl_cd_min,
+            volume_min=volume_min)
         self._opt_worker.progress.connect(self._on_opt_progress)
         self._opt_worker.finished_signal.connect(self._on_opt_done)
         self._opt_worker.error.connect(lambda e: QMessageBox.critical(self, "Error", e))
@@ -1603,10 +1742,22 @@ class ShadowWaveriderTab(QWidget):
         self.opt_ax.grid(True, alpha=0.3)
         self.opt_canvas.draw()
 
+    def _apply_x_to_panel(self, x_opt):
+        """Apply design variable vector to main panel spinboxes."""
+        opt_top_surface = getattr(self, '_opt_top_surface', False)
+        order = getattr(self, '_opt_poly_order', 2)
+        idx = 0
+        if order == 3:
+            self.a3_spin.setValue(x_opt[idx]); idx += 1
+        self.a2_spin.setValue(x_opt[idx]); idx += 1
+        self.a0_spin.setValue(x_opt[idx]); idx += 1
+        if opt_top_surface and idx < len(x_opt):
+            self.top_surface_spin.setValue(x_opt[idx])
+        self.generate()
+
     def _on_opt_done(self, result):
         """Handle gradient optimization completion."""
         self.opt_run_btn.setEnabled(True)
-        self._opt_history = []
 
         obj_name = getattr(self, '_opt_objective_name', 'CL/CD')
         dict_key, label, _ = self._OBJ_MAP.get(obj_name, ('L/D', 'CL/CD', True))
@@ -1619,6 +1770,9 @@ class ShadowWaveriderTab(QWidget):
             self.opt_log.append(f"  {label} = {final.get(dict_key, 'N/A')}")
             self.opt_log.append(f"  CL = {final.get('CL', 'N/A')}")
             self.opt_log.append(f"  CD = {final.get('CD', 'N/A')}")
+            ve = final.get('vol_efficiency')
+            if ve is not None:
+                self.opt_log.append(f"  Vol Eff = {ve:.4f}")
             if 'Cm_alpha' in final:
                 self.opt_log.append(f"  Cm_alpha = {final.get('Cm_alpha', 'N/A')}")
                 self.opt_log.append(f"  Cn_beta  = {final.get('Cn_beta', 'N/A')}")
@@ -1635,14 +1789,7 @@ class ShadowWaveriderTab(QWidget):
                 f"Apply optimal design to main panel?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
             if reply == QMessageBox.Yes:
-                if len(x_opt) == 2:
-                    self.a2_spin.setValue(x_opt[0])
-                    self.a0_spin.setValue(x_opt[1])
-                else:
-                    self.a3_spin.setValue(x_opt[0])
-                    self.a2_spin.setValue(x_opt[1])
-                    self.a0_spin.setValue(x_opt[2])
-                self.generate()
+                self._apply_x_to_panel(x_opt)
         else:
             self.opt_log.append(f"\nOptimization FAILED: {result.get('message', 'unknown')}")
 
@@ -1663,7 +1810,7 @@ class ShadowWaveriderTab(QWidget):
 
             self.opt_log.append(f"\nSuggestions:")
             self.opt_log.append(f"  - Try 'Nelder-Mead' method (gradient-free, more robust)")
-            self.opt_log.append(f"  - Narrow the A2/A0 bounds")
+            self.opt_log.append(f"  - Narrow the design variable bounds")
             self.opt_log.append(f"  - Try a different initial point")
             if best is not None and best.get('x') is not None:
                 self.opt_log.append(f"  - Use the best-found design as new starting point")
@@ -1682,14 +1829,11 @@ class ShadowWaveriderTab(QWidget):
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if reply == QMessageBox.Yes:
                     best_x = best['x']
-                    if len(best_x) == 2:
-                        self.a2_spin.setValue(best_x[0])
-                        self.a0_spin.setValue(best_x[1])
-                    else:
-                        self.a3_spin.setValue(best_x[0])
-                        self.a2_spin.setValue(best_x[1])
-                        self.a0_spin.setValue(best_x[2])
-                    self.generate()
+                    self._apply_x_to_panel(best_x)
+
+        # Populate Pareto front plot from history
+        self._update_pareto_plot()
+        self._opt_history = []
 
         # Log GIF and sensitivity results
         gif_path = result.get('gif_path')
@@ -1717,6 +1861,141 @@ class ShadowWaveriderTab(QWidget):
         self.opt_anim_btn.setEnabled(True)
 
         self.opt_progress.setText("Done")
+
+    def _update_pareto_plot(self):
+        """Populate Pareto front scatter from optimization history."""
+        history = getattr(self, '_opt_history', [])
+        if not history:
+            return
+
+        # Extract CL/CD and vol_efficiency from all valid evaluations
+        ld_vals = []
+        ve_vals = []
+        valid_entries = []
+        for e in history:
+            ld = e.get('L/D')
+            ve = e.get('vol_efficiency')
+            if ld is not None and ve is not None and ld > 0:
+                ld_vals.append(float(ld))
+                ve_vals.append(float(ve))
+                valid_entries.append(e)
+
+        if not valid_entries:
+            return
+
+        self._pareto_entries = valid_entries
+        ld_arr = np.array(ld_vals)
+        ve_arr = np.array(ve_vals)
+
+        # Compute Pareto front (non-dominated: higher is better for both)
+        pareto_mask = np.zeros(len(ld_arr), dtype=bool)
+        for i in range(len(ld_arr)):
+            dominated = False
+            for j in range(len(ld_arr)):
+                if i == j:
+                    continue
+                if ld_arr[j] >= ld_arr[i] and ve_arr[j] >= ve_arr[i] and \
+                   (ld_arr[j] > ld_arr[i] or ve_arr[j] > ve_arr[i]):
+                    dominated = True
+                    break
+            if not dominated:
+                pareto_mask[i] = True
+
+        ax = self.pareto_ax
+        ax.clear()
+        ax.set_facecolor('#1A1A1A')
+
+        # Plot all designs
+        ax.scatter(ld_arr[~pareto_mask], ve_arr[~pareto_mask],
+                   c='#6B7280', s=30, alpha=0.5, picker=5, label='Dominated')
+        ax.scatter(ld_arr[pareto_mask], ve_arr[pareto_mask],
+                   c='#10B981', s=60, edgecolors='white', linewidths=1,
+                   picker=5, label='Pareto front', zorder=5)
+
+        # Connect Pareto front with a line
+        if pareto_mask.sum() > 1:
+            p_ld = ld_arr[pareto_mask]
+            p_ve = ve_arr[pareto_mask]
+            sort_idx = np.argsort(p_ld)
+            ax.plot(p_ld[sort_idx], p_ve[sort_idx], '--', color='#10B981', alpha=0.7)
+
+        ax.set_xlabel('CL/CD', color='#FFFFFF')
+        ax.set_ylabel('Vol Efficiency', color='#FFFFFF')
+        ax.set_title('Pareto Front: CL/CD vs Vol Efficiency', color='#FFFFFF')
+        ax.tick_params(colors='#888888')
+        ax.grid(True, alpha=0.3)
+        ax.legend(facecolor='#1A1A1A', edgecolor='#333333', labelcolor='#CCCCCC')
+        self.pareto_canvas.draw()
+
+    def _on_pareto_pick(self, event):
+        """Handle click on Pareto plot point."""
+        if not hasattr(self, '_pareto_entries'):
+            return
+        ind = event.ind
+        if len(ind) == 0:
+            return
+        idx = ind[0]
+        if idx >= len(self._pareto_entries):
+            return
+
+        entry = self._pareto_entries[idx]
+        self._selected_pareto_entry = entry
+
+        # Build info text
+        parts = [f"CL/CD={entry.get('L/D', 0):.3f}",
+                 f"Vol Eff={entry.get('vol_efficiency', 0):.4f}",
+                 f"CL={entry.get('CL', 0):.4f}",
+                 f"CD={entry.get('CD', 0):.6f}"]
+        # Show design variables
+        x_parts = []
+        i = 0
+        while f'x{i}' in entry:
+            x_parts.append(f"x{i}={entry[f'x{i}']:.4f}")
+            i += 1
+        if x_parts:
+            parts.append(f"x=[{', '.join(x_parts)}]")
+
+        self.pareto_info_label.setText(" | ".join(parts))
+        self.pareto_info_label.setStyleSheet("color: #10B981; font-weight: bold;")
+        self.pareto_apply_btn.setEnabled(True)
+
+        # Highlight selected point
+        ax = self.pareto_ax
+        # Remove previous highlight
+        for artist in ax.collections[:]:
+            if getattr(artist, '_is_highlight', False):
+                artist.remove()
+        ld = entry.get('L/D', 0)
+        ve = entry.get('vol_efficiency', 0)
+        highlight = ax.scatter([ld], [ve], c='#F59E0B', s=150, marker='*',
+                               edgecolors='white', linewidths=1, zorder=10)
+        highlight._is_highlight = True
+        self.pareto_canvas.draw()
+
+    def _apply_pareto_design(self):
+        """Apply selected Pareto design parameters to main panel."""
+        entry = getattr(self, '_selected_pareto_entry', None)
+        if entry is None:
+            return
+
+        opt_top_surface = getattr(self, '_opt_top_surface', False)
+        order = getattr(self, '_opt_poly_order', 2)
+
+        idx = 0
+        if order == 3 and f'x{idx}' in entry:
+            self.a3_spin.setValue(entry[f'x{idx}'])
+            idx += 1
+        if f'x{idx}' in entry:
+            self.a2_spin.setValue(entry[f'x{idx}'])
+            idx += 1
+        if f'x{idx}' in entry:
+            self.a0_spin.setValue(entry[f'x{idx}'])
+            idx += 1
+        if opt_top_surface and f'x{idx}' in entry:
+            self.top_surface_spin.setValue(entry[f'x{idx}'])
+
+        self.generate()
+        self.pareto_info_label.setText("Design applied to main panel")
 
     def _generate_animation(self):
         """Generate or regenerate animation GIF from last optimization."""
@@ -1786,6 +2065,12 @@ class ShadowWaveriderTab(QWidget):
     # === Slot methods ===
     def on_order_change(self, idx):
         self.a3_spin.setEnabled(idx == 1)
+        # Show/hide A3 optimization bounds
+        is_3rd = (idx == 1)
+        if hasattr(self, '_opt_a3_label'):
+            self._opt_a3_label.setVisible(is_3rd)
+            self.opt_a3_lo.setVisible(is_3rd)
+            self.opt_a3_hi.setVisible(is_3rd)
     
     def auto_shock(self):
         opt = optimal_shock_angle(self.mach_spin.value())
