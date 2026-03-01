@@ -103,7 +103,11 @@ class ShadowOptimizer:
         mesh_max: float = 0.05,
         save_geometry_vtk: bool = True,
         top_surface_control: float = 0.0,
-        length: float = 1.0
+        length: float = 1.0,
+        optimize_top_surface: bool = False,
+        vol_eff_min: float = 0.0,
+        vol_eff_max: float = 0.0,
+        cl_cd_min: float = 0.0
     ):
         self.mach = mach
         self.shock_angle = shock_angle
@@ -125,6 +129,10 @@ class ShadowOptimizer:
         self.save_geometry_vtk = save_geometry_vtk
         self.top_surface_control = top_surface_control
         self.length = length
+        self.optimize_top_surface = optimize_top_surface
+        self.vol_eff_min = vol_eff_min
+        self.vol_eff_max = vol_eff_max
+        self.cl_cd_min = cl_cd_min
 
         # Convergence history
         self.history = []
@@ -143,21 +151,34 @@ class ShadowOptimizer:
         os.makedirs(output_dir, exist_ok=True)
 
     def _create_waverider(self, x: np.ndarray) -> ShadowWaverider:
-        """Create a ShadowWaverider from design variable vector."""
+        """Create a ShadowWaverider from design variable vector.
+
+        Variable layout:
+          2nd order: [A2, A0] or [A2, A0, A]
+          3rd order: [A3, A2, A0] or [A3, A2, A0, A]
+        When optimize_top_surface is True, the last element is Top Surface A.
+        """
+        if self.optimize_top_surface:
+            tsc = float(x[-1])
+            x_shape = x[:-1]
+        else:
+            tsc = self.top_surface_control
+            x_shape = x
+
         if self.poly_order == 2:
-            A2, A0 = x
+            A2, A0 = x_shape
             return create_second_order_waverider(
                 mach=self.mach, shock_angle=self.shock_angle,
                 A2=A2, A0=A0, n_leading_edge=self.n_le,
                 n_streamwise=self.n_stream, length=self.length,
-                top_surface_control=self.top_surface_control)
+                top_surface_control=tsc)
         else:
-            A3, A2, A0 = x
+            A3, A2, A0 = x_shape
             return create_third_order_waverider(
                 mach=self.mach, shock_angle=self.shock_angle,
                 A3=A3, A2=A2, A0=A0, n_leading_edge=self.n_le,
                 n_streamwise=self.n_stream, length=self.length,
-                top_surface_control=self.top_surface_control)
+                top_surface_control=tsc)
 
     def _evaluate(self, x: np.ndarray, compute_stability: bool = False) -> Dict:
         """
@@ -424,6 +445,27 @@ class ShadowOptimizer:
             return -1.0
         return -result.get('Cl_beta', 0)
 
+    def _constraint_vol_eff_min(self, x: np.ndarray) -> float:
+        """vol_efficiency(x) >= vol_eff_min."""
+        result = self._evaluate(x)
+        if not result.get('success', False):
+            return -1.0
+        return result.get('vol_efficiency', 0.0) - self.vol_eff_min
+
+    def _constraint_vol_eff_max(self, x: np.ndarray) -> float:
+        """vol_efficiency(x) <= vol_eff_max → vol_eff_max - vol_eff >= 0."""
+        result = self._evaluate(x)
+        if not result.get('success', False):
+            return -1.0
+        return self.vol_eff_max - result.get('vol_efficiency', 0.0)
+
+    def _constraint_cl_cd_min(self, x: np.ndarray) -> float:
+        """CL/CD(x) >= cl_cd_min."""
+        result = self._evaluate(x)
+        if not result.get('success', False):
+            return -1.0
+        return result.get('L/D', 0.0) - self.cl_cd_min
+
     def optimize(
         self,
         x0: np.ndarray = None,
@@ -490,28 +532,29 @@ class ShadowOptimizer:
                       f"for FD gradients, so expect ~{maxiter*(n_vars+1)} evals)")
             print()
 
-        # Build constraints
+        # Build constraints (SLSQP and COBYLA both support inequality constraints)
         constraints = []
-        if self.stability_constrained and STABILITY_AVAILABLE:
-            if self.method == 'SLSQP':
-                constraints.append({
-                    'type': 'ineq',
-                    'fun': self._stability_constraint_pitch
-                })
-                constraints.append({
-                    'type': 'ineq',
-                    'fun': self._stability_constraint_yaw
-                })
-                constraints.append({
-                    'type': 'ineq',
-                    'fun': self._stability_constraint_roll
-                })
+        supports_constraints = self.method in ('SLSQP', 'COBYLA')
 
-        if self.volume_min > 0:
+        if self.stability_constrained and STABILITY_AVAILABLE and supports_constraints:
+            constraints.append({'type': 'ineq', 'fun': self._stability_constraint_pitch})
+            constraints.append({'type': 'ineq', 'fun': self._stability_constraint_yaw})
+            constraints.append({'type': 'ineq', 'fun': self._stability_constraint_roll})
+
+        if self.volume_min > 0 and supports_constraints:
             constraints.append({
                 'type': 'ineq',
                 'fun': lambda x: self._evaluate(x).get('volume', 0) - self.volume_min
             })
+
+        if self.vol_eff_min > 0 and supports_constraints:
+            constraints.append({'type': 'ineq', 'fun': self._constraint_vol_eff_min})
+
+        if self.vol_eff_max > 0 and supports_constraints:
+            constraints.append({'type': 'ineq', 'fun': self._constraint_vol_eff_max})
+
+        if self.cl_cd_min > 0 and supports_constraints:
+            constraints.append({'type': 'ineq', 'fun': self._constraint_cl_cd_min})
 
         # Build optimizer options
         # Note: for SLSQP, 'maxiter' counts optimizer iterations, not function
