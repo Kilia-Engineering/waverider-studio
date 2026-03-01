@@ -280,7 +280,7 @@ class GradientOptWorker(QThread):
                  stability_constrained=False, save_vtk=True,
                  pressure=101325.0, temperature=288.15, alpha_deg=0.0,
                  mesh_min=0.005, mesh_max=0.05, save_geometry_vtk=True,
-                 top_surface_control=0.0):
+                 top_surface_control=0.0, length=1.0):
         super().__init__()
         self.mach = mach
         self.shock_angle = shock_angle
@@ -299,6 +299,7 @@ class GradientOptWorker(QThread):
         self.mesh_max = mesh_max
         self.save_geometry_vtk = save_geometry_vtk
         self.top_surface_control = top_surface_control
+        self.length = length
 
     def run(self):
         try:
@@ -320,7 +321,8 @@ class GradientOptWorker(QThread):
                 mesh_min=self.mesh_min,
                 mesh_max=self.mesh_max,
                 save_geometry_vtk=self.save_geometry_vtk,
-                top_surface_control=self.top_surface_control
+                top_surface_control=self.top_surface_control,
+                length=self.length
             )
 
             # Wire progress callback to emit Qt signal
@@ -1564,7 +1566,8 @@ class ShadowWaveriderTab(QWidget):
             mesh_min=self.opt_mesh_min.value(),
             mesh_max=self.opt_mesh_max.value(),
             save_geometry_vtk=self.opt_save_geom_vtk.isChecked(),
-            top_surface_control=self.top_surface_spin.value())
+            top_surface_control=self.top_surface_spin.value(),
+            length=self.length_spin.value())
         self._opt_worker.progress.connect(self._on_opt_progress)
         self._opt_worker.finished_signal.connect(self._on_opt_done)
         self._opt_worker.error.connect(lambda e: QMessageBox.critical(self, "Error", e))
