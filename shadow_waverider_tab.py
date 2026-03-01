@@ -225,6 +225,7 @@ class DesignSpaceWorker(QThread):
             wr = create_second_order_waverider(mach=mach, shock_angle=shock_angle,
                 A2=A2, A0=A0, n_leading_edge=self.params.get('n_le', 15),
                 n_streamwise=self.params.get('n_stream', 15),
+                length=self.params.get('length', 1.0),
                 top_surface_control=self.params.get('top_surface_control', 0.0))
             result = {'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
                    'planform_area': wr.planform_area, 'volume': wr.volume,
@@ -248,6 +249,7 @@ class DesignSpaceWorker(QThread):
             wr = create_third_order_waverider(mach=mach, shock_angle=shock_angle,
                 A3=A3, A2=A2, A0=A0, n_leading_edge=self.params.get('n_le', 15),
                 n_streamwise=self.params.get('n_stream', 15),
+                length=self.params.get('length', 1.0),
                 top_surface_control=self.params.get('top_surface_control', 0.0))
             result = {'A3': A3, 'A2': A2, 'A0': A0, 'cone_angle': wr.cone_angle_deg,
                    'planform_area': wr.planform_area, 'volume': wr.volume,
@@ -2100,7 +2102,7 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
 
         params = {
             'mach': self.mach_spin.value(), 'shock_angle': self.shock_spin.value(),
-            'poly_order': order + 2, 'n_le': 15, 'n_stream': 15,
+            'poly_order': order + 2, 'n_le': 15, 'n_stream': 15, 'length': self.length_spin.value(),
             'A2_min': self.ds_a2_min.value(), 'A2_max': self.ds_a2_max.value(), 'n_A2': self.ds_a2_n.value(),
             'A0_min': self.ds_a0_min.value(), 'A0_max': self.ds_a0_max.value(), 'n_A0': self.ds_a0_n.value(),
             'A3_min': self.ds_a3_min.value(), 'A3_max': self.ds_a3_max.value(), 'n_A3': self.ds_a3_n.value(),
