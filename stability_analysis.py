@@ -289,7 +289,7 @@ def compute_stability_derivatives(cells, mach: float, pressure: float,
     }
 
 
-def cells_from_stl(stl_file: str):
+def cells_from_stl(stl_file: str, scale: float = 1.0):
     """
     Load an STL file and create PySAGAS Cell objects.
 
@@ -300,6 +300,9 @@ def cells_from_stl(stl_file: str):
     ----------
     stl_file : str
         Path to STL file
+    scale : float
+        Coordinate scale factor (e.g. 0.001 to convert mm → m).
+        Default 1.0 (no scaling).
 
     Returns
     -------
@@ -309,7 +312,7 @@ def cells_from_stl(stl_file: str):
     import meshio
 
     mesh = meshio.read(stl_file)
-    points = mesh.points
+    points = mesh.points * scale
 
     triangles = None
     for cell_block in mesh.cells:

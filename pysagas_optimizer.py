@@ -214,7 +214,7 @@ class ShadowOptimizer:
 
             self._export_step(wr, step_path)
             self._run_gmsh(step_path, stl_path)
-            cells = cells_from_stl(stl_path)
+            cells = cells_from_stl(stl_path, scale=0.001)  # mm → m
         except Exception as e:
             # Fallback to direct triangulation if Gmsh pipeline fails
             if self.verbose:
