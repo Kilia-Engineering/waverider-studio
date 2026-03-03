@@ -977,13 +977,15 @@ class ShadowWaveriderTab(QWidget):
         layout.addWidget(QLabel("CP 1:"), 2, 0)
         self.dome_s1 = QDoubleSpinBox()
         self.dome_s1.setRange(0.0, 0.99); self.dome_s1.setValue(0.0)
-        self.dome_s1.setDecimals(2); self.dome_s1.setSingleStep(0.05)
+        self.dome_s1.setDecimals(2); self.dome_s1.setSingleStep(0.01)
+        self.dome_s1.setKeyboardTracking(True)
         self.dome_s1.setToolTip("Spanwise position (0 = centerline, 1 = wingtip)")
         layout.addWidget(self.dome_s1, 2, 1)
 
         self.dome_h1 = QDoubleSpinBox()
         self.dome_h1.setRange(0.0, 1.0); self.dome_h1.setValue(0.05)
         self.dome_h1.setDecimals(3); self.dome_h1.setSingleStep(0.005)
+        self.dome_h1.setKeyboardTracking(True)
         self.dome_h1.setToolTip("Vertical offset at this span station (model units)")
         layout.addWidget(self.dome_h1, 2, 2)
 
@@ -991,18 +993,135 @@ class ShadowWaveriderTab(QWidget):
         layout.addWidget(QLabel("CP 2:"), 3, 0)
         self.dome_s2 = QDoubleSpinBox()
         self.dome_s2.setRange(0.0, 0.99); self.dome_s2.setValue(0.50)
-        self.dome_s2.setDecimals(2); self.dome_s2.setSingleStep(0.05)
+        self.dome_s2.setDecimals(2); self.dome_s2.setSingleStep(0.01)
+        self.dome_s2.setKeyboardTracking(True)
         self.dome_s2.setToolTip("Spanwise position (0 = centerline, 1 = wingtip)")
         layout.addWidget(self.dome_s2, 3, 1)
 
         self.dome_h2 = QDoubleSpinBox()
         self.dome_h2.setRange(0.0, 1.0); self.dome_h2.setValue(0.03)
         self.dome_h2.setDecimals(3); self.dome_h2.setSingleStep(0.005)
+        self.dome_h2.setKeyboardTracking(True)
         self.dome_h2.setToolTip("Vertical offset at this span station (model units)")
         layout.addWidget(self.dome_h2, 3, 2)
 
+        # Live update of CP overlay when values change
+        for spin in (self.dome_s1, self.dome_h1, self.dome_s2, self.dome_h2):
+            spin.valueChanged.connect(self._update_dome_cp_overlay)
+        self.dome_check.stateChanged.connect(self._update_dome_cp_overlay)
+
         group.setLayout(layout)
         return group
+
+    def _update_dome_cp_overlay(self):
+        """Draw/update the dome control points and polygon on the 3D view."""
+        ax = self.canvas_3d.ax
+
+        # Remove previous dome overlay elements
+        for artist in list(ax.lines) + list(ax.collections):
+            if getattr(artist, '_dome_cp', False):
+                artist.remove()
+
+        # Only draw if enabled and a waverider exists
+        if not self.dome_check.isChecked() or not hasattr(self, 'waverider') or self.waverider is None:
+            self.canvas_3d.draw()
+            return
+
+        wr = self.waverider
+        import numpy as np
+
+        # Get trailing edge cross-section from upper surface
+        # After transform: upper_surface shape (n_le, n_stream, 3) with [X_stream, Y_vert, Z_span]
+        te_x = wr.upper_surface[:, -1, 0]  # streamwise at TE
+        te_y = wr.upper_surface[:, -1, 1]  # vertical at TE
+        te_z = wr.upper_surface[:, -1, 2]  # span at TE
+
+        x_te = te_x[len(te_x) // 2]  # streamwise position of TE (use center)
+        half_span = np.max(np.abs(te_z))
+
+        # Build the CP profile: tips + user CPs + center (symmetric)
+        cp_data = [
+            (self.dome_s1.value(), self.dome_h1.value()),
+            (self.dome_s2.value(), self.dome_h2.value()),
+        ]
+
+        # Find baseline Y at each span fraction (from current TE cross-section)
+        center_idx = len(te_y) // 2
+        base_y_center = te_y[center_idx]
+
+        # Build spline profile points for visualization
+        from scipy.interpolate import CubicSpline
+        span_fracs = sorted(set([cp[0] for cp in cp_data]))
+        # Add tip anchor
+        all_s = []
+        all_h = []
+        for s, h in cp_data:
+            all_s.append(s)
+            all_h.append(h)
+        # Deduplicate
+        unique = {}
+        for s, h in zip(all_s, all_h):
+            unique[round(s, 6)] = h
+        s_sorted = sorted(unique.keys())
+        h_sorted = [unique[s] for s in s_sorted]
+        s_sorted.append(1.0)
+        h_sorted.append(0.0)
+
+        if len(s_sorted) >= 2:
+            try:
+                spline = CubicSpline(np.array(s_sorted), np.array(h_sorted),
+                                     bc_type=((1, 0.0), 'natural'))
+                # Sample the spline for a smooth curve
+                s_fine = np.linspace(0, 1, 50)
+                h_fine = np.array([max(float(spline(s)), 0.0) for s in s_fine])
+            except Exception:
+                s_fine = np.array(s_sorted)
+                h_fine = np.array(h_sorted)
+        else:
+            s_fine = np.array(s_sorted)
+            h_fine = np.array(h_sorted)
+
+        # Convert to 3D coordinates at the TE cross-section
+        # Right side (positive span)
+        z_right = s_fine * half_span
+        y_right = base_y_center + h_fine
+        x_right = np.full_like(z_right, x_te)
+
+        # Left side (negative span) — mirror
+        z_left = -s_fine * half_span
+        y_left = base_y_center + h_fine
+        x_left = np.full_like(z_left, x_te)
+
+        # Full profile: left tip → center → right tip
+        z_full = np.concatenate([z_left[::-1], z_right[1:]])
+        y_full = np.concatenate([y_left[::-1], y_right[1:]])
+        x_full = np.concatenate([x_left[::-1], x_right[1:]])
+
+        # Plot mapping: plot_X=Z(span), plot_Y=X(stream), plot_Z=Y(vert)
+        line, = ax.plot(z_full, x_full, y_full, color='#FFD700', linewidth=2.0,
+                        linestyle='-', zorder=15)
+        line._dome_cp = True
+
+        # Draw CP markers (both sides)
+        for s, h in cp_data:
+            z_pt = s * half_span
+            y_pt = base_y_center + h
+            # Right side
+            sc = ax.scatter([z_pt], [x_te], [y_pt], c='#FFD700', s=80,
+                           marker='o', edgecolors='black', linewidths=1, zorder=20)
+            sc._dome_cp = True
+            # Left side (mirror)
+            sc2 = ax.scatter([-z_pt], [x_te], [y_pt], c='#FFD700', s=80,
+                            marker='o', edgecolors='black', linewidths=1, zorder=20)
+            sc2._dome_cp = True
+
+        # Tip markers
+        for z_tip in [half_span, -half_span]:
+            sc3 = ax.scatter([z_tip], [x_te], [base_y_center], c='#FFD700', s=40,
+                            marker='D', edgecolors='black', linewidths=1, zorder=20)
+            sc3._dome_cp = True
+
+        self.canvas_3d.draw()
 
     def _create_blunting_group(self):
         group = QGroupBox("Leading Edge Blunting")
@@ -2162,6 +2281,7 @@ class ShadowWaveriderTab(QWidget):
             
             self.cone_label.setText(f"{self.waverider.cone_angle_deg:.2f}")
             self.update_view()
+            self._update_dome_cp_overlay()
             self.update_results()
             self.info_label.setText(f"✓ θc={self.waverider.cone_angle_deg:.1f}°, Area={self.waverider.planform_area:.4f}, L={length:.2f}m")
             if self.blunting_check.isChecked():
