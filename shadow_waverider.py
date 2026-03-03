@@ -494,9 +494,12 @@ class ShadowWaverider:
                     if R < 1e-12:
                         continue  # skip apex/nose point
                     phi0 = np.arctan2(x, -y)  # azimuth on cone (0=bottom)
-                    t = abs(x) / x_max        # 0 at nose, 1 at tips
-                    if self.le_elevation_distribution == "quadratic":
-                        t = t ** 2
+                    if self.le_elevation_distribution == "uniform":
+                        t = 1.0               # same elevation everywhere
+                    else:
+                        t = abs(x) / x_max    # 0 at nose, 1 at tips
+                        if self.le_elevation_distribution == "quadratic":
+                            t = t ** 2
                     dphi = elevation_rad * t * np.sign(x)
                     self.leading_edge[i, 0] = R * np.sin(phi0 + dphi)
                     self.leading_edge[i, 1] = -R * np.cos(phi0 + dphi)

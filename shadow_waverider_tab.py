@@ -926,11 +926,12 @@ class ShadowWaveriderTab(QWidget):
 
         layout.addWidget(QLabel("Distribution:"), 5, 0)
         self.le_dist_combo = QComboBox()
-        self.le_dist_combo.addItems(["Linear", "Quadratic"])
+        self.le_dist_combo.addItems(["Linear", "Quadratic", "Uniform"])
         self.le_dist_combo.setToolTip(
             "How the elevation varies from nose to wingtips.\n"
             "Linear: even spread from nose (0) to tips (max)\n"
-            "Quadratic: concentrated at tips, subtle near center")
+            "Quadratic: concentrated at tips, subtle near center\n"
+            "Uniform: same elevation applied to entire LE (including nose)")
         layout.addWidget(self.le_dist_combo, 5, 1)
 
         group.setLayout(layout)
