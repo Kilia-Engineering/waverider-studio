@@ -280,17 +280,15 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
 
 
 def build_shock_cone_face(shock_angle_rad, length, leading_edge=None,
-                          half_only=False, n_streamwise=25, n_angular=40,
-                          margin_factor=1.10):
+                          half_only=False, **kwargs):
     """
-    Build a NURBS surface representing the conical shock cone.
+    Build an exact conical shock surface by revolving a generator line.
 
     The shock cone has apex at the origin and axis along +X (streamwise).
-    At streamwise position x, the cone cross-section is a circle of
-    radius R = x * tan(shock_angle_rad) in the Y-Z plane.
+    At streamwise position x, the cone radius is R = x * tan(shock_angle_rad).
 
-    Generates a full 360° cone (or 180° for half_only) that extends
-    50% past the vehicle trailing edge.
+    Uses OCP revolution (BRepPrimAPI_MakeRevol) to produce a mathematically
+    exact conical surface — no B-spline approximation.
 
     Parameters
     ----------
@@ -299,16 +297,10 @@ def build_shock_cone_face(shock_angle_rad, length, leading_edge=None,
     length : float
         Streamwise length (trailing edge X position).
     leading_edge : ndarray, optional
-        Kept for API compatibility; no longer used.
+        Kept for API compatibility; not used.
     half_only : bool
         If True, build only the right half (Z >= 0, 180°).
         If False, build full 360° cone.
-    n_streamwise : int
-        Number of streamwise grid stations.
-    n_angular : int
-        Number of angular grid stations per half (180°).
-    margin_factor : float
-        Kept for API compatibility; no longer used.
 
     Returns
     -------
@@ -316,61 +308,36 @@ def build_shock_cone_face(shock_angle_rad, length, leading_edge=None,
         The shock cone surface in model units.
     """
     import cadquery as cq
-    import numpy as np
+    import math
+    from OCP.gp import gp_Pnt, gp_Dir, gp_Ax1
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
 
-    tan_beta = np.tan(shock_angle_rad)
+    tan_beta = math.tan(shock_angle_rad)
 
-    # Streamwise range — start slightly off apex, extend 50% past vehicle
+    # Streamwise range — start slightly off apex to avoid degenerate point
     x_start = length * 0.01
-    x_end = length * 1.5
-    x_vals = np.linspace(x_start, x_end, n_streamwise)
+    x_end = length
 
-    def cone_pt(x, phi):
-        R = x * tan_beta
-        y = -R * np.cos(phi)   # negative Y — cone is below axis
-        z = R * np.sin(phi)
-        return (float(x), float(y), float(z))
+    # Generator line on the cone surface in the XY plane (Z=0, Y<0)
+    p1 = gp_Pnt(x_start, -x_start * tan_beta, 0.0)
+    p2 = gp_Pnt(x_end,   -x_end * tan_beta,   0.0)
+    edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
 
-    def _build_half_patch(phi_start, phi_end, n_phi):
-        """Build a single NURBS patch for a 180° arc of the cone."""
-        phi_vals = np.linspace(phi_start, phi_end, n_phi)
-
-        # Build 4 boundary splines
-        edge_apex = [cone_pt(x_start, p) for p in phi_vals]
-        edge_te = [cone_pt(x_end, p) for p in phi_vals]
-        edge_side_lo = [cone_pt(x, phi_vals[0]) for x in x_vals]
-        edge_side_hi = [cone_pt(x, phi_vals[-1]) for x in x_vals]
-
-        boundary = cq.Workplane("XY").spline(edge_apex)
-        boundary = boundary.add(cq.Workplane("XY").spline(edge_te))
-        boundary = boundary.add(cq.Workplane("XY").spline(edge_side_lo))
-        boundary = boundary.add(cq.Workplane("XY").spline(edge_side_hi))
-
-        # Interior points (exclude boundary rows/columns)
-        interior = []
-        for i in range(1, n_streamwise - 1):
-            for j in range(1, n_phi - 1):
-                interior.append(cone_pt(x_vals[i], phi_vals[j]))
-
-        face = cq.Workplane("XY").interpPlate(boundary, interior, 0)
-        return face.val()
-
-    # Right half: phi from 0 to π (Z >= 0 side)
-    right_half = _build_half_patch(0.0, np.pi, n_angular)
+    # Revolution axis = X axis through origin
+    origin = gp_Pnt(0, 0, 0)
 
     if half_only:
-        return right_half
+        # Revolve π around −X → sweeps through Z ≥ 0 (right half)
+        axis = gp_Ax1(origin, gp_Dir(-1, 0, 0))
+        angle = math.pi
+    else:
+        # Full 360° cone
+        axis = gp_Ax1(origin, gp_Dir(1, 0, 0))
+        angle = 2 * math.pi
 
-    # Left half: phi from -π to 0 (Z <= 0 side)
-    left_half = _build_half_patch(-np.pi, 0.0, n_angular)
-
-    # Sew the two halves together
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
-    sew = BRepBuilderAPI_Sewing(1e-6)
-    sew.Add(right_half.wrapped)
-    sew.Add(left_half.wrapped)
-    sew.Perform()
-    return cq.Shape(sew.SewedShape())
+    revol = BRepPrimAPI_MakeRevol(edge, axis, angle)
+    return cq.Shape(revol.Shape())
 
 
 def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
