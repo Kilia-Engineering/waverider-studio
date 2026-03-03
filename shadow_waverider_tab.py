@@ -2327,10 +2327,15 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             waverider_shape = result.val()
 
             # Create compound with both bodies (separate in CAD)
-            compound = cq.Compound.makeCompound(
-                [waverider_shape.wrapped, shock_shape.wrapped])
+            from OCP.TopoDS import TopoDS_Compound
+            from OCP.BRep import BRep_Builder
+            builder = BRep_Builder()
+            comp = TopoDS_Compound()
+            builder.MakeCompound(comp)
+            builder.Add(comp, waverider_shape.wrapped)
+            builder.Add(comp, shock_shape.wrapped)
             cq.exporters.export(
-                cq.Workplane("XY").newObject([compound]), filename)
+                cq.Workplane("XY").newObject([cq.Shape(comp)]), filename)
             print(f"[Shadow STEP] Exported waverider + shock surface → {filename}")
         else:
             cq.exporters.export(result, filename)
