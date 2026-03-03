@@ -497,7 +497,7 @@ class ShadowWaverider:
                     t = abs(x) / x_max        # 0 at nose, 1 at tips
                     if self.le_elevation_distribution == "quadratic":
                         t = t ** 2
-                    dphi = elevation_rad * t
+                    dphi = elevation_rad * t * np.sign(x)
                     self.leading_edge[i, 0] = R * np.sin(phi0 + dphi)
                     self.leading_edge[i, 1] = -R * np.cos(phi0 + dphi)
 
