@@ -315,9 +315,9 @@ def build_shock_cone_face(shock_angle_rad, length, leading_edge=None,
 
     tan_beta = math.tan(shock_angle_rad)
 
-    # Streamwise range — start slightly off apex to avoid degenerate point
+    # Streamwise range — start slightly off apex, extend 50% past vehicle
     x_start = length * 0.01
-    x_end = length
+    x_end = length * 1.5
 
     # Generator line on the cone surface in the XY plane (Z=0, Y<0)
     p1 = gp_Pnt(x_start, -x_start * tan_beta, 0.0)
