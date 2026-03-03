@@ -2300,28 +2300,17 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         if include_shock:
             from waverider_generator.cad_export import build_shock_cone_face
             print(f"[Shadow STEP] Building shock cone surface "
-                  f"(shock_angle={np.degrees(wr.shock_angle_rad):.2f}°)")
+                  f"(shock_angle={np.degrees(wr.shock_angle_rad):.2f}°, "
+                  f"full_360={'no' if half_only else 'yes'})")
 
-            shock_face = build_shock_cone_face(
+            shock_shape = build_shock_cone_face(
                 shock_angle_rad=wr.shock_angle_rad,
                 length=wr.length,
                 leading_edge=wr.leading_edge,
                 half_only=half_only)
 
             # Scale from SI meters to mm (same as waverider body)
-            shock_face = shock_face.scale(scale)
-
-            if not half_only:
-                # Mirror and combine both halves of the shock surface
-                shock_left = shock_face.mirror(mirrorPlane='XY')
-                from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
-                sew = BRepBuilderAPI_Sewing(1e-2)
-                sew.Add(shock_face.wrapped)
-                sew.Add(shock_left.wrapped)
-                sew.Perform()
-                shock_shape = cq.Shape(sew.SewedShape())
-            else:
-                shock_shape = shock_face
+            shock_shape = shock_shape.scale(scale)
 
             # Extract the waverider solid from result
             waverider_shape = result.val()
