@@ -60,9 +60,7 @@ class ShadowWaverider:
         n_streamwise: int = 20,
         gamma: float = 1.4,
         length: float = 1.0,
-        top_surface_control: float = 0.0,
-        leading_edge_elevation: float = 0.0,
-        le_elevation_distribution: str = "linear"
+        top_surface_control: float = 0.0
     ):
         # Validate inputs
         if mach <= 1.0:
@@ -79,11 +77,7 @@ class ShadowWaverider:
         self.gamma = float(gamma)
         self.length = float(length)
         self.top_surface_control = float(top_surface_control)
-
-        # Leading edge elevation (cone wrapping)
-        self.leading_edge_elevation = float(leading_edge_elevation)  # degrees
-        self.le_elevation_distribution = le_elevation_distribution   # "linear" or "quadratic"
-
+        
         # Process polynomial coefficients
         self.poly_coeffs = list(poly_coeffs)
         self.poly_order = len(self.poly_coeffs) - 1
@@ -482,28 +476,7 @@ class ShadowWaverider:
         self.z_start = z_start
         self.z_end = z_end
         self.x_end = x_end
-
-        # Apply leading edge elevation (rotate LE points on the cone surface)
-        if self.leading_edge_elevation > 0:
-            elevation_rad = np.radians(self.leading_edge_elevation)
-            x_max = np.max(np.abs(self.leading_edge[:, 0]))
-            if x_max > 1e-10:
-                for i, pt in enumerate(self.leading_edge):
-                    x, y, z = pt
-                    R = np.sqrt(x**2 + y**2)
-                    if R < 1e-12:
-                        continue  # skip apex/nose point
-                    phi0 = np.arctan2(x, -y)  # azimuth on cone (0=bottom)
-                    if self.le_elevation_distribution == "uniform":
-                        t = 1.0               # same elevation everywhere
-                    else:
-                        t = abs(x) / x_max    # 0 at nose, 1 at tips
-                        if self.le_elevation_distribution == "quadratic":
-                            t = t ** 2
-                    dphi = elevation_rad * t * np.sign(x)
-                    self.leading_edge[i, 0] = R * np.sin(phi0 + dphi)
-                    self.leading_edge[i, 1] = -R * np.cos(phi0 + dphi)
-
+    
     def _cart_to_sphere(self, x: float, y: float, z: float) -> Tuple[float, float, float]:
         """Convert Cartesian to spherical coordinates."""
         r = np.sqrt(x**2 + y**2 + z**2)
