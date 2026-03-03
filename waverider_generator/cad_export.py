@@ -279,15 +279,18 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
     return right_side
 
 
-def build_shock_cone_face(shock_angle_rad, length, leading_edge,
-                          half_only=False, n_streamwise=25, n_angular=25,
+def build_shock_cone_face(shock_angle_rad, length, leading_edge=None,
+                          half_only=False, n_streamwise=25, n_angular=40,
                           margin_factor=1.10):
     """
-    Build a NURBS face representing the conical shock surface.
+    Build a NURBS surface representing the conical shock cone.
 
     The shock cone has apex at the origin and axis along +X (streamwise).
     At streamwise position x, the cone cross-section is a circle of
     radius R = x * tan(shock_angle_rad) in the Y-Z plane.
+
+    Generates a full 360° cone (or 180° for half_only) that extends
+    50% past the vehicle trailing edge.
 
     Parameters
     ----------
@@ -295,53 +298,32 @@ def build_shock_cone_face(shock_angle_rad, length, leading_edge,
         Shock cone half-angle in radians.
     length : float
         Streamwise length (trailing edge X position).
-    leading_edge : ndarray, shape (n_le, 3)
-        Leading edge points (X=stream, Y=vert, Z=span).
-        Used to determine the angular extent of the surface.
+    leading_edge : ndarray, optional
+        Kept for API compatibility; no longer used.
     half_only : bool
-        If True, build only the right half (Z >= 0).
+        If True, build only the right half (Z >= 0, 180°).
+        If False, build full 360° cone.
     n_streamwise : int
         Number of streamwise grid stations.
     n_angular : int
-        Number of angular grid stations.
+        Number of angular grid stations per half (180°).
     margin_factor : float
-        Multiply the angular range by this to extend slightly
-        beyond the leading edge footprint.
+        Kept for API compatibility; no longer used.
 
     Returns
     -------
-    cq.Face
-        The shock cone surface face in model units.
+    cq.Shape
+        The shock cone surface in model units.
     """
     import cadquery as cq
     import numpy as np
 
     tan_beta = np.tan(shock_angle_rad)
 
-    # Determine angular extent from leading edge footprint.
-    # Each LE point lies on the cone; phi = arctan2(|z|, |y|)
-    # gives its angular position.
-    phi_max = 0.0
-    for pt in leading_edge:
-        y_le, z_le = pt[1], pt[2]
-        R_le = np.sqrt(y_le**2 + z_le**2)
-        if R_le > 1e-10:
-            phi = np.arctan2(abs(z_le), abs(y_le))
-            phi_max = max(phi_max, phi)
-
-    phi_max = min(phi_max * margin_factor, np.pi / 2.0)
-    if phi_max < 0.01:
-        phi_max = np.pi / 6.0  # fallback 30 degrees
-
-    # Streamwise range — start slightly off apex to avoid degenerate point
+    # Streamwise range — start slightly off apex, extend 50% past vehicle
     x_start = length * 0.01
-    x_end = length
+    x_end = length * 1.5
     x_vals = np.linspace(x_start, x_end, n_streamwise)
-
-    if half_only:
-        phi_vals = np.linspace(0.0, phi_max, n_angular)
-    else:
-        phi_vals = np.linspace(-phi_max, phi_max, n_angular)
 
     def cone_pt(x, phi):
         R = x * tan_beta
@@ -349,26 +331,46 @@ def build_shock_cone_face(shock_angle_rad, length, leading_edge,
         z = R * np.sin(phi)
         return (float(x), float(y), float(z))
 
-    # Build 4 boundary splines
-    edge_apex = [cone_pt(x_start, p) for p in phi_vals]
-    edge_te = [cone_pt(x_end, p) for p in phi_vals]
-    edge_side_lo = [cone_pt(x, phi_vals[0]) for x in x_vals]
-    edge_side_hi = [cone_pt(x, phi_vals[-1]) for x in x_vals]
+    def _build_half_patch(phi_start, phi_end, n_phi):
+        """Build a single NURBS patch for a 180° arc of the cone."""
+        phi_vals = np.linspace(phi_start, phi_end, n_phi)
 
-    boundary = cq.Workplane("XY").spline(edge_apex)
-    boundary = boundary.add(cq.Workplane("XY").spline(edge_te))
-    boundary = boundary.add(cq.Workplane("XY").spline(edge_side_lo))
-    boundary = boundary.add(cq.Workplane("XY").spline(edge_side_hi))
+        # Build 4 boundary splines
+        edge_apex = [cone_pt(x_start, p) for p in phi_vals]
+        edge_te = [cone_pt(x_end, p) for p in phi_vals]
+        edge_side_lo = [cone_pt(x, phi_vals[0]) for x in x_vals]
+        edge_side_hi = [cone_pt(x, phi_vals[-1]) for x in x_vals]
 
-    # Interior points (exclude boundary rows/columns)
-    interior = []
-    for i in range(1, n_streamwise - 1):
-        for j in range(1, n_angular - 1):
-            interior.append(cone_pt(x_vals[i], phi_vals[j]))
+        boundary = cq.Workplane("XY").spline(edge_apex)
+        boundary = boundary.add(cq.Workplane("XY").spline(edge_te))
+        boundary = boundary.add(cq.Workplane("XY").spline(edge_side_lo))
+        boundary = boundary.add(cq.Workplane("XY").spline(edge_side_hi))
 
-    shock_face = cq.Workplane("XY").interpPlate(boundary, interior, 0)
+        # Interior points (exclude boundary rows/columns)
+        interior = []
+        for i in range(1, n_streamwise - 1):
+            for j in range(1, n_phi - 1):
+                interior.append(cone_pt(x_vals[i], phi_vals[j]))
 
-    return shock_face.val()
+        face = cq.Workplane("XY").interpPlate(boundary, interior, 0)
+        return face.val()
+
+    # Right half: phi from 0 to π (Z >= 0 side)
+    right_half = _build_half_patch(0.0, np.pi, n_angular)
+
+    if half_only:
+        return right_half
+
+    # Left half: phi from -π to 0 (Z <= 0 side)
+    left_half = _build_half_patch(-np.pi, 0.0, n_angular)
+
+    # Sew the two halves together
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    sew = BRepBuilderAPI_Sewing(1e-6)
+    sew.Add(right_half.wrapped)
+    sew.Add(left_half.wrapped)
+    sew.Perform()
+    return cq.Shape(sew.SewedShape())
 
 
 def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
