@@ -1193,6 +1193,13 @@ class ShadowWaveriderTab(QWidget):
         layout.addWidget(step_btn, 1, 0, 1, 2)
         layout.addWidget(self.half_vehicle_check, 2, 0, 1, 2)
 
+        self.shock_surface_check = QCheckBox("Include shock surface")
+        self.shock_surface_check.setToolTip(
+            "Export the conical shock surface as a separate body\n"
+            "in the STEP file (can be hidden independently in CAD)")
+        self.shock_surface_check.setEnabled(CADQUERY_AVAILABLE)
+        layout.addWidget(self.shock_surface_check, 3, 0, 1, 2)
+
         group.setLayout(layout)
         return group
     
@@ -2201,15 +2208,18 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                     pct = self.min_thickness_spin.value()
                     min_thickness = veh_length * pct / 100.0
                 half_only = getattr(self, 'half_vehicle_check', None) and self.half_vehicle_check.isChecked()
+                include_shock = (getattr(self, 'shock_surface_check', None)
+                                 and self.shock_surface_check.isChecked())
                 print(f"[Shadow Export] method='{method}', blunting_radius={blunting_radius}, "
                       f"sweep_scaled={sweep_scaled}, min_thickness={min_thickness}, "
-                      f"scale={scale}, half_only={half_only}")
+                      f"scale={scale}, half_only={half_only}, shock={include_shock}")
                 if method == methods[0]:
                     self._export_step_nurbs(fn, scale,
                                             blunting_radius=blunting_radius,
                                             sweep_scaled=sweep_scaled,
                                             min_thickness=min_thickness,
-                                            half_only=half_only)
+                                            half_only=half_only,
+                                            include_shock=include_shock)
                 else:
                     self._export_step_faces(fn, scale, min_thickness=min_thickness)
                 QMessageBox.information(self, "Success", f"Saved: {fn}")
@@ -2220,15 +2230,17 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
     
     def _export_step_nurbs(self, filename, scale, blunting_radius=0.0,
                            sweep_scaled=False, min_thickness=0.0,
-                           half_only=False):
+                           half_only=False, include_shock=False):
         """
         Export STEP with smooth NURBS surfaces using interpPlate.
         Coords: X = streamwise, Y = vertical, Z = span.
 
         Builds one half (positive Z / right side), optionally applies LE
         fillet, then mirrors to create the full vehicle.
+        Optionally includes the conical shock surface as a separate body.
         """
         import cadquery as cq
+        import numpy as np
 
         wr = self.waverider
         upper_surf = wr.upper_surface
@@ -2284,7 +2296,44 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             left_side = right_side.mirror(mirrorPlane='XY')
             result = cq.Workplane("XY").newObject([right_side]).union(left_side)
 
-        cq.exporters.export(result, filename)
+        # Build shock cone surface as a separate body if requested
+        if include_shock:
+            from waverider_generator.cad_export import build_shock_cone_face
+            print(f"[Shadow STEP] Building shock cone surface "
+                  f"(shock_angle={np.degrees(wr.shock_angle_rad):.2f}°)")
+
+            shock_face = build_shock_cone_face(
+                shock_angle_rad=wr.shock_angle_rad,
+                length=wr.length,
+                leading_edge=wr.leading_edge,
+                half_only=half_only)
+
+            # Scale from SI meters to mm (same as waverider body)
+            shock_face = shock_face.scale(scale)
+
+            if not half_only:
+                # Mirror and combine both halves of the shock surface
+                shock_left = shock_face.mirror(mirrorPlane='XY')
+                from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+                sew = BRepBuilderAPI_Sewing(1e-2)
+                sew.Add(shock_face.wrapped)
+                sew.Add(shock_left.wrapped)
+                sew.Perform()
+                shock_shape = cq.Shape(sew.SewedShape())
+            else:
+                shock_shape = shock_face
+
+            # Extract the waverider solid from result
+            waverider_shape = result.val()
+
+            # Create compound with both bodies (separate in CAD)
+            compound = cq.Compound.makeCompound(
+                [waverider_shape.wrapped, shock_shape.wrapped])
+            cq.exporters.export(
+                cq.Workplane("XY").newObject([compound]), filename)
+            print(f"[Shadow STEP] Exported waverider + shock surface → {filename}")
+        else:
+            cq.exporters.export(result, filename)
     
     def _export_step_faces(self, filename, scale, min_thickness=0.0):
         """
