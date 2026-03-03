@@ -750,6 +750,7 @@ class ShadowWaveriderTab(QWidget):
         left_layout.addWidget(self._create_flow_group())
         left_layout.addWidget(self._create_poly_group())
         left_layout.addWidget(self._create_mesh_group())
+        left_layout.addWidget(self._create_dome_group())
         left_layout.addWidget(self._create_blunting_group())
         left_layout.addWidget(self._create_min_thickness_group())
         left_layout.addWidget(self._create_generate_group())
@@ -910,29 +911,7 @@ class ShadowWaveriderTab(QWidget):
             "Less negative: shallower nose, thinner vehicle, risk of surface crossing\n"
             "Typical range: -0.05 to -0.3")
         layout.addWidget(self.a0_spin, 3, 1)
-
-        layout.addWidget(QLabel("Elevation:"), 4, 0)
-        self.le_elevation_spin = QDoubleSpinBox()
-        self.le_elevation_spin.setRange(0, 90)
-        self.le_elevation_spin.setValue(0.0)
-        self.le_elevation_spin.setDecimals(1)
-        self.le_elevation_spin.setSuffix("°")
-        self.le_elevation_spin.setToolTip(
-            "Leading edge elevation — wraps the LE upward on the\n"
-            "shock cone to create a wider vehicle with more volume.\n"
-            "0° = default position (bottom of cone)\n"
-            "Higher = wingtips wrap further around the cone")
-        layout.addWidget(self.le_elevation_spin, 4, 1)
-
-        layout.addWidget(QLabel("Distribution:"), 5, 0)
-        self.le_dist_combo = QComboBox()
-        self.le_dist_combo.addItems(["Linear", "Quadratic"])
-        self.le_dist_combo.setToolTip(
-            "How the elevation varies from nose to wingtips.\n"
-            "Linear: even spread from nose (0) to tips (max)\n"
-            "Quadratic: concentrated at tips, subtle near center")
-        layout.addWidget(self.le_dist_combo, 5, 1)
-
+        
         group.setLayout(layout)
         return group
     
@@ -978,7 +957,53 @@ class ShadowWaveriderTab(QWidget):
 
         group.setLayout(layout)
         return group
-    
+
+    def _create_dome_group(self):
+        group = QGroupBox("Upper Surface Dome")
+        layout = QGridLayout()
+
+        self.dome_check = QCheckBox("Enable dome profile")
+        self.dome_check.setToolTip(
+            "Add a dome-shaped profile to the upper surface cross-section.\n"
+            "Creates more internal volume while staying inside the shock cone.\n"
+            "The dome grows from zero at the LE to full height at the TE.")
+        layout.addWidget(self.dome_check, 0, 0, 1, 3)
+
+        # Column headers
+        layout.addWidget(QLabel("Span"), 1, 1)
+        layout.addWidget(QLabel("Height"), 1, 2)
+
+        # Control Point 1 — centerline
+        layout.addWidget(QLabel("CP 1:"), 2, 0)
+        self.dome_s1 = QDoubleSpinBox()
+        self.dome_s1.setRange(0.0, 0.99); self.dome_s1.setValue(0.0)
+        self.dome_s1.setDecimals(2); self.dome_s1.setSingleStep(0.05)
+        self.dome_s1.setToolTip("Spanwise position (0 = centerline, 1 = wingtip)")
+        layout.addWidget(self.dome_s1, 2, 1)
+
+        self.dome_h1 = QDoubleSpinBox()
+        self.dome_h1.setRange(0.0, 1.0); self.dome_h1.setValue(0.05)
+        self.dome_h1.setDecimals(3); self.dome_h1.setSingleStep(0.005)
+        self.dome_h1.setToolTip("Vertical offset at this span station (model units)")
+        layout.addWidget(self.dome_h1, 2, 2)
+
+        # Control Point 2 — mid-span
+        layout.addWidget(QLabel("CP 2:"), 3, 0)
+        self.dome_s2 = QDoubleSpinBox()
+        self.dome_s2.setRange(0.0, 0.99); self.dome_s2.setValue(0.50)
+        self.dome_s2.setDecimals(2); self.dome_s2.setSingleStep(0.05)
+        self.dome_s2.setToolTip("Spanwise position (0 = centerline, 1 = wingtip)")
+        layout.addWidget(self.dome_s2, 3, 1)
+
+        self.dome_h2 = QDoubleSpinBox()
+        self.dome_h2.setRange(0.0, 1.0); self.dome_h2.setValue(0.03)
+        self.dome_h2.setDecimals(3); self.dome_h2.setSingleStep(0.005)
+        self.dome_h2.setToolTip("Vertical offset at this span station (model units)")
+        layout.addWidget(self.dome_h2, 3, 2)
+
+        group.setLayout(layout)
+        return group
+
     def _create_blunting_group(self):
         group = QGroupBox("Leading Edge Blunting")
         layout = QGridLayout()
@@ -2113,23 +2138,27 @@ class ShadowWaveriderTab(QWidget):
             length = self.length_spin.value()
             tsc = self.top_surface_spin.value()
 
-            le_elev = self.le_elevation_spin.value()
-            le_dist = self.le_dist_combo.currentText().lower()
+            # Build dome spline control points (if enabled)
+            dome_spline = None
+            if self.dome_check.isChecked():
+                dome_spline = [
+                    (self.dome_s1.value(), self.dome_h1.value()),
+                    (self.dome_s2.value(), self.dome_h2.value()),
+                ]
 
             if self.order_combo.currentIndex() == 0:
                 self.waverider = create_second_order_waverider(
                     mach=mach, shock_angle=shock, A2=self.a2_spin.value(),
                     A0=self.a0_spin.value(), n_leading_edge=self.n_le_spin.value(),
                     n_streamwise=self.n_stream_spin.value(), length=length,
-                    top_surface_control=tsc, leading_edge_elevation=le_elev,
-                    le_elevation_distribution=le_dist)
+                    top_surface_control=tsc, upper_surface_spline=dome_spline)
             else:
                 self.waverider = create_third_order_waverider(
                     mach=mach, shock_angle=shock, A3=self.a3_spin.value(),
                     A2=self.a2_spin.value(), A0=self.a0_spin.value(),
                     n_leading_edge=self.n_le_spin.value(), n_streamwise=self.n_stream_spin.value(),
                     length=length, top_surface_control=tsc,
-                    leading_edge_elevation=le_elev, le_elevation_distribution=le_dist)
+                    upper_surface_spline=dome_spline)
             
             self.cone_label.setText(f"{self.waverider.cone_angle_deg:.2f}")
             self.update_view()

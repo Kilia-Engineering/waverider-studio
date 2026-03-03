@@ -16,7 +16,7 @@ Author: Adapted for integration with existing waverider_generator package
 import numpy as np
 import math
 from scipy.integrate import solve_ivp
-from scipy.interpolate import UnivariateSpline, interp1d
+from scipy.interpolate import UnivariateSpline, interp1d, CubicSpline
 from typing import Tuple, List, Optional, Union
 import warnings
 
@@ -61,8 +61,7 @@ class ShadowWaverider:
         gamma: float = 1.4,
         length: float = 1.0,
         top_surface_control: float = 0.0,
-        leading_edge_elevation: float = 0.0,
-        le_elevation_distribution: str = "linear"
+        upper_surface_spline: Optional[list] = None
     ):
         # Validate inputs
         if mach <= 1.0:
@@ -80,9 +79,8 @@ class ShadowWaverider:
         self.length = float(length)
         self.top_surface_control = float(top_surface_control)
 
-        # Leading edge elevation (cone wrapping)
-        self.leading_edge_elevation = float(leading_edge_elevation)  # degrees
-        self.le_elevation_distribution = le_elevation_distribution   # "linear" or "quadratic"
+        # Upper surface dome (spline control points)
+        self.upper_surface_spline = upper_surface_spline  # list of (span_frac, height) or None
 
         # Process polynomial coefficients
         self.poly_coeffs = list(poly_coeffs)
@@ -482,25 +480,7 @@ class ShadowWaverider:
         self.z_start = z_start
         self.z_end = z_end
         self.x_end = x_end
-
-        # Apply leading edge elevation (rotate LE points on the cone surface)
-        if self.leading_edge_elevation > 0:
-            elevation_rad = np.radians(self.leading_edge_elevation)
-            x_max = np.max(np.abs(self.leading_edge[:, 0]))
-            if x_max > 1e-10:
-                for i, pt in enumerate(self.leading_edge):
-                    x, y, z = pt
-                    R = np.sqrt(x**2 + y**2)
-                    if R < 1e-12:
-                        continue  # skip apex/nose point
-                    phi0 = np.arctan2(x, -y)  # azimuth on cone (0=bottom)
-                    t = abs(x) / x_max        # 0 at nose, 1 at tips
-                    if self.le_elevation_distribution == "quadratic":
-                        t = t ** 2
-                    dphi = elevation_rad * t
-                    self.leading_edge[i, 0] = R * np.sin(phi0 + dphi)
-                    self.leading_edge[i, 1] = -R * np.cos(phi0 + dphi)
-
+    
     def _cart_to_sphere(self, x: float, y: float, z: float) -> Tuple[float, float, float]:
         """Convert Cartesian to spherical coordinates."""
         r = np.sqrt(x**2 + y**2 + z**2)
@@ -616,6 +596,34 @@ class ShadowWaverider:
         
         self.lower_surface = np.array(lower_surface)
     
+    def _build_cross_section_spline(self):
+        """
+        Build a CubicSpline for the upper-surface dome cross-section profile.
+
+        Returns a callable f(span_frac) -> height_offset, where:
+            span_frac: 0.0 (centerline) to 1.0 (wingtip)
+            height_offset: vertical offset to add to upper surface
+
+        Boundary conditions:
+            f(1.0) = 0     (no offset at wingtip — matches LE)
+            f'(0.0) = 0    (zero slope at centerline for symmetry)
+        """
+        # Sort control points by span fraction
+        points = sorted(self.upper_surface_spline, key=lambda p: p[0])
+
+        # Filter out any user point at span=1.0 and add the fixed tip anchor
+        span_fracs = [p[0] for p in points if p[0] < 0.999]
+        heights = [p[1] for p in points if p[0] < 0.999]
+        span_fracs.append(1.0)
+        heights.append(0.0)
+
+        span_fracs = np.array(span_fracs)
+        heights = np.array(heights)
+
+        # CubicSpline: zero slope at centerline (symmetry), natural at tip
+        return CubicSpline(span_fracs, heights,
+                           bc_type=((1, 0.0), 'natural'))
+
     def _generate_upper_surface(self):
         """
         Generate upper surface.
@@ -625,25 +633,65 @@ class ShadowWaverider:
 
         When top_surface_control > 0, applies exponential lifting from
         CoDe WAVE v2.0: y += |y_LE| * (exp(A/100 * dz) - 1)
+
+        When upper_surface_spline is set, applies a dome-shaped offset
+        that varies across the span (max at center, zero at tips) and
+        grows linearly from LE to TE.
         """
         A = self.top_surface_control
         upper_surface = []
+
+        # Build spline interpolator for dome profile (if enabled)
+        spline_func = None
+        if self.upper_surface_spline and len(self.upper_surface_spline) > 0:
+            spline_func = self._build_cross_section_spline()
+
+        # Compute span normalization from LE points
+        x_positions = self.leading_edge[:, 0]  # internal X = span
+        x_max = np.max(np.abs(x_positions))
 
         for i, le_point in enumerate(self.leading_edge):
             x_start, y_start, z_start = le_point
 
             z_vals = np.linspace(z_start, self.z_end, self.n_streamwise)
 
+            # Span fraction for this station (0 = center, 1 = tip)
+            span_frac = abs(x_start) / x_max if x_max > 1e-10 else 0.0
+
             streamline = []
-            for z in z_vals:
+            for j, z in enumerate(z_vals):
+                # Base Y: flat or exponential
                 if A == 0.0:
                     y = y_start
                 else:
                     dz = z - z_start
                     y = y_start + abs(y_start) * (np.exp((A / 100.0) * dz) - 1.0)
+
+                # Apply spline dome offset (additive)
+                if spline_func is not None:
+                    growth = j / max(self.n_streamwise - 1, 1)  # 0 at LE, 1 at TE
+                    y += spline_func(span_frac) * growth
+
                 streamline.append([x_start, y, z])
 
             upper_surface.append(streamline)
+
+        # Clamp to shock cone boundary
+        if spline_func is not None:
+            clamped = 0
+            for i in range(len(upper_surface)):
+                for j in range(len(upper_surface[i])):
+                    x, y, z = upper_surface[i][j]
+                    if z > 1e-10:
+                        R_shock = z * np.tan(self.shock_angle_rad)
+                        y_max = np.sqrt(max(R_shock**2 - x**2, 0))
+                        if y > y_max:
+                            upper_surface[i][j][1] = y_max * 0.98
+                            clamped += 1
+            if clamped > 0:
+                warnings.warn(
+                    f"Upper surface dome: {clamped} points clamped to "
+                    f"stay within shock cone. Consider reducing dome height.")
 
         self.upper_surface = np.array(upper_surface)
     
