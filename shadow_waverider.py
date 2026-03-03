@@ -611,14 +611,27 @@ class ShadowWaverider:
         # Sort control points by span fraction
         points = sorted(self.upper_surface_spline, key=lambda p: p[0])
 
-        # Filter out any user point at span=1.0 and add the fixed tip anchor
+        # Filter out any user point at span>=1.0 and add the fixed tip anchor
         span_fracs = [p[0] for p in points if p[0] < 0.999]
         heights = [p[1] for p in points if p[0] < 0.999]
+
+        # Deduplicate: keep last value for each unique span fraction
+        unique = {}
+        for s, h in zip(span_fracs, heights):
+            unique[round(s, 6)] = h
+        span_fracs = sorted(unique.keys())
+        heights = [unique[s] for s in span_fracs]
+
+        # Add fixed tip anchor (zero offset at wingtip)
         span_fracs.append(1.0)
         heights.append(0.0)
 
         span_fracs = np.array(span_fracs)
         heights = np.array(heights)
+
+        # Need at least 2 points for CubicSpline
+        if len(span_fracs) < 2:
+            return lambda s: 0.0
 
         # CubicSpline: zero slope at centerline (symmetry), natural at tip
         return CubicSpline(span_fracs, heights,
@@ -670,7 +683,9 @@ class ShadowWaverider:
                 # Apply spline dome offset (additive)
                 if spline_func is not None:
                     growth = j / max(self.n_streamwise - 1, 1)  # 0 at LE, 1 at TE
-                    y += spline_func(span_frac) * growth
+                    sf = min(max(span_frac, 0.0), 1.0)  # clamp to [0, 1]
+                    offset = float(spline_func(sf))
+                    y += max(offset, 0.0) * growth  # only add positive offsets
 
                 streamline.append([x_start, y, z])
 
