@@ -966,47 +966,43 @@ class ShadowWaveriderTab(QWidget):
         self.dome_check.setToolTip(
             "Add a dome-shaped profile to the upper surface cross-section.\n"
             "Creates more internal volume while staying inside the shock cone.\n"
-            "The dome grows from zero at the LE to full height at the TE.")
+            "The dome grows from zero at the LE to full height at the TE.\n"
+            "Center endpoint is fixed at the centerline, tip is on the LE.")
         layout.addWidget(self.dome_check, 0, 0, 1, 3)
 
-        # Column headers
-        layout.addWidget(QLabel("Span"), 1, 1)
-        layout.addWidget(QLabel("Height"), 1, 2)
-
-        # Control Point 1 — centerline
-        layout.addWidget(QLabel("CP 1:"), 2, 0)
-        self.dome_s1 = QDoubleSpinBox()
-        self.dome_s1.setRange(0.0, 0.99); self.dome_s1.setValue(0.0)
-        self.dome_s1.setDecimals(2); self.dome_s1.setSingleStep(0.01)
-        self.dome_s1.setKeyboardTracking(True)
-        self.dome_s1.setToolTip("Spanwise position (0 = centerline, 1 = wingtip)")
-        layout.addWidget(self.dome_s1, 2, 1)
-
+        # Center endpoint — fixed at span=0.0, only height is adjustable
+        layout.addWidget(QLabel("Center Height:"), 1, 0)
         self.dome_h1 = QDoubleSpinBox()
         self.dome_h1.setRange(0.0, 1.0); self.dome_h1.setValue(0.05)
         self.dome_h1.setDecimals(3); self.dome_h1.setSingleStep(0.005)
         self.dome_h1.setKeyboardTracking(True)
-        self.dome_h1.setToolTip("Vertical offset at this span station (model units)")
-        layout.addWidget(self.dome_h1, 2, 2)
+        self.dome_h1.setToolTip("Dome peak height at the centerline (model units)")
+        layout.addWidget(self.dome_h1, 1, 1, 1, 2)
 
-        # Control Point 2 — mid-span
-        layout.addWidget(QLabel("CP 2:"), 3, 0)
+        # Intermediate control point — shapes the arch between center and tip
+        layout.addWidget(QLabel("CP:"), 2, 0)
         self.dome_s2 = QDoubleSpinBox()
-        self.dome_s2.setRange(0.0, 0.99); self.dome_s2.setValue(0.50)
+        self.dome_s2.setRange(0.05, 0.95); self.dome_s2.setValue(0.50)
         self.dome_s2.setDecimals(2); self.dome_s2.setSingleStep(0.01)
         self.dome_s2.setKeyboardTracking(True)
-        self.dome_s2.setToolTip("Spanwise position (0 = centerline, 1 = wingtip)")
-        layout.addWidget(self.dome_s2, 3, 1)
+        self.dome_s2.setToolTip("Spanwise position of shaping point (0 = center, 1 = tip)")
+        layout.addWidget(self.dome_s2, 2, 1)
 
         self.dome_h2 = QDoubleSpinBox()
         self.dome_h2.setRange(0.0, 1.0); self.dome_h2.setValue(0.03)
         self.dome_h2.setDecimals(3); self.dome_h2.setSingleStep(0.005)
         self.dome_h2.setKeyboardTracking(True)
-        self.dome_h2.setToolTip("Vertical offset at this span station (model units)")
-        layout.addWidget(self.dome_h2, 3, 2)
+        self.dome_h2.setToolTip("Height offset at the shaping point (model units)")
+        layout.addWidget(self.dome_h2, 2, 2)
+
+        # Tip endpoint — informational, fixed on the LE
+        layout.addWidget(QLabel("Tip:"), 3, 0)
+        tip_label = QLabel("(on leading edge)")
+        tip_label.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(tip_label, 3, 1, 1, 2)
 
         # Live update of CP overlay when values change
-        for spin in (self.dome_s1, self.dome_h1, self.dome_s2, self.dome_h2):
+        for spin in (self.dome_h1, self.dome_s2, self.dome_h2):
             spin.valueChanged.connect(self._update_dome_cp_overlay)
         self.dome_check.stateChanged.connect(self._update_dome_cp_overlay)
 
@@ -1039,10 +1035,10 @@ class ShadowWaveriderTab(QWidget):
         x_te = te_x[len(te_x) // 2]  # streamwise position of TE (use center)
         half_span = np.max(np.abs(te_z))
 
-        # Build the CP profile: tips + user CPs + center (symmetric)
+        # Build the CP profile: center (fixed) + intermediate CP + tip (fixed)
         cp_data = [
-            (self.dome_s1.value(), self.dome_h1.value()),
-            (self.dome_s2.value(), self.dome_h2.value()),
+            (0.0, self.dome_h1.value()),                    # center endpoint (fixed span=0)
+            (self.dome_s2.value(), self.dome_h2.value()),    # intermediate shaping CP
         ]
 
         # Find baseline Y at each span fraction (from current TE cross-section)
@@ -2261,8 +2257,8 @@ class ShadowWaveriderTab(QWidget):
             dome_spline = None
             if self.dome_check.isChecked():
                 dome_spline = [
-                    (self.dome_s1.value(), self.dome_h1.value()),
-                    (self.dome_s2.value(), self.dome_h2.value()),
+                    (0.0, self.dome_h1.value()),                    # center (fixed span)
+                    (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP
                 ]
 
             if self.order_combo.currentIndex() == 0:
