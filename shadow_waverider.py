@@ -726,6 +726,25 @@ class ShadowWaverider:
                     f"Upper surface dome: {clamped} points clamped to "
                     f"stay within shock cone. Consider reducing dome height.")
 
+        # Clamp upper surface to stay above lower surface (prevent intersection)
+        if hasattr(self, 'lower_surface') and self.lower_surface is not None:
+            min_gap = 0.001 * self.length  # 0.1% of vehicle length
+            clamped_lo = 0
+            n_i = min(len(upper_surface), self.lower_surface.shape[0])
+            for i in range(n_i):
+                n_j = min(len(upper_surface[i]), self.lower_surface.shape[1])
+                for j in range(n_j):
+                    y_up = upper_surface[i][j][1]
+                    y_lo = self.lower_surface[i, j, 1]
+                    if y_up < y_lo + min_gap:
+                        upper_surface[i][j][1] = y_lo + min_gap
+                        clamped_lo += 1
+            if clamped_lo > 0:
+                warnings.warn(
+                    f"Upper surface: {clamped_lo} points offset to maintain "
+                    f"gap above lower surface. Consider reducing dome height "
+                    f"or adjusting surface control parameter.")
+
         self.upper_surface = np.array(upper_surface)
         self.te_base_y = np.array(te_base_y)  # Pre-dome Y at TE for overlay
 
