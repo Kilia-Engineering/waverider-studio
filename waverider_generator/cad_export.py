@@ -61,15 +61,11 @@ def _make_bspline_face_from_grid(streams, tol=1e-3):
 
 def _make_lofted_face(streams):
     """
-    Build a lofted surface through spanwise cross-sections.
+    Build a lofted surface through streamline wires (centerline → wingtip).
 
-    Given streamlines (one per LE station from centerline to wingtip),
-    extract the spanwise cross-section at each streamwise station and loft
-    through them using BRepOffsetAPI_ThruSections.
-
-    This preserves the grid structure faithfully — no oscillation from
-    plate-surface energy minimisation.  The surface passes exactly through
-    each cross-section wire and interpolates smoothly between them.
+    Each streamline is a spline wire from LE to TE.  The loft interpolates
+    smoothly across the span, preserving the dome profile embedded in each
+    streamline's Y variation.  This avoids interpPlate oscillation.
 
     Parameters
     ----------
@@ -87,31 +83,31 @@ def _make_lofted_face(streams):
     from OCP.TopAbs import TopAbs_FACE
     from OCP.TopoDS import TopoDS
 
-    n_half = len(streams)        # spanwise stations (centerline → wingtip)
-    n_stream = streams[0].shape[0]  # streamwise points (LE → TE)
+    n_half = len(streams)
+    n_stream = streams[0].shape[0]
 
-    # ThruSections: isSolid=False (surface only), isRuled=False (smooth)
+    # Loft from centerline → wingtip (each wire is a streamline LE→TE)
+    # isSolid=False (surface), isRuled=False (smooth B-spline interpolation)
     loft = BRepOffsetAPI_ThruSections(False, False)
 
     n_wires = 0
     n_verts = 0
-    for j in range(n_stream):
-        # Extract spanwise cross-section at streamwise station j
-        pts = [streams[i][j] for i in range(n_half)]
+    for i in range(n_half):
+        pts = streams[i]  # shape (n_stream, 3)
 
-        # Check if section is degenerate (all points coincide → near nose)
-        span = max(np.linalg.norm(np.array(pts[k]) - np.array(pts[0]))
-                    for k in range(1, len(pts)))
-        if span < 1e-10:
-            # Degenerate section → single vertex
+        # Check if streamline is degenerate (all points coincide → wingtip)
+        extent = np.linalg.norm(pts[-1] - pts[0])
+        if extent < 1e-10:
+            # Degenerate streamline → single vertex
             from OCP.gp import gp_Pnt
             from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
             v = BRepBuilderAPI_MakeVertex(gp_Pnt(
-                float(pts[0][0]), float(pts[0][1]), float(pts[0][2]))).Vertex()
+                float(pts[0][0]), float(pts[0][1]),
+                float(pts[0][2]))).Vertex()
             loft.AddVertex(v)
             n_verts += 1
         else:
-            # Build spline wire through the cross-section points
+            # Build spline wire through streamline points (LE → TE)
             cq_pts = [cq.Vector(float(p[0]), float(p[1]), float(p[2]))
                        for p in pts]
             try:
@@ -120,15 +116,15 @@ def _make_lofted_face(streams):
                 loft.AddWire(wire.wrapped)
                 n_wires += 1
             except Exception as e:
-                logger.warning(f"Loft: wire at j={j} failed ({e}), skipping")
+                logger.warning(
+                    f"Loft: wire at i={i} failed ({e}), skipping")
 
-    print(f"[Loft] Building surface: {n_verts} vertices + {n_wires} wires "
-          f"from {n_stream} stations × {n_half} spans")
+    print(f"[Loft] {n_wires} streamline wires + {n_verts} vertices "
+          f"({n_half} spans × {n_stream} pts)")
 
     if n_wires < 2:
         raise RuntimeError(
-            f"Loft needs ≥2 wire sections, got {n_wires} "
-            f"(+ {n_verts} vertices)")
+            f"Loft needs ≥2 wires, got {n_wires} (+{n_verts} verts)")
 
     loft.Build()
     if not loft.IsDone():
@@ -136,7 +132,7 @@ def _make_lofted_face(streams):
 
     shape = loft.Shape()
 
-    # Extract face(s) from the lofted shape
+    # Extract face(s)
     explorer = TopExp_Explorer(shape, TopAbs_FACE)
     faces = []
     while explorer.More():
@@ -148,7 +144,6 @@ def _make_lofted_face(streams):
 
     print(f"[Loft] → {len(faces)} face(s)")
 
-    # If multiple faces were produced, sew them into one shell face
     if len(faces) == 1:
         return faces[0]
     else:
