@@ -61,7 +61,6 @@ class ShadowWaverider:
         length: float = 1.0,
         top_surface_control: float = 0.0,
         upper_surface_spline: Optional[list] = None,
-        dome_fullness: float = 0.5,
         blunting_radius: float = 0.0,
         blunting_sweep_scaled: bool = False
     ):
@@ -83,7 +82,6 @@ class ShadowWaverider:
 
         # Upper surface dome (spline control points)
         self.upper_surface_spline = upper_surface_spline  # list of (span_frac, height) or None
-        self.dome_fullness = float(dome_fullness)  # 0=TE-concentrated, 1=max forward distribution
         self.blunting_radius = float(blunting_radius)
         self.blunting_sweep_scaled = blunting_sweep_scaled
 
@@ -655,8 +653,8 @@ class ShadowWaverider:
 
         When upper_surface_spline is set, applies a dome-shaped offset
         that varies across the span (max at center, zero at tips).
-        Streamwise growth uses C2-continuous quintic smootherstep with
-        fullness-controlled forward distribution for curvature continuity.
+        Streamwise growth uses C2-continuous quintic smootherstep
+        for curvature continuity (zero offset, slope, and curvature at LE).
         """
         A = self.top_surface_control
         upper_surface = []
@@ -692,25 +690,16 @@ class ShadowWaverider:
                 if j == self.n_streamwise - 1:
                     te_base_y.append(y)
 
-                # Apply spline dome offset with C2-continuous growth + loft compression
+                # Apply spline dome offset with C2-continuous monotonic growth
                 if spline_func is not None:
                     t = j / max(self.n_streamwise - 1, 1)  # 0 at LE, 1 at TE
-
-                    # Quintic smootherstep: C2 at both ends
+                    # Quintic smootherstep: C2 at both ends, monotonic
                     # g(0)=0, g'(0)=0, g''(0)=0, g(1)=1, g'(1)=0, g''(1)=0
-                    ss = 10.0*t**3 - 15.0*t**4 + 6.0*t**5
-
-                    # Fullness-controlled forward boost (also C2 at both ends)
-                    # boost peaks at 1.0 at t=0.5, zero with zero derivatives at t=0,1
-                    boost = (4.0 * t * (1.0 - t)) ** 3
-                    growth = ss + self.dome_fullness * boost * (1.0 - ss)
-                    growth = min(max(growth, 0.0), 1.0)
-
-                    # Span compression for loft effect (profile narrows toward nose)
-                    effective_sf = span_frac * (growth ** 0.5) if growth > 1e-10 else 0.0
-                    sf = min(max(effective_sf, 0.0), 1.0)
+                    growth = 10.0*t**3 - 15.0*t**4 + 6.0*t**5
+                    # Dome profile evaluated at actual span position (no compression)
+                    sf = min(max(span_frac, 0.0), 1.0)
                     offset = float(spline_func(sf))
-                    y += max(offset, 0.0) * growth  # only add positive offsets
+                    y += max(offset, 0.0) * growth
 
                 streamline.append([x_start, y, z])
 

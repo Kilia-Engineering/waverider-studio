@@ -970,72 +970,55 @@ class ShadowWaveriderTab(QWidget):
             "Center endpoint is fixed at the centerline, tip is on the LE.")
         layout.addWidget(self.dome_check, 0, 0, 1, 3)
 
-        # Fullness — how far forward the dome distributes from TE toward nose
-        layout.addWidget(QLabel("Fullness:"), 1, 0)
-        self.dome_fullness_spin = QDoubleSpinBox()
-        self.dome_fullness_spin.setRange(0.0, 1.0)
-        self.dome_fullness_spin.setValue(0.50)
-        self.dome_fullness_spin.setDecimals(2)
-        self.dome_fullness_spin.setSingleStep(0.05)
-        self.dome_fullness_spin.setKeyboardTracking(True)
-        self.dome_fullness_spin.setToolTip(
-            "Controls how far forward the dome extends from TE toward the nose.\n"
-            "  0.0 = dome concentrated at trailing edge only\n"
-            "  0.5 = moderate forward distribution (default)\n"
-            "  1.0 = maximum forward distribution — most volume\n"
-            "Uses C2-continuous growth for seamless curvature continuity.")
-        layout.addWidget(self.dome_fullness_spin, 1, 1, 1, 2)
-
         # Center endpoint — fixed at span=0.0, only height is adjustable
-        layout.addWidget(QLabel("Center Height:"), 2, 0)
+        layout.addWidget(QLabel("Center Height:"), 1, 0)
         self.dome_h1 = QDoubleSpinBox()
         self.dome_h1.setRange(0.0, 1.0); self.dome_h1.setValue(0.05)
         self.dome_h1.setDecimals(3); self.dome_h1.setSingleStep(0.005)
         self.dome_h1.setKeyboardTracking(True)
         self.dome_h1.setToolTip("Dome peak height at the centerline (model units)")
-        layout.addWidget(self.dome_h1, 2, 1, 1, 2)
+        layout.addWidget(self.dome_h1, 1, 1, 1, 2)
 
         # Intermediate control point 1 — inner shaping point
-        layout.addWidget(QLabel("CP 1:"), 3, 0)
+        layout.addWidget(QLabel("CP 1:"), 2, 0)
         self.dome_s2 = QDoubleSpinBox()
         self.dome_s2.setRange(0.05, 0.95); self.dome_s2.setValue(0.33)
         self.dome_s2.setDecimals(2); self.dome_s2.setSingleStep(0.01)
         self.dome_s2.setKeyboardTracking(True)
         self.dome_s2.setToolTip("Spanwise position of inner shaping point (0 = center, 1 = tip)")
-        layout.addWidget(self.dome_s2, 3, 1)
+        layout.addWidget(self.dome_s2, 2, 1)
 
         self.dome_h2 = QDoubleSpinBox()
         self.dome_h2.setRange(0.0, 1.0); self.dome_h2.setValue(0.035)
         self.dome_h2.setDecimals(3); self.dome_h2.setSingleStep(0.005)
         self.dome_h2.setKeyboardTracking(True)
         self.dome_h2.setToolTip("Height offset at inner shaping point (model units)")
-        layout.addWidget(self.dome_h2, 3, 2)
+        layout.addWidget(self.dome_h2, 2, 2)
 
         # Intermediate control point 2 — outer shaping point
-        layout.addWidget(QLabel("CP 2:"), 4, 0)
+        layout.addWidget(QLabel("CP 2:"), 3, 0)
         self.dome_s3 = QDoubleSpinBox()
         self.dome_s3.setRange(0.05, 0.95); self.dome_s3.setValue(0.66)
         self.dome_s3.setDecimals(2); self.dome_s3.setSingleStep(0.01)
         self.dome_s3.setKeyboardTracking(True)
         self.dome_s3.setToolTip("Spanwise position of outer shaping point (0 = center, 1 = tip)")
-        layout.addWidget(self.dome_s3, 4, 1)
+        layout.addWidget(self.dome_s3, 3, 1)
 
         self.dome_h3 = QDoubleSpinBox()
         self.dome_h3.setRange(0.0, 1.0); self.dome_h3.setValue(0.015)
         self.dome_h3.setDecimals(3); self.dome_h3.setSingleStep(0.005)
         self.dome_h3.setKeyboardTracking(True)
         self.dome_h3.setToolTip("Height offset at outer shaping point (model units)")
-        layout.addWidget(self.dome_h3, 4, 2)
+        layout.addWidget(self.dome_h3, 3, 2)
 
         # Tip endpoint — informational, fixed on the LE
-        layout.addWidget(QLabel("Tip:"), 5, 0)
+        layout.addWidget(QLabel("Tip:"), 4, 0)
         tip_label = QLabel("(on leading edge)")
         tip_label.setStyleSheet("color: gray; font-style: italic;")
-        layout.addWidget(tip_label, 5, 1, 1, 2)
+        layout.addWidget(tip_label, 4, 1, 1, 2)
 
         # Live update of CP overlay when values change
-        for spin in (self.dome_h1, self.dome_s2, self.dome_h2, self.dome_s3, self.dome_h3,
-                     self.dome_fullness_spin):
+        for spin in (self.dome_h1, self.dome_s2, self.dome_h2, self.dome_s3, self.dome_h3):
             spin.valueChanged.connect(self._update_dome_cp_overlay)
         self.dome_check.stateChanged.connect(self._update_dome_cp_overlay)
 
@@ -1152,40 +1135,30 @@ class ShadowWaveriderTab(QWidget):
         line._dome_cp = True
 
         # Draw intermediate station dome profiles (t=0.25, 0.5, 0.75)
-        # Shows how the dome distributes forward from TE toward nose
-        fullness = self.dome_fullness_spin.value()
+        # Intermediate station dome profiles (t=0.25, 0.5, 0.75)
+        # Each profile spans full width: centerline to LE tip, scaled by growth
         x_le = wr.upper_surface[:, 0, 0]   # streamwise at LE
         x_le_center = x_le[len(x_le) // 2]  # LE streamwise position at center
 
         for t_station in [0.75, 0.50, 0.25]:
-            # C2 smootherstep growth at this station
-            ss = 10.0*t_station**3 - 15.0*t_station**4 + 6.0*t_station**5
-            boost = (4.0 * t_station * (1.0 - t_station)) ** 3
-            growth = ss + fullness * boost * (1.0 - ss)
-            growth = min(max(growth, 0.0), 1.0)
+            # C2 smootherstep growth at this station (same as surface generation)
+            growth = 10.0*t_station**3 - 15.0*t_station**4 + 6.0*t_station**5
             if growth < 1e-6:
                 continue  # no visible dome at this station
 
-            # Scaled dome heights at this station
-            h_station = h_fine * growth
-
-            # Span compression (loft effect)
-            compress = growth ** 0.5 if growth > 1e-10 else 0.0
-            s_compressed = np.clip(s_fine * compress, 0.0, 1.0)
-
-            # Dome heights at compressed span positions
+            # Dome heights: same profile shape as TE, scaled by growth
             if spline is not None:
-                h_station = np.array([max(float(spline(sc)), 0.0) * growth
-                                      for sc in s_compressed])
+                h_station = np.array([max(float(spline(s)), 0.0) * growth
+                                      for s in s_fine])
+            else:
+                h_station = h_fine * growth
 
             # Streamwise position of this station (interpolate LE to TE)
             x_station = x_le_center + t_station * (x_te - x_le_center)
 
-            # Build baseline at this station (approximate from TE baseline scaled)
+            # Full-span profile: centerline to LE tip (no compression)
             y_station = baseline_y_fine + h_station
-
-            # Build full mirrored profile
-            z_st_r = s_fine * half_span * compress  # narrower span at intermediate stations
+            z_st_r = s_fine * half_span
             z_st_l = -z_st_r
             x_st = np.full_like(z_st_r, x_station)
 
@@ -2250,14 +2223,12 @@ class ShadowWaveriderTab(QWidget):
 
             # Build dome spline control points (if enabled)
             dome_spline = None
-            dome_fullness = 0.5
             if self.dome_check.isChecked():
                 dome_spline = [
                     (0.0, self.dome_h1.value()),                    # center (fixed span)
                     (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP 1
                     (self.dome_s3.value(), self.dome_h3.value()),    # intermediate CP 2
                 ]
-                dome_fullness = self.dome_fullness_spin.value()
 
             # LE blunting parameters
             blunt_r = 0.0
@@ -2272,7 +2243,6 @@ class ShadowWaveriderTab(QWidget):
                     A0=self.a0_spin.value(), n_leading_edge=self.n_le_spin.value(),
                     n_streamwise=self.n_stream_spin.value(), length=length,
                     top_surface_control=tsc, upper_surface_spline=dome_spline,
-                    dome_fullness=dome_fullness,
                     blunting_radius=blunt_r, blunting_sweep_scaled=blunt_sweep)
             else:
                 self.waverider = create_third_order_waverider(
@@ -2281,7 +2251,6 @@ class ShadowWaveriderTab(QWidget):
                     n_leading_edge=self.n_le_spin.value(), n_streamwise=self.n_stream_spin.value(),
                     length=length, top_surface_control=tsc,
                     upper_surface_spline=dome_spline,
-                    dome_fullness=dome_fullness,
                     blunting_radius=blunt_r, blunting_sweep_scaled=blunt_sweep)
             
             self.cone_label.setText(f"{self.waverider.cone_angle_deg:.2f}")
