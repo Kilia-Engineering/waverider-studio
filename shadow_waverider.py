@@ -14,7 +14,6 @@ Author: Adapted for integration with existing waverider_generator package
 """
 
 import numpy as np
-import math
 from scipy.integrate import solve_ivp
 from scipy.interpolate import UnivariateSpline, interp1d, CubicSpline
 from typing import Tuple, List, Optional, Union
@@ -62,7 +61,7 @@ class ShadowWaverider:
         length: float = 1.0,
         top_surface_control: float = 0.0,
         upper_surface_spline: Optional[list] = None,
-        dome_growth_mode: str = 'smooth',
+        dome_fullness: float = 0.5,
         blunting_radius: float = 0.0,
         blunting_sweep_scaled: bool = False
     ):
@@ -84,7 +83,7 @@ class ShadowWaverider:
 
         # Upper surface dome (spline control points)
         self.upper_surface_spline = upper_surface_spline  # list of (span_frac, height) or None
-        self.dome_growth_mode = dome_growth_mode  # 'linear', 'smooth', or 'late'
+        self.dome_fullness = float(dome_fullness)  # 0=TE-concentrated, 1=max forward distribution
         self.blunting_radius = float(blunting_radius)
         self.blunting_sweep_scaled = blunting_sweep_scaled
 
@@ -655,11 +654,13 @@ class ShadowWaverider:
         CoDe WAVE v2.0: y += |y_LE| * (exp(A/100 * dz) - 1)
 
         When upper_surface_spline is set, applies a dome-shaped offset
-        that varies across the span (max at center, zero at tips) and
-        grows linearly from LE to TE.
+        that varies across the span (max at center, zero at tips).
+        Streamwise growth uses C2-continuous quintic smootherstep with
+        fullness-controlled forward distribution for curvature continuity.
         """
         A = self.top_surface_control
         upper_surface = []
+        te_base_y = []  # Store pre-dome Y at TE for overlay visualization
 
         # Build spline interpolator for dome profile (if enabled)
         spline_func = None
@@ -687,16 +688,24 @@ class ShadowWaverider:
                     dz = z - z_start
                     y = y_start + abs(y_start) * (np.exp((A / 100.0) * dz) - 1.0)
 
-                # Apply spline dome offset (additive) with growth mode + loft compression
+                # Save pre-dome Y at the trailing edge for overlay baseline
+                if j == self.n_streamwise - 1:
+                    te_base_y.append(y)
+
+                # Apply spline dome offset with C2-continuous growth + loft compression
                 if spline_func is not None:
                     t = j / max(self.n_streamwise - 1, 1)  # 0 at LE, 1 at TE
-                    # Growth function (height scaling)
-                    if self.dome_growth_mode == 'smooth':
-                        growth = 0.5 * (1.0 - math.cos(math.pi * t))
-                    elif self.dome_growth_mode == 'late':
-                        growth = t * t
-                    else:  # linear
-                        growth = t
+
+                    # Quintic smootherstep: C2 at both ends
+                    # g(0)=0, g'(0)=0, g''(0)=0, g(1)=1, g'(1)=0, g''(1)=0
+                    ss = 10.0*t**3 - 15.0*t**4 + 6.0*t**5
+
+                    # Fullness-controlled forward boost (also C2 at both ends)
+                    # boost peaks at 1.0 at t=0.5, zero with zero derivatives at t=0,1
+                    boost = (4.0 * t * (1.0 - t)) ** 3
+                    growth = ss + self.dome_fullness * boost * (1.0 - ss)
+                    growth = min(max(growth, 0.0), 1.0)
+
                     # Span compression for loft effect (profile narrows toward nose)
                     effective_sf = span_frac * (growth ** 0.5) if growth > 1e-10 else 0.0
                     sf = min(max(effective_sf, 0.0), 1.0)
@@ -725,6 +734,7 @@ class ShadowWaverider:
                     f"stay within shock cone. Consider reducing dome height.")
 
         self.upper_surface = np.array(upper_surface)
+        self.te_base_y = np.array(te_base_y)  # Pre-dome Y at TE for overlay
 
     def _apply_le_blunting(self):
         """

@@ -754,7 +754,7 @@ class ClaudeWorker(QThread):
                 full_system += f"\n\n**Current GUI State:**\n{self.context}"
             
             with client.messages.stream(
-                model="claude-sonnet-4-20250514",
+                model="claude-opus-4-20250514",
                 max_tokens=2000,
                 system=full_system,
                 messages=self.messages

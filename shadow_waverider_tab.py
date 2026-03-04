@@ -970,18 +970,21 @@ class ShadowWaveriderTab(QWidget):
             "Center endpoint is fixed at the centerline, tip is on the LE.")
         layout.addWidget(self.dome_check, 0, 0, 1, 3)
 
-        # Growth mode — how the dome transitions from LE to TE
-        layout.addWidget(QLabel("Growth:"), 1, 0)
-        self.dome_growth_combo = QComboBox()
-        self.dome_growth_combo.addItem("Smooth (S-curve)", "smooth")
-        self.dome_growth_combo.addItem("Linear", "linear")
-        self.dome_growth_combo.addItem("Late onset", "late")
-        self.dome_growth_combo.setToolTip(
-            "How the dome profile grows from LE to TE:\n"
-            "  Smooth: S-curve with zero slope at both ends (loft-like)\n"
-            "  Linear: constant growth rate (original)\n"
-            "  Late onset: gentle start, grows faster near TE")
-        layout.addWidget(self.dome_growth_combo, 1, 1, 1, 2)
+        # Fullness — how far forward the dome distributes from TE toward nose
+        layout.addWidget(QLabel("Fullness:"), 1, 0)
+        self.dome_fullness_spin = QDoubleSpinBox()
+        self.dome_fullness_spin.setRange(0.0, 1.0)
+        self.dome_fullness_spin.setValue(0.50)
+        self.dome_fullness_spin.setDecimals(2)
+        self.dome_fullness_spin.setSingleStep(0.05)
+        self.dome_fullness_spin.setKeyboardTracking(True)
+        self.dome_fullness_spin.setToolTip(
+            "Controls how far forward the dome extends from TE toward the nose.\n"
+            "  0.0 = dome concentrated at trailing edge only\n"
+            "  0.5 = moderate forward distribution (default)\n"
+            "  1.0 = maximum forward distribution — most volume\n"
+            "Uses C2-continuous growth for seamless curvature continuity.")
+        layout.addWidget(self.dome_fullness_spin, 1, 1, 1, 2)
 
         # Center endpoint — fixed at span=0.0, only height is adjustable
         layout.addWidget(QLabel("Center Height:"), 2, 0)
@@ -1031,7 +1034,8 @@ class ShadowWaveriderTab(QWidget):
         layout.addWidget(tip_label, 5, 1, 1, 2)
 
         # Live update of CP overlay when values change
-        for spin in (self.dome_h1, self.dome_s2, self.dome_h2, self.dome_s3, self.dome_h3):
+        for spin in (self.dome_h1, self.dome_s2, self.dome_h2, self.dome_s3, self.dome_h3,
+                     self.dome_fullness_spin):
             spin.valueChanged.connect(self._update_dome_cp_overlay)
         self.dome_check.stateChanged.connect(self._update_dome_cp_overlay)
 
@@ -1059,16 +1063,23 @@ class ShadowWaveriderTab(QWidget):
         # Get trailing edge cross-section from upper surface
         # After transform: upper_surface shape (n_le, n_stream, 3) with [X_stream, Y_vert, Z_span]
         te_x = wr.upper_surface[:, -1, 0]  # streamwise at TE
-        te_y = wr.upper_surface[:, -1, 1]  # vertical at TE
         te_z = wr.upper_surface[:, -1, 2]  # span at TE
 
         x_te = te_x[len(te_x) // 2]  # streamwise position of TE (use center)
         half_span = np.max(np.abs(te_z))
 
-        # Build baseline Y profile from actual TE cross-section (right half)
+        # Build baseline Y profile from PRE-DOME TE cross-section.
+        # te_base_y stores Y values at TE BEFORE dome offsets were applied,
+        # so the overlay can compute: pre_dome_baseline + current_spinbox_dome
+        # This allows live preview as the user changes dome spinbox values.
+        if hasattr(wr, 'te_base_y') and wr.te_base_y is not None and len(wr.te_base_y) == len(te_z):
+            te_y_base = wr.te_base_y  # pre-dome Y values (internal Y = post-transform Y)
+        else:
+            te_y_base = wr.upper_surface[:, -1, 1]  # fallback: use surface as-is
+
         right_mask = te_z >= -1e-10  # include center point
         z_right_te = te_z[right_mask]
-        y_right_te = te_y[right_mask]
+        y_right_te = te_y_base[right_mask]
         sort_idx = np.argsort(z_right_te)
         z_sorted = z_right_te[sort_idx]
         y_sorted = y_right_te[sort_idx]
@@ -1116,23 +1127,18 @@ class ShadowWaveriderTab(QWidget):
             h_fine = np.array(h_sorted)
 
         # Convert to 3D coordinates at the TE cross-section
-        # baseline_func reads from upper_surface which ALREADY includes dome offsets.
-        # Subtract the dome spline to recover the un-domed baseline, then add h_fine once.
+        # baseline_func is built from te_base_y (pre-dome baseline).
+        # Simply add dome heights once — no subtraction needed.
         baseline_y_fine = baseline_func(s_fine)
-        if spline is not None:
-            dome_offset_fine = np.array([max(float(spline(s)), 0.0) for s in s_fine])
-        else:
-            dome_offset_fine = h_fine  # fallback: use the raw heights
-        original_baseline_fine = baseline_y_fine - dome_offset_fine
 
-        # Right side (positive span): original baseline + dome heights (single count)
+        # Right side (positive span): pre-dome baseline + dome heights
         z_right = s_fine * half_span
-        y_right = original_baseline_fine + h_fine
+        y_right = baseline_y_fine + h_fine
         x_right = np.full_like(z_right, x_te)
 
         # Left side (negative span) — mirror
         z_left = -s_fine * half_span
-        y_left = original_baseline_fine + h_fine
+        y_left = baseline_y_fine + h_fine
         x_left = np.full_like(z_left, x_te)
 
         # Full profile: left tip → center → right tip
@@ -1145,11 +1151,58 @@ class ShadowWaveriderTab(QWidget):
                         linestyle='-', zorder=15)
         line._dome_cp = True
 
-        # Draw CP markers (both sides) — subtract dome from baseline to avoid double-count
+        # Draw intermediate station dome profiles (t=0.25, 0.5, 0.75)
+        # Shows how the dome distributes forward from TE toward nose
+        fullness = self.dome_fullness_spin.value()
+        x_le = wr.upper_surface[:, 0, 0]   # streamwise at LE
+        x_le_center = x_le[len(x_le) // 2]  # LE streamwise position at center
+
+        for t_station in [0.75, 0.50, 0.25]:
+            # C2 smootherstep growth at this station
+            ss = 10.0*t_station**3 - 15.0*t_station**4 + 6.0*t_station**5
+            boost = (4.0 * t_station * (1.0 - t_station)) ** 3
+            growth = ss + fullness * boost * (1.0 - ss)
+            growth = min(max(growth, 0.0), 1.0)
+            if growth < 1e-6:
+                continue  # no visible dome at this station
+
+            # Scaled dome heights at this station
+            h_station = h_fine * growth
+
+            # Span compression (loft effect)
+            compress = growth ** 0.5 if growth > 1e-10 else 0.0
+            s_compressed = np.clip(s_fine * compress, 0.0, 1.0)
+
+            # Dome heights at compressed span positions
+            if spline is not None:
+                h_station = np.array([max(float(spline(sc)), 0.0) * growth
+                                      for sc in s_compressed])
+
+            # Streamwise position of this station (interpolate LE to TE)
+            x_station = x_le_center + t_station * (x_te - x_le_center)
+
+            # Build baseline at this station (approximate from TE baseline scaled)
+            y_station = baseline_y_fine + h_station
+
+            # Build full mirrored profile
+            z_st_r = s_fine * half_span * compress  # narrower span at intermediate stations
+            z_st_l = -z_st_r
+            x_st = np.full_like(z_st_r, x_station)
+
+            z_st_full = np.concatenate([z_st_l[::-1], z_st_r[1:]])
+            y_st_full = np.concatenate([y_station[::-1], y_station[1:]])
+            x_st_full = np.concatenate([x_st[::-1], x_st[1:]])
+
+            alpha = 0.3 + 0.2 * t_station  # more visible closer to TE
+            ln, = ax.plot(z_st_full, x_st_full, y_st_full,
+                         color='#FFD700', linewidth=1.0, linestyle='--',
+                         alpha=alpha, zorder=12)
+            ln._dome_cp = True
+
+        # Draw CP markers (both sides) — baseline is pre-dome, just add height
         for s, h in cp_data:
             z_pt = s * half_span
-            dome_at_s = max(float(spline(s)), 0.0) if spline is not None else h
-            y_pt = float(baseline_func(s)) - dome_at_s + h
+            y_pt = float(baseline_func(s)) + h
             # Right side
             sc = ax.scatter([z_pt], [x_te], [y_pt], c='#FFD700', s=80,
                            marker='o', edgecolors='black', linewidths=1, zorder=20)
@@ -1159,9 +1212,8 @@ class ShadowWaveriderTab(QWidget):
                             marker='o', edgecolors='black', linewidths=1, zorder=20)
             sc2._dome_cp = True
 
-        # Tip markers — on the un-domed surface at wingtip (dome offset=0 at tip)
-        tip_dome = max(float(spline(1.0)), 0.0) if spline is not None else 0.0
-        tip_y = float(baseline_func(1.0)) - tip_dome
+        # Tip markers — on the pre-dome surface at wingtip (dome offset=0 at tip)
+        tip_y = float(baseline_func(1.0))
         for z_tip in [half_span, -half_span]:
             sc3 = ax.scatter([z_tip], [x_te], [tip_y], c='#FFD700', s=40,
                             marker='D', edgecolors='black', linewidths=1, zorder=20)
@@ -2198,14 +2250,14 @@ class ShadowWaveriderTab(QWidget):
 
             # Build dome spline control points (if enabled)
             dome_spline = None
-            dome_growth = 'smooth'
+            dome_fullness = 0.5
             if self.dome_check.isChecked():
                 dome_spline = [
                     (0.0, self.dome_h1.value()),                    # center (fixed span)
                     (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP 1
                     (self.dome_s3.value(), self.dome_h3.value()),    # intermediate CP 2
                 ]
-                dome_growth = self.dome_growth_combo.currentData()
+                dome_fullness = self.dome_fullness_spin.value()
 
             # LE blunting parameters
             blunt_r = 0.0
@@ -2220,7 +2272,7 @@ class ShadowWaveriderTab(QWidget):
                     A0=self.a0_spin.value(), n_leading_edge=self.n_le_spin.value(),
                     n_streamwise=self.n_stream_spin.value(), length=length,
                     top_surface_control=tsc, upper_surface_spline=dome_spline,
-                    dome_growth_mode=dome_growth,
+                    dome_fullness=dome_fullness,
                     blunting_radius=blunt_r, blunting_sweep_scaled=blunt_sweep)
             else:
                 self.waverider = create_third_order_waverider(
@@ -2229,7 +2281,7 @@ class ShadowWaveriderTab(QWidget):
                     n_leading_edge=self.n_le_spin.value(), n_streamwise=self.n_stream_spin.value(),
                     length=length, top_surface_control=tsc,
                     upper_surface_spline=dome_spline,
-                    dome_growth_mode=dome_growth,
+                    dome_fullness=dome_fullness,
                     blunting_radius=blunt_r, blunting_sweep_scaled=blunt_sweep)
             
             self.cone_label.setText(f"{self.waverider.cone_angle_deg:.2f}")
