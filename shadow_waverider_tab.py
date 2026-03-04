@@ -2573,6 +2573,11 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
 
         # Scale from SI meters to mm for STEP export
         right_side = right_side.scale(scale)
+        bb = right_side.BoundingBox()
+        print(f"[Shadow STEP] Right-side solid BB: "
+              f"x=[{bb.xmin:.1f},{bb.xmax:.1f}] "
+              f"y=[{bb.ymin:.1f},{bb.ymax:.1f}] "
+              f"z=[{bb.zmin:.1f},{bb.zmax:.1f}]")
 
         # Apply post-solid LE fillet if blunting is enabled
         if blunting_radius > 0:
@@ -2584,12 +2589,24 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 right_side, blunting_radius * scale, le_pts,
                 nose_cap=False, sweep_scaled=sweep_scaled)
 
-        if half_only:
-            result = cq.Workplane("XY").newObject([right_side])
-        else:
-            # Mirror across XY plane (Z=0) to get left side
+        # Combine halves using BRep compound (avoids boolean union failures)
+        from OCP.TopoDS import TopoDS_Compound
+        from OCP.BRep import BRep_Builder
+        bld = BRep_Builder()
+        comp = TopoDS_Compound()
+        bld.MakeCompound(comp)
+        bld.Add(comp, right_side.wrapped)
+
+        if not half_only:
             left_side = right_side.mirror(mirrorPlane='XY')
-            result = cq.Workplane("XY").newObject([right_side]).union(left_side)
+            bb2 = left_side.BoundingBox()
+            print(f"[Shadow STEP] Left-side (mirrored) BB: "
+                  f"x=[{bb2.xmin:.1f},{bb2.xmax:.1f}] "
+                  f"y=[{bb2.ymin:.1f},{bb2.ymax:.1f}] "
+                  f"z=[{bb2.zmin:.1f},{bb2.zmax:.1f}]")
+            bld.Add(comp, left_side.wrapped)
+
+        result_shape = cq.Shape(comp)
 
         # Build shock cone surface as a separate body if requested
         if include_shock:
@@ -2607,22 +2624,16 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             # Scale from SI meters to mm (same as waverider body)
             shock_shape = shock_shape.scale(scale)
 
-            # Extract the waverider solid from result
-            waverider_shape = result.val()
+            shock_comp = TopoDS_Compound()
+            bld.MakeCompound(shock_comp)
+            bld.Add(shock_comp, result_shape.wrapped)
+            bld.Add(shock_comp, shock_shape.wrapped)
+            result_shape = cq.Shape(shock_comp)
+            print(f"[Shadow STEP] Compound includes shock surface")
 
-            # Create compound with both bodies (separate in CAD)
-            from OCP.TopoDS import TopoDS_Compound
-            from OCP.BRep import BRep_Builder
-            builder = BRep_Builder()
-            comp = TopoDS_Compound()
-            builder.MakeCompound(comp)
-            builder.Add(comp, waverider_shape.wrapped)
-            builder.Add(comp, shock_shape.wrapped)
-            cq.exporters.export(
-                cq.Workplane("XY").newObject([cq.Shape(comp)]), filename)
-            print(f"[Shadow STEP] Exported waverider + shock surface → {filename}")
-        else:
-            cq.exporters.export(result, filename)
+        cq.exporters.export(
+            cq.Workplane("XY").newObject([result_shape]), filename)
+        print(f"[Shadow STEP] Exported → {filename}")
     
     def _export_step_faces(self, filename, scale, min_thickness=0.0):
         """
