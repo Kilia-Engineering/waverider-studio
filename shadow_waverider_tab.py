@@ -1152,20 +1152,22 @@ class ShadowWaveriderTab(QWidget):
         line._dome_cp = True
 
         # Draw intermediate station dome profiles (t=0.25, 0.5, 0.75)
-        # Each profile: center end clamped to centerline, tip end clamped to LE
+        # Each profile: center end tangent to centerline, tip end on LE curve
         le_x_all = wr.upper_surface[:, 0, 0]   # streamwise at LE per station
         le_y_all = wr.upper_surface[:, 0, 1]   # Y at LE per station
         le_z_all = wr.upper_surface[:, 0, 2]   # span at LE per station
         x_le_center = le_x_all[len(le_x_all) // 2]
         pre_dome_center_y = float(baseline_func(0.0))  # pre-dome Y at centerline
 
-        # LE right-half data for tip Y interpolation (computed once)
+        # LE right-half data sorted by span (LE sweeps back: x increases with z)
         right_le = le_z_all >= -1e-10
-        le_z_r = le_z_all[right_le]
+        le_x_r = le_x_all[right_le]
         le_y_r = le_y_all[right_le]
+        le_z_r = le_z_all[right_le]
         le_sort = np.argsort(le_z_r)
-        le_z_sorted = le_z_r[le_sort]
+        le_x_sorted = le_x_r[le_sort]   # monotonic increasing for swept LE
         le_y_sorted = le_y_r[le_sort]
+        le_z_sorted = le_z_r[le_sort]
 
         dome_alpha = 1.0 - 0.3 * self.dome_fullness_spin.value()  # 0.7 to 1.0
 
@@ -1179,16 +1181,12 @@ class ShadowWaveriderTab(QWidget):
             # Streamwise position of this station
             x_station = x_le_center + t_station * (x_te - x_le_center)
 
-            # Effective half-span: max span of LE stations at or behind x_station
-            active = le_x_all <= x_station + 1e-6
-            if not np.any(active):
-                continue
-            eff_half_span = np.max(np.abs(le_z_all[active]))
+            # Exact LE intersection: interpolate LE curve at x_station
+            # LE is swept back so le_x increases monotonically with le_z
+            eff_half_span = float(np.interp(x_station, le_x_sorted, le_z_sorted))
             if eff_half_span < 1e-10:
                 continue
-
-            # Tip Y: interpolate LE Y curve at the effective half-span
-            tip_y_val = float(np.interp(eff_half_span, le_z_sorted, le_y_sorted))
+            tip_y_val = float(np.interp(x_station, le_x_sorted, le_y_sorted))
 
             # Dome heights at this station: profile shape scaled by growth
             if spline is not None:
@@ -1197,8 +1195,18 @@ class ShadowWaveriderTab(QWidget):
             else:
                 h_station = h_fine * growth
 
-            # Baseline: linear blend from pre-dome center Y to LE tip Y
-            station_baseline = pre_dome_center_y + (tip_y_val - pre_dome_center_y) * s_fine
+            # Baseline: use TE cross-section shape rescaled to effective span
+            # This makes all profiles look like the TE dome profile (same character)
+            s_te = s_fine * eff_half_span / half_span if half_span > 1e-10 else s_fine
+            te_base = baseline_func(s_te)
+            # Smooth correction to clamp tip exactly onto LE curve
+            base_tip = float(baseline_func(eff_half_span / half_span if half_span > 1e-10 else 1.0))
+            delta = tip_y_val - base_tip
+            if abs(delta) > 1e-10:
+                blend = 10.0*s_fine**3 - 15.0*s_fine**4 + 6.0*s_fine**5
+                station_baseline = te_base + delta * blend
+            else:
+                station_baseline = te_base
             y_station = station_baseline + h_station
 
             # Span: 0 to effective half-span (narrower toward nose)
