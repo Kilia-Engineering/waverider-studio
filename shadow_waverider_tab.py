@@ -970,52 +970,65 @@ class ShadowWaveriderTab(QWidget):
             "Center endpoint is fixed at the centerline, tip is on the LE.")
         layout.addWidget(self.dome_check, 0, 0, 1, 3)
 
+        # Growth mode — how the dome transitions from LE to TE
+        layout.addWidget(QLabel("Growth:"), 1, 0)
+        self.dome_growth_combo = QComboBox()
+        self.dome_growth_combo.addItem("Smooth (S-curve)", "smooth")
+        self.dome_growth_combo.addItem("Linear", "linear")
+        self.dome_growth_combo.addItem("Late onset", "late")
+        self.dome_growth_combo.setToolTip(
+            "How the dome profile grows from LE to TE:\n"
+            "  Smooth: S-curve with zero slope at both ends (loft-like)\n"
+            "  Linear: constant growth rate (original)\n"
+            "  Late onset: gentle start, grows faster near TE")
+        layout.addWidget(self.dome_growth_combo, 1, 1, 1, 2)
+
         # Center endpoint — fixed at span=0.0, only height is adjustable
-        layout.addWidget(QLabel("Center Height:"), 1, 0)
+        layout.addWidget(QLabel("Center Height:"), 2, 0)
         self.dome_h1 = QDoubleSpinBox()
         self.dome_h1.setRange(0.0, 1.0); self.dome_h1.setValue(0.05)
         self.dome_h1.setDecimals(3); self.dome_h1.setSingleStep(0.005)
         self.dome_h1.setKeyboardTracking(True)
         self.dome_h1.setToolTip("Dome peak height at the centerline (model units)")
-        layout.addWidget(self.dome_h1, 1, 1, 1, 2)
+        layout.addWidget(self.dome_h1, 2, 1, 1, 2)
 
         # Intermediate control point 1 — inner shaping point
-        layout.addWidget(QLabel("CP 1:"), 2, 0)
+        layout.addWidget(QLabel("CP 1:"), 3, 0)
         self.dome_s2 = QDoubleSpinBox()
         self.dome_s2.setRange(0.05, 0.95); self.dome_s2.setValue(0.33)
         self.dome_s2.setDecimals(2); self.dome_s2.setSingleStep(0.01)
         self.dome_s2.setKeyboardTracking(True)
         self.dome_s2.setToolTip("Spanwise position of inner shaping point (0 = center, 1 = tip)")
-        layout.addWidget(self.dome_s2, 2, 1)
+        layout.addWidget(self.dome_s2, 3, 1)
 
         self.dome_h2 = QDoubleSpinBox()
         self.dome_h2.setRange(0.0, 1.0); self.dome_h2.setValue(0.035)
         self.dome_h2.setDecimals(3); self.dome_h2.setSingleStep(0.005)
         self.dome_h2.setKeyboardTracking(True)
         self.dome_h2.setToolTip("Height offset at inner shaping point (model units)")
-        layout.addWidget(self.dome_h2, 2, 2)
+        layout.addWidget(self.dome_h2, 3, 2)
 
         # Intermediate control point 2 — outer shaping point
-        layout.addWidget(QLabel("CP 2:"), 3, 0)
+        layout.addWidget(QLabel("CP 2:"), 4, 0)
         self.dome_s3 = QDoubleSpinBox()
         self.dome_s3.setRange(0.05, 0.95); self.dome_s3.setValue(0.66)
         self.dome_s3.setDecimals(2); self.dome_s3.setSingleStep(0.01)
         self.dome_s3.setKeyboardTracking(True)
         self.dome_s3.setToolTip("Spanwise position of outer shaping point (0 = center, 1 = tip)")
-        layout.addWidget(self.dome_s3, 3, 1)
+        layout.addWidget(self.dome_s3, 4, 1)
 
         self.dome_h3 = QDoubleSpinBox()
         self.dome_h3.setRange(0.0, 1.0); self.dome_h3.setValue(0.015)
         self.dome_h3.setDecimals(3); self.dome_h3.setSingleStep(0.005)
         self.dome_h3.setKeyboardTracking(True)
         self.dome_h3.setToolTip("Height offset at outer shaping point (model units)")
-        layout.addWidget(self.dome_h3, 3, 2)
+        layout.addWidget(self.dome_h3, 4, 2)
 
         # Tip endpoint — informational, fixed on the LE
-        layout.addWidget(QLabel("Tip:"), 4, 0)
+        layout.addWidget(QLabel("Tip:"), 5, 0)
         tip_label = QLabel("(on leading edge)")
         tip_label.setStyleSheet("color: gray; font-style: italic;")
-        layout.addWidget(tip_label, 4, 1, 1, 2)
+        layout.addWidget(tip_label, 5, 1, 1, 2)
 
         # Live update of CP overlay when values change
         for spin in (self.dome_h1, self.dome_s2, self.dome_h2, self.dome_s3, self.dome_h3):
@@ -2283,26 +2296,30 @@ class ShadowWaveriderTab(QWidget):
 
             # Build dome spline control points (if enabled)
             dome_spline = None
+            dome_growth = 'smooth'
             if self.dome_check.isChecked():
                 dome_spline = [
                     (0.0, self.dome_h1.value()),                    # center (fixed span)
                     (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP 1
                     (self.dome_s3.value(), self.dome_h3.value()),    # intermediate CP 2
                 ]
+                dome_growth = self.dome_growth_combo.currentData()
 
             if self.order_combo.currentIndex() == 0:
                 self.waverider = create_second_order_waverider(
                     mach=mach, shock_angle=shock, A2=self.a2_spin.value(),
                     A0=self.a0_spin.value(), n_leading_edge=self.n_le_spin.value(),
                     n_streamwise=self.n_stream_spin.value(), length=length,
-                    top_surface_control=tsc, upper_surface_spline=dome_spline)
+                    top_surface_control=tsc, upper_surface_spline=dome_spline,
+                    dome_growth_mode=dome_growth)
             else:
                 self.waverider = create_third_order_waverider(
                     mach=mach, shock_angle=shock, A3=self.a3_spin.value(),
                     A2=self.a2_spin.value(), A0=self.a0_spin.value(),
                     n_leading_edge=self.n_le_spin.value(), n_streamwise=self.n_stream_spin.value(),
                     length=length, top_surface_control=tsc,
-                    upper_surface_spline=dome_spline)
+                    upper_surface_spline=dome_spline,
+                    dome_growth_mode=dome_growth)
             
             self.cone_label.setText(f"{self.waverider.cone_angle_deg:.2f}")
             self.update_view()

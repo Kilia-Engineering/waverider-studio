@@ -61,17 +61,18 @@ class ShadowWaverider:
         gamma: float = 1.4,
         length: float = 1.0,
         top_surface_control: float = 0.0,
-        upper_surface_spline: Optional[list] = None
+        upper_surface_spline: Optional[list] = None,
+        dome_growth_mode: str = 'smooth'
     ):
         # Validate inputs
         if mach <= 1.0:
             raise ValueError("Mach number must be greater than 1.0")
-        
+
         # Check shock angle is valid (must be greater than Mach angle)
         mach_angle = np.degrees(np.arcsin(1.0 / mach))
         if shock_angle <= mach_angle:
             raise ValueError(f"Shock angle ({shock_angle}°) must be greater than Mach angle ({mach_angle:.2f}°)")
-        
+
         self.mach = float(mach)
         self.shock_angle = float(shock_angle)
         self.shock_angle_rad = np.radians(shock_angle)
@@ -81,6 +82,7 @@ class ShadowWaverider:
 
         # Upper surface dome (spline control points)
         self.upper_surface_spline = upper_surface_spline  # list of (span_frac, height) or None
+        self.dome_growth_mode = dome_growth_mode  # 'linear', 'smooth', or 'late'
 
         # Process polynomial coefficients
         self.poly_coeffs = list(poly_coeffs)
@@ -680,10 +682,19 @@ class ShadowWaverider:
                     dz = z - z_start
                     y = y_start + abs(y_start) * (np.exp((A / 100.0) * dz) - 1.0)
 
-                # Apply spline dome offset (additive)
+                # Apply spline dome offset (additive) with growth mode + loft compression
                 if spline_func is not None:
-                    growth = j / max(self.n_streamwise - 1, 1)  # 0 at LE, 1 at TE
-                    sf = min(max(span_frac, 0.0), 1.0)  # clamp to [0, 1]
+                    t = j / max(self.n_streamwise - 1, 1)  # 0 at LE, 1 at TE
+                    # Growth function (height scaling)
+                    if self.dome_growth_mode == 'smooth':
+                        growth = 0.5 * (1.0 - math.cos(math.pi * t))
+                    elif self.dome_growth_mode == 'late':
+                        growth = t * t
+                    else:  # linear
+                        growth = t
+                    # Span compression for loft effect (profile narrows toward nose)
+                    effective_sf = span_frac * (growth ** 0.5) if growth > 1e-10 else 0.0
+                    sf = min(max(effective_sf, 0.0), 1.0)
                     offset = float(spline_func(sf))
                     y += max(offset, 0.0) * growth  # only add positive offsets
 
