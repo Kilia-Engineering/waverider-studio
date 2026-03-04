@@ -59,6 +59,108 @@ def _make_bspline_face_from_grid(streams, tol=1e-3):
     return cq.Face(face_builder.Face())
 
 
+def _make_lofted_face(streams):
+    """
+    Build a lofted surface through spanwise cross-sections.
+
+    Given streamlines (one per LE station from centerline to wingtip),
+    extract the spanwise cross-section at each streamwise station and loft
+    through them using BRepOffsetAPI_ThruSections.
+
+    This preserves the grid structure faithfully — no oscillation from
+    plate-surface energy minimisation.  The surface passes exactly through
+    each cross-section wire and interpolates smoothly between them.
+
+    Parameters
+    ----------
+    streams : list of ndarray (n_stream, 3)
+        Streamlines ordered from centerline (i=0) to wingtip (i=n-1).
+        All must have the same length n_stream.
+
+    Returns
+    -------
+    cq.Face
+        Lofted surface face.
+    """
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS
+
+    n_half = len(streams)        # spanwise stations (centerline → wingtip)
+    n_stream = streams[0].shape[0]  # streamwise points (LE → TE)
+
+    # ThruSections: isSolid=False (surface only), isRuled=False (smooth)
+    loft = BRepOffsetAPI_ThruSections(False, False)
+
+    n_wires = 0
+    n_verts = 0
+    for j in range(n_stream):
+        # Extract spanwise cross-section at streamwise station j
+        pts = [streams[i][j] for i in range(n_half)]
+
+        # Check if section is degenerate (all points coincide → near nose)
+        span = max(np.linalg.norm(np.array(pts[k]) - np.array(pts[0]))
+                    for k in range(1, len(pts)))
+        if span < 1e-10:
+            # Degenerate section → single vertex
+            from OCP.gp import gp_Pnt
+            from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+            v = BRepBuilderAPI_MakeVertex(gp_Pnt(
+                float(pts[0][0]), float(pts[0][1]), float(pts[0][2]))).Vertex()
+            loft.AddVertex(v)
+            n_verts += 1
+        else:
+            # Build spline wire through the cross-section points
+            cq_pts = [cq.Vector(float(p[0]), float(p[1]), float(p[2]))
+                       for p in pts]
+            try:
+                edge = cq.Edge.makeSpline(cq_pts)
+                wire = cq.Wire.assembleEdges([edge])
+                loft.AddWire(wire.wrapped)
+                n_wires += 1
+            except Exception as e:
+                logger.warning(f"Loft: wire at j={j} failed ({e}), skipping")
+
+    print(f"[Loft] Building surface: {n_verts} vertices + {n_wires} wires "
+          f"from {n_stream} stations × {n_half} spans")
+
+    if n_wires < 2:
+        raise RuntimeError(
+            f"Loft needs ≥2 wire sections, got {n_wires} "
+            f"(+ {n_verts} vertices)")
+
+    loft.Build()
+    if not loft.IsDone():
+        raise RuntimeError("BRepOffsetAPI_ThruSections.Build() failed")
+
+    shape = loft.Shape()
+
+    # Extract face(s) from the lofted shape
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    faces = []
+    while explorer.More():
+        faces.append(cq.Face(TopoDS.Face_s(explorer.Current())))
+        explorer.Next()
+
+    if not faces:
+        raise RuntimeError("ThruSections produced no faces")
+
+    print(f"[Loft] → {len(faces)} face(s)")
+
+    # If multiple faces were produced, sew them into one shell face
+    if len(faces) == 1:
+        return faces[0]
+    else:
+        # Sew multiple faces into a single shell
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+        sewer = BRepBuilderAPI_Sewing(1e-6)
+        for f in faces:
+            sewer.Add(f.wrapped)
+        sewer.Perform()
+        return cq.Face(sewer.SewedShape())
+
+
 def _enforce_min_thickness(us_streams, ls_streams, min_thickness, include_le=False):
     """
     Enforce a minimum thickness between upper and lower surface streams.
@@ -149,19 +251,16 @@ def _sew_faces_to_solid(faces, tolerance=1e-3):
     """
     Sew faces into a solid using BRepBuilderAPI_Sewing.
 
-    Unlike cq.Shell.makeShell which requires topologically connected faces
-    (shared edges), sewing merges faces whose edges are geometrically close
-    but have different OCC topology. This is essential when surfaces are built
-    independently via interpPlate — each surface gets its own B-spline edges
-    even when the boundary points are identical.
+    Uses progressive tolerance: tries tight first, then relaxes if needed.
+    This handles the case where lofted and interpPlate face boundaries
+    don't perfectly coincide with back/symmetry face edges.
 
     Parameters
     ----------
     faces : list
         CadQuery Face objects or OCC TopoDS_Face objects.
     tolerance : float
-        Sewing tolerance in model units. Edges within this distance
-        are merged into shared topology.
+        Initial sewing tolerance in model units.
 
     Returns
     -------
@@ -173,31 +272,38 @@ def _sew_faces_to_solid(faces, tolerance=1e-3):
     from OCP.TopoDS import TopoDS
     from OCP.ShapeFix import ShapeFix_Solid
 
-    sewer = BRepBuilderAPI_Sewing(tolerance)
-    for face in faces:
-        if hasattr(face, 'wrapped'):
-            sewer.Add(face.wrapped)
-        else:
-            sewer.Add(face)
-    sewer.Perform()
+    last_err = None
+    for tol in [tolerance, tolerance * 5, tolerance * 20]:
+        try:
+            sewer = BRepBuilderAPI_Sewing(tol)
+            for face in faces:
+                if hasattr(face, 'wrapped'):
+                    sewer.Add(face.wrapped)
+                else:
+                    sewer.Add(face)
+            sewer.Perform()
 
-    sewn_shape = sewer.SewedShape()
+            sewn_shape = sewer.SewedShape()
 
-    # Extract shell from the sewn shape
-    explorer = TopExp_Explorer(sewn_shape, TopAbs_SHELL)
-    if not explorer.More():
-        raise RuntimeError(
-            f"Sewing produced no shell from {len(faces)} faces "
-            f"(tolerance={tolerance:.1e})")
+            explorer = TopExp_Explorer(sewn_shape, TopAbs_SHELL)
+            if not explorer.More():
+                raise RuntimeError(
+                    f"Sewing produced no shell from {len(faces)} faces")
 
-    shell = TopoDS.Shell_s(explorer.Current())
+            shell = TopoDS.Shell_s(explorer.Current())
 
-    # Build solid from shell
-    fixer = ShapeFix_Solid()
-    solid_shape = fixer.SolidFromShell(shell)
+            fixer = ShapeFix_Solid()
+            solid_shape = fixer.SolidFromShell(shell)
 
-    print(f"[Sewing] {len(faces)} faces → solid OK (tol={tolerance:.1e})")
-    return cq.Solid(solid_shape)
+            print(f"[Sewing] {len(faces)} faces → solid OK "
+                  f"(tol={tol:.1e})")
+            return cq.Solid(solid_shape)
+        except RuntimeError as e:
+            last_err = e
+            print(f"[Sewing] Failed at tol={tol:.1e}: {e}")
+
+    raise RuntimeError(
+        f"Sewing failed at all tolerance levels: {last_err}")
 
 
 def build_waverider_solid(upper_streams, lower_streams, le_curve,
@@ -232,57 +338,31 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
         Right-half solid in original coordinate units.
     """
     n_half = len(upper_streams)
+    n_stream = upper_streams[0].shape[0]
 
     # Diagnostic: check centerline deviation from straight line
-    # (dome raises centerline Y — straight-line symmetry edges would cause gaps)
     cl_y = centerline_upper[:, 1]
     cl_y_straight = np.linspace(cl_y[0], cl_y[-1], len(cl_y))
     cl_max_dev = np.max(np.abs(cl_y - cl_y_straight))
-    print(f"[SolidBuilder] Centerline upper: {len(centerline_upper)} pts, "
-          f"Y range [{cl_y.min():.6f}, {cl_y.max():.6f}], "
-          f"max deviation from straight line: {cl_max_dev:.6f}")
-
-    # Interior points for upper surface
-    us_points = []
-    for i in range(1, n_half - 1):
-        for j in range(1, upper_streams[i].shape[0] - 1):
-            us_points.append(tuple(upper_streams[i][j]))
-
-    # Interior points for lower surface
-    ls_points = []
-    for i in range(1, n_half - 1):
-        for j in range(1, lower_streams[i].shape[0] - 1):
-            ls_points.append(tuple(lower_streams[i][j]))
+    print(f"[SolidBuilder] {n_half} spans × {n_stream} stations, "
+          f"centerline max dome deviation: {cl_max_dev:.6f}")
 
     sym_start = tuple(centerline_upper[0])
     sym_end = tuple(centerline_upper[-1])
     sym_start_lower = tuple(centerline_lower[0])
     sym_end_lower = tuple(centerline_lower[-1])
 
-    # Upper surface boundary: centerline + LE spline + TE spline + wingtip
-    edge_wire_upper = cq.Workplane("XY").spline(
-        [tuple(x) for x in centerline_upper])
-    edge_wire_upper = edge_wire_upper.add(
-        cq.Workplane("XY").spline([tuple(x) for x in le_curve]))
-    edge_wire_upper = edge_wire_upper.add(
-        cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
-    wingtip_upper = upper_streams[-1]
-    wt_u_p0 = tuple(float(c) for c in wingtip_upper[0])
-    wt_u_p1 = tuple(float(c) for c in wingtip_upper[-1])
-    wt_u_dist = np.linalg.norm(wingtip_upper[0] - wingtip_upper[-1])
-    print(f"[SolidBuilder] Wingtip upper: n_pts={len(wingtip_upper)}, "
-          f"p0={wt_u_p0}, p1={wt_u_p1}, dist={wt_u_dist:.6f}")
-    if wt_u_dist > 1e-8:
-        wt_u_edge = cq.Edge.makeLine(cq.Vector(*wt_u_p0), cq.Vector(*wt_u_p1))
-        edge_wire_upper = edge_wire_upper.add(
-            cq.Workplane("XY").newObject([wt_u_edge]))
-    else:
-        print(f"[SolidBuilder] Wingtip upper edge degenerate, skipping")
+    # ── UPPER SURFACE: Lofted through spanwise cross-sections ──
+    # This preserves dome curvature without interpPlate oscillation.
+    upper_face = _make_lofted_face(upper_streams)
+    print(f"[SolidBuilder] Upper surface: lofted face OK")
 
-    upper_surface = cq.Workplane("XY").interpPlate(
-        edge_wire_upper, us_points, 0)
+    # ── LOWER SURFACE: interpPlate (simpler surface, no dome) ──
+    ls_points = []
+    for i in range(1, n_half - 1):
+        for j in range(1, lower_streams[i].shape[0] - 1):
+            ls_points.append(tuple(lower_streams[i][j]))
 
-    # Lower surface boundary
     edge_wire_lower = cq.Workplane("XY").spline(
         [tuple(x) for x in centerline_lower])
     edge_wire_lower = edge_wire_lower.add(
@@ -290,28 +370,38 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
     edge_wire_lower = edge_wire_lower.add(
         cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
     wingtip_lower = lower_streams[-1]
-    wt_l_p0 = tuple(float(c) for c in wingtip_lower[0])
-    wt_l_p1 = tuple(float(c) for c in wingtip_lower[-1])
     wt_l_dist = np.linalg.norm(wingtip_lower[0] - wingtip_lower[-1])
-    print(f"[SolidBuilder] Wingtip lower: n_pts={len(wingtip_lower)}, "
-          f"p0={wt_l_p0}, p1={wt_l_p1}, dist={wt_l_dist:.6f}")
     if wt_l_dist > 1e-8:
-        wt_l_edge = cq.Edge.makeLine(cq.Vector(*wt_l_p0), cq.Vector(*wt_l_p1))
+        wt_l_edge = cq.Edge.makeLine(
+            cq.Vector(*[float(c) for c in wingtip_lower[0]]),
+            cq.Vector(*[float(c) for c in wingtip_lower[-1]]))
         edge_wire_lower = edge_wire_lower.add(
             cq.Workplane("XY").newObject([wt_l_edge]))
-    else:
-        print(f"[SolidBuilder] Wingtip lower edge degenerate, skipping")
 
-    lower_surface = cq.Workplane("XY").interpPlate(
-        edge_wire_lower, ls_points, 0)
+    try:
+        lower_wp = cq.Workplane("XY").interpPlate(
+            edge_wire_lower, ls_points, 0)
+        lower_face = lower_wp.val()
+        # Validate: check bounding box has reasonable extent
+        bb = lower_face.BoundingBox()
+        face_span = max(bb.xmax - bb.xmin, bb.ymax - bb.ymin,
+                        bb.zmax - bb.zmin)
+        if face_span < 1e-6:
+            raise RuntimeError("interpPlate face is degenerate")
+        print(f"[SolidBuilder] Lower surface: interpPlate OK "
+              f"(span={face_span:.4f})")
+    except Exception as e:
+        print(f"[SolidBuilder] Lower interpPlate failed ({e}), "
+              f"using loft fallback")
+        lower_face = _make_lofted_face(lower_streams)
+        print(f"[SolidBuilder] Lower surface: lofted face OK")
 
-    # Back face
+    # ── BACK FACE ──
     e1 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_lower])
     e2 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_upper])
     e3 = cq.Edge.makeLine(
         cq.Vector(*sym_end), cq.Vector(*sym_end_lower))
     back_edges = [e1, e2, e3]
-    # Close wingtip gap if TE upper and TE lower don't converge
     wt_te_upper = tuple(float(c) for c in te_upper[-1])
     wt_te_lower = tuple(float(c) for c in te_lower[-1])
     wt_te_dist = np.linalg.norm(np.array(wt_te_upper) - np.array(wt_te_lower))
@@ -321,26 +411,22 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
         back_edges.append(e_wt_close)
     back = cq.Face.makeFromWires(cq.Wire.assembleEdges(back_edges))
 
-    # Symmetry face — use spline edges through actual centerline points
-    # so the boundary matches the interpPlate surfaces exactly.
-    # (Straight lines would miss dome curvature, causing sewing gaps.)
-    v_le_upper = cq.Vector(*sym_start)
-    v_le_lower = cq.Vector(*sym_start_lower)
-    v_te_upper = cq.Vector(*sym_end)
-    v_te_lower = cq.Vector(*sym_end_lower)
+    # ── SYMMETRY FACE ──
+    # Use spline edges through actual centerline points (matches dome curve)
     e4 = cq.Edge.makeSpline(
         [cq.Vector(*tuple(x)) for x in centerline_upper])
     e5 = cq.Edge.makeSpline(
         [cq.Vector(*tuple(x)) for x in centerline_lower])
     sym_edges = [e3, e4, e5]
     if abs(sym_start[1] - sym_start_lower[1]) > 1e-8:
-        e6 = cq.Edge.makeLine(v_le_lower, v_le_upper)
+        e6 = cq.Edge.makeLine(
+            cq.Vector(*sym_start_lower), cq.Vector(*sym_start))
         sym_edges.append(e6)
     sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
 
-    # Assemble 4-face solid via sewing
-    right_side = _sew_faces_to_solid([
-        upper_surface.val(), lower_surface.val(), back, sym_face])
+    # ── ASSEMBLE 4-face solid via sewing ──
+    right_side = _sew_faces_to_solid(
+        [upper_face, lower_face, back, sym_face])
 
     return right_side
 
