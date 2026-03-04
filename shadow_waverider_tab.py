@@ -979,30 +979,46 @@ class ShadowWaveriderTab(QWidget):
         self.dome_h1.setToolTip("Dome peak height at the centerline (model units)")
         layout.addWidget(self.dome_h1, 1, 1, 1, 2)
 
-        # Intermediate control point — shapes the arch between center and tip
-        layout.addWidget(QLabel("CP:"), 2, 0)
+        # Intermediate control point 1 — inner shaping point
+        layout.addWidget(QLabel("CP 1:"), 2, 0)
         self.dome_s2 = QDoubleSpinBox()
-        self.dome_s2.setRange(0.05, 0.95); self.dome_s2.setValue(0.50)
+        self.dome_s2.setRange(0.05, 0.95); self.dome_s2.setValue(0.33)
         self.dome_s2.setDecimals(2); self.dome_s2.setSingleStep(0.01)
         self.dome_s2.setKeyboardTracking(True)
-        self.dome_s2.setToolTip("Spanwise position of shaping point (0 = center, 1 = tip)")
+        self.dome_s2.setToolTip("Spanwise position of inner shaping point (0 = center, 1 = tip)")
         layout.addWidget(self.dome_s2, 2, 1)
 
         self.dome_h2 = QDoubleSpinBox()
-        self.dome_h2.setRange(0.0, 1.0); self.dome_h2.setValue(0.03)
+        self.dome_h2.setRange(0.0, 1.0); self.dome_h2.setValue(0.035)
         self.dome_h2.setDecimals(3); self.dome_h2.setSingleStep(0.005)
         self.dome_h2.setKeyboardTracking(True)
-        self.dome_h2.setToolTip("Height offset at the shaping point (model units)")
+        self.dome_h2.setToolTip("Height offset at inner shaping point (model units)")
         layout.addWidget(self.dome_h2, 2, 2)
 
+        # Intermediate control point 2 — outer shaping point
+        layout.addWidget(QLabel("CP 2:"), 3, 0)
+        self.dome_s3 = QDoubleSpinBox()
+        self.dome_s3.setRange(0.05, 0.95); self.dome_s3.setValue(0.66)
+        self.dome_s3.setDecimals(2); self.dome_s3.setSingleStep(0.01)
+        self.dome_s3.setKeyboardTracking(True)
+        self.dome_s3.setToolTip("Spanwise position of outer shaping point (0 = center, 1 = tip)")
+        layout.addWidget(self.dome_s3, 3, 1)
+
+        self.dome_h3 = QDoubleSpinBox()
+        self.dome_h3.setRange(0.0, 1.0); self.dome_h3.setValue(0.015)
+        self.dome_h3.setDecimals(3); self.dome_h3.setSingleStep(0.005)
+        self.dome_h3.setKeyboardTracking(True)
+        self.dome_h3.setToolTip("Height offset at outer shaping point (model units)")
+        layout.addWidget(self.dome_h3, 3, 2)
+
         # Tip endpoint — informational, fixed on the LE
-        layout.addWidget(QLabel("Tip:"), 3, 0)
+        layout.addWidget(QLabel("Tip:"), 4, 0)
         tip_label = QLabel("(on leading edge)")
         tip_label.setStyleSheet("color: gray; font-style: italic;")
-        layout.addWidget(tip_label, 3, 1, 1, 2)
+        layout.addWidget(tip_label, 4, 1, 1, 2)
 
         # Live update of CP overlay when values change
-        for spin in (self.dome_h1, self.dome_s2, self.dome_h2):
+        for spin in (self.dome_h1, self.dome_s2, self.dome_h2, self.dome_s3, self.dome_h3):
             spin.valueChanged.connect(self._update_dome_cp_overlay)
         self.dome_check.stateChanged.connect(self._update_dome_cp_overlay)
 
@@ -1025,6 +1041,7 @@ class ShadowWaveriderTab(QWidget):
 
         wr = self.waverider
         import numpy as np
+        from scipy.interpolate import CubicSpline, interp1d
 
         # Get trailing edge cross-section from upper surface
         # After transform: upper_surface shape (n_le, n_stream, 3) with [X_stream, Y_vert, Z_span]
@@ -1035,20 +1052,26 @@ class ShadowWaveriderTab(QWidget):
         x_te = te_x[len(te_x) // 2]  # streamwise position of TE (use center)
         half_span = np.max(np.abs(te_z))
 
-        # Build the CP profile: center (fixed) + intermediate CP + tip (fixed)
+        # Build baseline Y profile from actual TE cross-section (right half)
+        right_mask = te_z >= -1e-10  # include center point
+        z_right_te = te_z[right_mask]
+        y_right_te = te_y[right_mask]
+        sort_idx = np.argsort(z_right_te)
+        z_sorted = z_right_te[sort_idx]
+        y_sorted = y_right_te[sort_idx]
+        span_norm = z_sorted / half_span if half_span > 1e-10 else z_sorted
+        baseline_func = interp1d(span_norm, y_sorted, kind='linear',
+                                 bounds_error=False,
+                                 fill_value=(y_sorted[0], y_sorted[-1]))
+
+        # Build the CP profile: center (fixed) + 2 intermediate CPs + tip (fixed)
         cp_data = [
             (0.0, self.dome_h1.value()),                    # center endpoint (fixed span=0)
-            (self.dome_s2.value(), self.dome_h2.value()),    # intermediate shaping CP
+            (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP 1
+            (self.dome_s3.value(), self.dome_h3.value()),    # intermediate CP 2
         ]
 
-        # Find baseline Y at each span fraction (from current TE cross-section)
-        center_idx = len(te_y) // 2
-        base_y_center = te_y[center_idx]
-
-        # Build spline profile points for visualization
-        from scipy.interpolate import CubicSpline
-        span_fracs = sorted(set([cp[0] for cp in cp_data]))
-        # Add tip anchor
+        # Build dome offset spline for visualization
         all_s = []
         all_h = []
         for s, h in cp_data:
@@ -1060,6 +1083,7 @@ class ShadowWaveriderTab(QWidget):
             unique[round(s, 6)] = h
         s_sorted = sorted(unique.keys())
         h_sorted = [unique[s] for s in s_sorted]
+        # Add fixed tip anchor (zero offset at wingtip)
         s_sorted.append(1.0)
         h_sorted.append(0.0)
 
@@ -1078,14 +1102,17 @@ class ShadowWaveriderTab(QWidget):
             h_fine = np.array(h_sorted)
 
         # Convert to 3D coordinates at the TE cross-section
+        # Use interpolated baseline Y (actual surface profile) instead of constant
+        baseline_y_fine = baseline_func(s_fine)
+
         # Right side (positive span)
         z_right = s_fine * half_span
-        y_right = base_y_center + h_fine
+        y_right = baseline_y_fine + h_fine
         x_right = np.full_like(z_right, x_te)
 
         # Left side (negative span) — mirror
         z_left = -s_fine * half_span
-        y_left = base_y_center + h_fine
+        y_left = baseline_y_fine + h_fine
         x_left = np.full_like(z_left, x_te)
 
         # Full profile: left tip → center → right tip
@@ -1098,10 +1125,10 @@ class ShadowWaveriderTab(QWidget):
                         linestyle='-', zorder=15)
         line._dome_cp = True
 
-        # Draw CP markers (both sides)
+        # Draw CP markers (both sides) — positioned on actual surface + offset
         for s, h in cp_data:
             z_pt = s * half_span
-            y_pt = base_y_center + h
+            y_pt = float(baseline_func(s)) + h
             # Right side
             sc = ax.scatter([z_pt], [x_te], [y_pt], c='#FFD700', s=80,
                            marker='o', edgecolors='black', linewidths=1, zorder=20)
@@ -1111,9 +1138,10 @@ class ShadowWaveriderTab(QWidget):
                             marker='o', edgecolors='black', linewidths=1, zorder=20)
             sc2._dome_cp = True
 
-        # Tip markers
+        # Tip markers — positioned on actual surface at wingtip
+        tip_y = float(baseline_func(1.0))
         for z_tip in [half_span, -half_span]:
-            sc3 = ax.scatter([z_tip], [x_te], [base_y_center], c='#FFD700', s=40,
+            sc3 = ax.scatter([z_tip], [x_te], [tip_y], c='#FFD700', s=40,
                             marker='D', edgecolors='black', linewidths=1, zorder=20)
             sc3._dome_cp = True
 
@@ -2258,7 +2286,8 @@ class ShadowWaveriderTab(QWidget):
             if self.dome_check.isChecked():
                 dome_spline = [
                     (0.0, self.dome_h1.value()),                    # center (fixed span)
-                    (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP
+                    (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP 1
+                    (self.dome_s3.value(), self.dome_h3.value()),    # intermediate CP 2
                 ]
 
             if self.order_combo.currentIndex() == 0:
