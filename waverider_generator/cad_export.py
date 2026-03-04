@@ -10,17 +10,18 @@ def _make_bspline_face_from_grid(streams, tol=1e-3):
     """
     Build a B-spline face from a structured grid of streamlines.
 
-    Uses OCC's GeomAPI_PointsToBSplineSurface which respects the 2D grid
-    structure, producing a surface that faithfully follows the point data.
-    Unlike interpPlate (plate-surface solver), this does not oscillate or
-    overshoot when the grid contains localized height variations (e.g. dome).
+    Uses OCC's GeomAPI_PointsToBSplineSurface with exact interpolation
+    which respects the 2D grid structure, producing a surface that passes
+    through every grid point without oscillation.  Unlike interpPlate
+    (plate-surface solver), this does not overshoot when the grid contains
+    localized height variations (e.g. dome).
 
     Parameters
     ----------
     streams : list of ndarray (n_pts, 3)
         Streamlines, one per spanwise station. All must have the same length.
     tol : float
-        Fitting tolerance in model units.
+        Face construction tolerance in model units.
 
     Returns
     -------
@@ -30,7 +31,6 @@ def _make_bspline_face_from_grid(streams, tol=1e-3):
     from OCP.TColgp import TColgp_Array2OfPnt
     from OCP.gp import gp_Pnt
     from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
-    from OCP.GeomAbs import GeomAbs_C2
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
 
     n_u = len(streams)             # spanwise stations
@@ -45,12 +45,17 @@ def _make_bspline_face_from_grid(streams, tol=1e-3):
                 float(streams[i][j][1]),
                 float(streams[i][j][2])))
 
-    # Approximate with B-spline: degree 3–8, C2 continuity
-    approx = GeomAPI_PointsToBSplineSurface(pts, 3, 8, GeomAbs_C2, tol)
-    surface = approx.Surface()
+    # Exact interpolation through all grid points (cubic B-spline, no overshoot)
+    builder = GeomAPI_PointsToBSplineSurface()
+    builder.Interpolate(pts)
+    if not builder.IsDone():
+        raise RuntimeError("B-spline grid interpolation failed")
+    surface = builder.Surface()
 
     # Create face from surface with natural parameter bounds
     face_builder = BRepBuilderAPI_MakeFace(surface, tol)
+    if not face_builder.IsDone():
+        raise RuntimeError("BRepBuilderAPI_MakeFace failed")
     return cq.Face(face_builder.Face())
 
 
@@ -244,8 +249,10 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
         print(f"[SolidBuilder] Grid B-spline surfaces OK "
               f"({n_half}x{upper_streams[0].shape[0]} grid)")
     except Exception as e:
+        import traceback
         print(f"[SolidBuilder] Grid B-spline failed ({e}), "
               f"falling back to interpPlate")
+        traceback.print_exc()
         # Fallback: interpPlate with unstructured points + boundary wire
         us_points = []
         for i in range(1, n_half - 1):
