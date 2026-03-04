@@ -233,6 +233,15 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
     """
     n_half = len(upper_streams)
 
+    # Diagnostic: check centerline deviation from straight line
+    # (dome raises centerline Y — straight-line symmetry edges would cause gaps)
+    cl_y = centerline_upper[:, 1]
+    cl_y_straight = np.linspace(cl_y[0], cl_y[-1], len(cl_y))
+    cl_max_dev = np.max(np.abs(cl_y - cl_y_straight))
+    print(f"[SolidBuilder] Centerline upper: {len(centerline_upper)} pts, "
+          f"Y range [{cl_y.min():.6f}, {cl_y.max():.6f}], "
+          f"max deviation from straight line: {cl_max_dev:.6f}")
+
     # Interior points for upper surface
     us_points = []
     for i in range(1, n_half - 1):
@@ -312,13 +321,17 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
         back_edges.append(e_wt_close)
     back = cq.Face.makeFromWires(cq.Wire.assembleEdges(back_edges))
 
-    # Symmetry face
+    # Symmetry face — use spline edges through actual centerline points
+    # so the boundary matches the interpPlate surfaces exactly.
+    # (Straight lines would miss dome curvature, causing sewing gaps.)
     v_le_upper = cq.Vector(*sym_start)
     v_le_lower = cq.Vector(*sym_start_lower)
     v_te_upper = cq.Vector(*sym_end)
     v_te_lower = cq.Vector(*sym_end_lower)
-    e4 = cq.Edge.makeLine(v_le_upper, v_te_upper)
-    e5 = cq.Edge.makeLine(v_le_lower, v_te_lower)
+    e4 = cq.Edge.makeSpline(
+        [cq.Vector(*tuple(x)) for x in centerline_upper])
+    e5 = cq.Edge.makeSpline(
+        [cq.Vector(*tuple(x)) for x in centerline_lower])
     sym_edges = [e3, e4, e5]
     if abs(sym_start[1] - sym_start_lower[1]) > 1e-8:
         e6 = cq.Edge.makeLine(v_le_lower, v_le_upper)
