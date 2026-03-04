@@ -1100,6 +1100,7 @@ class ShadowWaveriderTab(QWidget):
         s_sorted.append(1.0)
         h_sorted.append(0.0)
 
+        spline = None
         if len(s_sorted) >= 2:
             try:
                 spline = CubicSpline(np.array(s_sorted), np.array(h_sorted),
@@ -1115,17 +1116,23 @@ class ShadowWaveriderTab(QWidget):
             h_fine = np.array(h_sorted)
 
         # Convert to 3D coordinates at the TE cross-section
-        # Use interpolated baseline Y (actual surface profile) instead of constant
+        # baseline_func reads from upper_surface which ALREADY includes dome offsets.
+        # Subtract the dome spline to recover the un-domed baseline, then add h_fine once.
         baseline_y_fine = baseline_func(s_fine)
+        if spline is not None:
+            dome_offset_fine = np.array([max(float(spline(s)), 0.0) for s in s_fine])
+        else:
+            dome_offset_fine = h_fine  # fallback: use the raw heights
+        original_baseline_fine = baseline_y_fine - dome_offset_fine
 
-        # Right side (positive span)
+        # Right side (positive span): original baseline + dome heights (single count)
         z_right = s_fine * half_span
-        y_right = baseline_y_fine + h_fine
+        y_right = original_baseline_fine + h_fine
         x_right = np.full_like(z_right, x_te)
 
         # Left side (negative span) — mirror
         z_left = -s_fine * half_span
-        y_left = baseline_y_fine + h_fine
+        y_left = original_baseline_fine + h_fine
         x_left = np.full_like(z_left, x_te)
 
         # Full profile: left tip → center → right tip
@@ -1138,10 +1145,11 @@ class ShadowWaveriderTab(QWidget):
                         linestyle='-', zorder=15)
         line._dome_cp = True
 
-        # Draw CP markers (both sides) — positioned on actual surface + offset
+        # Draw CP markers (both sides) — subtract dome from baseline to avoid double-count
         for s, h in cp_data:
             z_pt = s * half_span
-            y_pt = float(baseline_func(s)) + h
+            dome_at_s = max(float(spline(s)), 0.0) if spline is not None else h
+            y_pt = float(baseline_func(s)) - dome_at_s + h
             # Right side
             sc = ax.scatter([z_pt], [x_te], [y_pt], c='#FFD700', s=80,
                            marker='o', edgecolors='black', linewidths=1, zorder=20)
@@ -1151,8 +1159,9 @@ class ShadowWaveriderTab(QWidget):
                             marker='o', edgecolors='black', linewidths=1, zorder=20)
             sc2._dome_cp = True
 
-        # Tip markers — positioned on actual surface at wingtip
-        tip_y = float(baseline_func(1.0))
+        # Tip markers — on the un-domed surface at wingtip (dome offset=0 at tip)
+        tip_dome = max(float(spline(1.0)), 0.0) if spline is not None else 0.0
+        tip_y = float(baseline_func(1.0)) - tip_dome
         for z_tip in [half_span, -half_span]:
             sc3 = ax.scatter([z_tip], [x_te], [tip_y], c='#FFD700', s=40,
                             marker='D', edgecolors='black', linewidths=1, zorder=20)
