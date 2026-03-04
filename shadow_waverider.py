@@ -61,6 +61,7 @@ class ShadowWaverider:
         length: float = 1.0,
         top_surface_control: float = 0.0,
         upper_surface_spline: Optional[list] = None,
+        dome_fullness: float = 0.5,
         blunting_radius: float = 0.0,
         blunting_sweep_scaled: bool = False
     ):
@@ -82,6 +83,7 @@ class ShadowWaverider:
 
         # Upper surface dome (spline control points)
         self.upper_surface_spline = upper_surface_spline  # list of (span_frac, height) or None
+        self.dome_fullness = float(dome_fullness)  # 0=TE-concentrated, 1=max forward distribution
         self.blunting_radius = float(blunting_radius)
         self.blunting_sweep_scaled = blunting_sweep_scaled
 
@@ -694,8 +696,10 @@ class ShadowWaverider:
                 if spline_func is not None:
                     t = j / max(self.n_streamwise - 1, 1)  # 0 at LE, 1 at TE
                     # Quintic smootherstep: C2 at both ends, monotonic
-                    # g(0)=0, g'(0)=0, g''(0)=0, g(1)=1, g'(1)=0, g''(1)=0
-                    growth = 10.0*t**3 - 15.0*t**4 + 6.0*t**5
+                    ss = 10.0*t**3 - 15.0*t**4 + 6.0*t**5
+                    # Fullness: power of smootherstep (monotonic, C2 for alpha>2/3)
+                    alpha = 1.0 - 0.3 * self.dome_fullness  # 0.7 to 1.0
+                    growth = ss ** alpha if ss > 1e-15 else 0.0
                     # Dome profile evaluated at actual span position (no compression)
                     sf = min(max(span_frac, 0.0), 1.0)
                     offset = float(spline_func(sf))
