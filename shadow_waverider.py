@@ -62,7 +62,9 @@ class ShadowWaverider:
         length: float = 1.0,
         top_surface_control: float = 0.0,
         upper_surface_spline: Optional[list] = None,
-        dome_growth_mode: str = 'smooth'
+        dome_growth_mode: str = 'smooth',
+        blunting_radius: float = 0.0,
+        blunting_sweep_scaled: bool = False
     ):
         # Validate inputs
         if mach <= 1.0:
@@ -83,6 +85,8 @@ class ShadowWaverider:
         # Upper surface dome (spline control points)
         self.upper_surface_spline = upper_surface_spline  # list of (span_frac, height) or None
         self.dome_growth_mode = dome_growth_mode  # 'linear', 'smooth', or 'late'
+        self.blunting_radius = float(blunting_radius)
+        self.blunting_sweep_scaled = blunting_sweep_scaled
 
         # Process polynomial coefficients
         self.poly_coeffs = list(poly_coeffs)
@@ -120,6 +124,7 @@ class ShadowWaverider:
         self._generate_leading_edge()
         self._trace_lower_surface()
         self._generate_upper_surface()
+        self._apply_le_blunting()  # Round the sharp LE with Bezier profile
         self._transform_coordinates()  # Transform to standard coordinate system
         self._compute_geometry_metrics()
     
@@ -720,7 +725,199 @@ class ShadowWaverider:
                     f"stay within shock cone. Consider reducing dome height.")
 
         self.upper_surface = np.array(upper_surface)
-    
+
+    def _apply_le_blunting(self):
+        """
+        Replace the sharp leading edge with a rounded Bezier profile.
+
+        At each LE station, computes a cubic Bezier curve that:
+        - Starts tangent to the upper surface
+        - Ends tangent to the lower surface
+        - Has its apex (outermost point) near the shock cone
+
+        The first n_replace points of both upper and lower surface streamlines
+        are replaced with the blunted profile points.
+
+        Internal coordinates: X=span, Y=vertical, Z=streamwise
+        """
+        if self.blunting_radius <= 0:
+            return
+
+        R = self.blunting_radius
+        n_le = len(self.leading_edge)
+        n_blunt = 8  # points on each half of the Bezier (upper + lower)
+
+        for i in range(n_le):
+            # -- Get sharp LE point and surface tangent directions --
+            P_le = self.leading_edge[i].copy()
+
+            # Upper surface tangent at LE (direction from LE toward TE)
+            P_up_0 = self.upper_surface[i, 0]
+            P_up_1 = self.upper_surface[i, 1]
+            T_up = P_up_1 - P_up_0
+            T_up_len = np.linalg.norm(T_up)
+            if T_up_len < 1e-12:
+                continue
+            T_up_unit = T_up / T_up_len
+
+            # Lower surface tangent at LE (direction from LE toward TE)
+            P_lo_0 = self.lower_surface[i, 0]
+            P_lo_1 = self.lower_surface[i, 1]
+            T_lo = P_lo_1 - P_lo_0
+            T_lo_len = np.linalg.norm(T_lo)
+            if T_lo_len < 1e-12:
+                continue
+            T_lo_unit = T_lo / T_lo_len
+
+            # -- Compute sweep angle for optional radius scaling --
+            if self.blunting_sweep_scaled and i > 0 and i < n_le - 1:
+                # Sweep angle from LE tangent along the span
+                le_tangent = self.leading_edge[min(i + 1, n_le - 1)] - self.leading_edge[max(i - 1, 0)]
+                le_tan_len = np.linalg.norm(le_tangent)
+                if le_tan_len > 1e-12:
+                    # Sweep = angle between LE tangent and pure-span direction
+                    cos_sweep = abs(le_tangent[0]) / le_tan_len  # X component = span
+                    R_local = R * max(cos_sweep, 0.1)
+                else:
+                    R_local = R
+            else:
+                R_local = R
+
+            # -- Compute bisector direction (points "outward" from vehicle) --
+            # The bisector of the opening angle between upper and lower tangents
+            # points away from the interior of the vehicle
+            bisector = -(T_up_unit + T_lo_unit)
+            bis_len = np.linalg.norm(bisector)
+            if bis_len < 1e-12:
+                # Upper and lower tangents are parallel → use normal to tangent
+                bisector = np.array([0.0, -1.0, 0.0])  # default: downward
+            else:
+                bisector = bisector / bis_len
+
+            # -- Place the blunt apex --
+            P_apex = P_le + bisector * R_local
+
+            # Optionally project apex back onto shock cone
+            x_a, y_a, z_a = P_apex
+            if z_a > 1e-10:
+                R_shock = z_a * np.tan(self.shock_angle_rad)
+                r_actual = np.sqrt(x_a**2 + y_a**2)
+                if r_actual > 1e-10 and r_actual != R_shock:
+                    # Scale x,y to sit on the cone surface
+                    scale = R_shock / r_actual
+                    P_apex[0] = x_a * scale
+                    P_apex[1] = y_a * scale
+
+            # -- Determine junction points on upper and lower surfaces --
+            # How far back from LE to place the junction (proportional to radius)
+            junction_dist = R_local * 2.0  # distance along streamline from LE
+
+            # Find the junction index on upper surface
+            n_up_replace = 1
+            cumulative = 0.0
+            for j in range(1, self.n_streamwise):
+                seg = np.linalg.norm(self.upper_surface[i, j] - self.upper_surface[i, j - 1])
+                cumulative += seg
+                if cumulative >= junction_dist:
+                    n_up_replace = j
+                    break
+            else:
+                n_up_replace = min(3, self.n_streamwise - 2)
+
+            # Find the junction index on lower surface
+            n_lo_replace = 1
+            cumulative = 0.0
+            for j in range(1, self.n_streamwise):
+                seg = np.linalg.norm(self.lower_surface[i, j] - self.lower_surface[i, j - 1])
+                cumulative += seg
+                if cumulative >= junction_dist:
+                    n_lo_replace = j
+                    break
+            else:
+                n_lo_replace = min(3, self.n_streamwise - 2)
+
+            P_up_junc = self.upper_surface[i, n_up_replace].copy()
+            P_lo_junc = self.lower_surface[i, n_lo_replace].copy()
+
+            # -- Build cubic Bezier for upper half: P_up_junc → P_apex --
+            # Tangent at junction must match the surface direction
+            T_up_junc = self.upper_surface[i, n_up_replace] - self.upper_surface[i, max(n_up_replace - 1, 0)]
+            T_up_junc_len = np.linalg.norm(T_up_junc)
+            if T_up_junc_len > 1e-12:
+                T_up_junc_unit = T_up_junc / T_up_junc_len
+            else:
+                T_up_junc_unit = -T_up_unit  # fallback: reverse of LE tangent
+
+            # Tension: how far CPs extend along tangent (fraction of chord between endpoints)
+            chord_up = np.linalg.norm(P_apex - P_up_junc)
+            tension = 0.4
+            CP_up_1 = P_up_junc - T_up_junc_unit * chord_up * tension  # extends "backward" from junction
+            CP_up_2 = P_apex + bisector * chord_up * tension * 0.5       # extends from apex along bisector
+
+            # -- Build cubic Bezier for lower half: P_apex → P_lo_junc --
+            T_lo_junc = self.lower_surface[i, n_lo_replace] - self.lower_surface[i, max(n_lo_replace - 1, 0)]
+            T_lo_junc_len = np.linalg.norm(T_lo_junc)
+            if T_lo_junc_len > 1e-12:
+                T_lo_junc_unit = T_lo_junc / T_lo_junc_len
+            else:
+                T_lo_junc_unit = -T_lo_unit
+
+            chord_lo = np.linalg.norm(P_lo_junc - P_apex)
+            CP_lo_1 = P_apex + bisector * chord_lo * tension * 0.5
+            CP_lo_2 = P_lo_junc - T_lo_junc_unit * chord_lo * tension
+
+            # -- Sample Bezier curves --
+            def cubic_bezier(P0, P1, P2, P3, n_pts):
+                """Evaluate cubic Bezier at n_pts equally spaced t values."""
+                t = np.linspace(0, 1, n_pts)
+                pts = np.zeros((n_pts, 3))
+                for k in range(n_pts):
+                    s = t[k]
+                    pts[k] = ((1 - s)**3 * P0 + 3 * (1 - s)**2 * s * P1 +
+                              3 * (1 - s) * s**2 * P2 + s**3 * P3)
+                return pts
+
+            # Upper Bezier: from junction TO apex
+            upper_bez = cubic_bezier(P_up_junc, CP_up_1, CP_up_2, P_apex, n_blunt)
+            # Lower Bezier: from apex TO junction
+            lower_bez = cubic_bezier(P_apex, CP_lo_1, CP_lo_2, P_lo_junc, n_blunt)
+
+            # -- Replace points in upper surface: insert Bezier, keep rest --
+            # Upper: [bezier_reversed(apex→junction), original from junction+1 onward]
+            upper_blunt = upper_bez[::-1]  # reverse: apex → junction (LE at front)
+            remaining_up = self.upper_surface[i, n_up_replace + 1:]
+            # Resample to match original n_streamwise
+            new_upper = np.vstack([upper_blunt, remaining_up])
+            if len(new_upper) != self.n_streamwise:
+                # Resample to exactly n_streamwise points
+                from scipy.interpolate import interp1d
+                old_t = np.linspace(0, 1, len(new_upper))
+                new_t = np.linspace(0, 1, self.n_streamwise)
+                new_upper_resampled = np.zeros((self.n_streamwise, 3))
+                for dim in range(3):
+                    f = interp1d(old_t, new_upper[:, dim], kind='linear')
+                    new_upper_resampled[:, dim] = f(new_t)
+                self.upper_surface[i] = new_upper_resampled
+            else:
+                self.upper_surface[i] = new_upper
+
+            # -- Replace points in lower surface --
+            remaining_lo = self.lower_surface[i, n_lo_replace + 1:]
+            new_lower = np.vstack([lower_bez, remaining_lo])  # apex → junction → rest
+            if len(new_lower) != self.n_streamwise:
+                old_t = np.linspace(0, 1, len(new_lower))
+                new_t = np.linspace(0, 1, self.n_streamwise)
+                new_lower_resampled = np.zeros((self.n_streamwise, 3))
+                for dim in range(3):
+                    f = interp1d(old_t, new_lower[:, dim], kind='linear')
+                    new_lower_resampled[:, dim] = f(new_t)
+                self.lower_surface[i] = new_lower_resampled
+            else:
+                self.lower_surface[i] = new_lower
+
+            # Update LE point to the blunt apex
+            self.leading_edge[i] = P_apex
+
     def _compute_geometry_metrics(self):
         """
         Compute geometric properties of the waverider.

@@ -1164,10 +1164,11 @@ class ShadowWaveriderTab(QWidget):
         group = QGroupBox("Leading Edge Blunting")
         layout = QGridLayout()
 
-        self.blunting_check = QCheckBox("Enable LE fillet")
+        self.blunting_check = QCheckBox("Enable LE rounding")
         self.blunting_check.setToolTip(
-            "Apply a fillet to the leading edge during STEP export.\n"
-            "Uses OpenCASCADE BRepFilletAPI with optional variable radius.")
+            "Round the sharp leading edge with a Bezier spline profile.\n"
+            "Applied at the geometry level: tangent to upper and lower surfaces,\n"
+            "apex constrained near the shock cone.")
         self.blunting_check.stateChanged.connect(self._on_blunting_toggled)
         layout.addWidget(self.blunting_check, 0, 0, 1, 2)
 
@@ -1244,122 +1245,14 @@ class ShadowWaveriderTab(QWidget):
         self.blunting_preview_btn.setEnabled(enabled and self.waverider is not None)
 
     def _preview_blunting(self):
-        """Show blunted LE preview on the 3D view."""
+        """Regenerate with blunting to preview the rounded LE."""
         if self.waverider is None:
             QMessageBox.warning(self, "No waverider", "Generate a waverider first.")
             return
-
-        radius = self.blunting_radius_spin.value()
-        if radius <= 0:
-            return
-
-        try:
-            wr = self.waverider
-            # ConeWaverider has upper_surface/lower_surface as (n_span, n_stream, 3) arrays
-            # Leading edge is at streamwise index 0
-            original_le = wr.leading_edge  # (n_le, 3)
-
-            # Compute blunted LE points using local tangent information
-            # Taper radius near nose: full at wingtip, near-zero at center
-            n_le = wr.upper_surface.shape[0]
-            n_stream = wr.upper_surface.shape[1]
-            center_idx = n_le // 2  # nose/center index
-            blunted_points = []
-
-            # Use a point well downstream for robust tangent estimation
-            # (cone-derived upper is flat, lower curves gradually)
-            j_tan = max(2, min(n_stream // 4, n_stream - 1))
-
-            for i in range(n_le):
-                le_pt = wr.upper_surface[i, 0, :]
-
-                # Taper: full radius everywhere, quick taper only near nose
-                dist_from_center = abs(i - center_idx)
-                max_dist = max(center_idx, n_le - 1 - center_idx)
-                frac = dist_from_center / max_dist if max_dist > 0 else 1.0
-                # Full radius for 85%+ of the LE, taper in last 15% near nose
-                taper_zone = 0.15
-                if frac < taper_zone:
-                    taper = frac / taper_zone  # 0→1 within taper zone
-                else:
-                    taper = 1.0
-                local_radius = radius * taper
-
-                if local_radius < 1e-6:
-                    blunted_points.append(le_pt)
-                    continue
-
-                # Upper tangent (downstream from LE)
-                t_u = wr.upper_surface[i, j_tan, :] - wr.upper_surface[i, 0, :]
-                n = np.linalg.norm(t_u)
-                t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
-
-                t_l = wr.lower_surface[i, j_tan, :] - wr.lower_surface[i, 0, :]
-                n = np.linalg.norm(t_l)
-                t_l = t_l / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
-
-                bisector = t_u + t_l
-                b_norm = np.linalg.norm(bisector)
-                if b_norm > 1e-12:
-                    bisector = bisector / b_norm
-                else:
-                    bisector = np.array([1, 0, 0], dtype=float)
-
-                cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
-                half_angle = np.arccos(cos_half) / 2.0
-
-                # Skip if surfaces are nearly tangent
-                if half_angle < 0.05:
-                    blunted_points.append(le_pt)
-                    continue
-
-                d_center = local_radius / np.sin(half_angle)
-                d_center = min(d_center, local_radius * 5)
-                center = le_pt + d_center * bisector
-
-                tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
-                tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
-
-                v_up = tp_upper - center
-                v_lo = tp_lower - center
-                v_up_hat = v_up / (np.linalg.norm(v_up) + 1e-12)
-                v_lo_hat = v_lo / (np.linalg.norm(v_lo) + 1e-12)
-                v_mid = v_up_hat + v_lo_hat
-                v_mid_norm = np.linalg.norm(v_mid)
-                if v_mid_norm > 1e-12:
-                    v_mid = v_mid / v_mid_norm
-                arc_mid = center + local_radius * v_mid
-                blunted_points.append(arc_mid)
-
-            blunted_le = np.array(blunted_points)
-
-            # Draw on 3D canvas using same axis mapping as plot_waverider:
-            # Z(span) -> plot X, X(streamwise) -> plot Y, Y(vertical) -> plot Z
-            ax = self.canvas_3d.ax
-            for line in list(ax.lines):
-                if hasattr(line, '_blunting_preview'):
-                    line.remove()
-
-            line_orig, = ax.plot(
-                original_le[:, 2], original_le[:, 0], original_le[:, 1],
-                'r--', linewidth=1.5, label='Original LE')
-            line_orig._blunting_preview = True
-
-            line_blunt, = ax.plot(
-                blunted_le[:, 2], blunted_le[:, 0], blunted_le[:, 1],
-                color='#4ADE80', linewidth=2.5, label='Blunted LE')
-            line_blunt._blunting_preview = True
-
-            ax.legend(loc='upper right', fontsize=8)
-            self.canvas_3d.draw()
-
-            self.info_label.setText(
-                f"LE blunting preview: r = {radius:.4f} m | "
-                f"Original (red) vs Blunted (green)")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Preview error",
-                                 f"Failed to preview blunting:\n\n{str(e)}")
+        # Just regenerate — blunting is now applied at geometry level
+        self.generate()
+        self.info_label.setText(
+            f"LE blunting applied: r = {self.blunting_radius_spin.value():.4f} m")
 
     def _create_generate_group(self):
         group = QGroupBox("Generate")
@@ -2305,13 +2198,21 @@ class ShadowWaveriderTab(QWidget):
                 ]
                 dome_growth = self.dome_growth_combo.currentData()
 
+            # LE blunting parameters
+            blunt_r = 0.0
+            blunt_sweep = False
+            if self.blunting_check.isChecked():
+                blunt_r = self.blunting_radius_spin.value()
+                blunt_sweep = (self.blunting_sweep_combo.currentIndex() == 1)
+
             if self.order_combo.currentIndex() == 0:
                 self.waverider = create_second_order_waverider(
                     mach=mach, shock_angle=shock, A2=self.a2_spin.value(),
                     A0=self.a0_spin.value(), n_leading_edge=self.n_le_spin.value(),
                     n_streamwise=self.n_stream_spin.value(), length=length,
                     top_surface_control=tsc, upper_surface_spline=dome_spline,
-                    dome_growth_mode=dome_growth)
+                    dome_growth_mode=dome_growth,
+                    blunting_radius=blunt_r, blunting_sweep_scaled=blunt_sweep)
             else:
                 self.waverider = create_third_order_waverider(
                     mach=mach, shock_angle=shock, A3=self.a3_spin.value(),
@@ -2319,7 +2220,8 @@ class ShadowWaveriderTab(QWidget):
                     n_leading_edge=self.n_le_spin.value(), n_streamwise=self.n_stream_spin.value(),
                     length=length, top_surface_control=tsc,
                     upper_surface_spline=dome_spline,
-                    dome_growth_mode=dome_growth)
+                    dome_growth_mode=dome_growth,
+                    blunting_radius=blunt_r, blunting_sweep_scaled=blunt_sweep)
             
             self.cone_label.setText(f"{self.waverider.cone_angle_deg:.2f}")
             self.update_view()

@@ -3426,10 +3426,10 @@ class WaveriderGUI(QMainWindow):
             return
 
         try:
-            from waverider_generator.leading_edge_blunting import compute_blunted_le_preview
-
-            blunted_le, original_le = compute_blunted_le_preview(
-                self.waverider, radius)
+            # Old blunting module removed — LE blunting is now in shadow_waverider.py
+            raise NotImplementedError(
+                "LE blunting preview has been moved to the Shadow Waverider tab.\n"
+                "Use the blunting controls there instead.")
 
             # Draw on the 3D canvas
             ax = self.canvas_3d.ax

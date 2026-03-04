@@ -371,23 +371,10 @@ def to_CAD(waverider:waverider,sides : str,export: bool,filename: str,**kwargs):
     # Sweep-scaled radius option
     sweep_scaled = kwargs.get("sweep_scaled", False)
 
-    if use_pre_blunted:
-        # ===== PRE-BLUNTED PATH: 4-face solid with G2 Bezier LE embedded =====
-        from waverider_generator.leading_edge_blunting import compute_pre_blunted_streams
-        print(f"[PreBlunted G2] Computing G2 Bezier blunted geometry "
-              f"(r={blunting_radius:.4f}m, sweep_scaled={sweep_scaled})")
-        blunt_data = compute_pre_blunted_streams(
-            us_streams, ls_streams, blunting_radius,
-            sweep_scaled=sweep_scaled)
-
-        # Modified streams have Bezier points embedded, starting at blunt_tip
-        us_streams = blunt_data['modified_upper']
-        ls_streams = blunt_data['modified_lower']
-        # Shared LE boundary = blunt tip points
-        le = blunt_data['blunted_le']
-
-        # Fall through to the standard 4-face solid builder below
-        # (same code as the original path, using modified streams + blunted LE)
+    # NOTE: Pre-blunted path (old leading_edge_blunting.py) has been removed.
+    # LE blunting is now applied at geometry level in shadow_waverider.py.
+    # If the geometry already has blunted LE, the solid will be smooth naturally.
+    use_pre_blunted = False
 
     if not use_pre_blunted:
         # compute LE from original streams
