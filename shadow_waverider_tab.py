@@ -2266,6 +2266,95 @@ class ShadowWaveriderTab(QWidget):
         self.shock_spin.setValue(opt)
         self.info_label.setText(f"Set β={opt:.1f}°")
     
+    # ── Save / Load parameters ──────────────────────────────────────────
+
+    def get_params_dict(self):
+        """Return all design parameters as a plain dict (JSON-serialisable)."""
+        return {
+            # Flow
+            "mach": self.mach_spin.value(),
+            "shock_angle": self.shock_spin.value(),
+            # Polynomial
+            "order": self.order_combo.currentText(),
+            "a3": self.a3_spin.value(),
+            "a2": self.a2_spin.value(),
+            "a0": self.a0_spin.value(),
+            # Mesh / geometry
+            "n_le": self.n_le_spin.value(),
+            "n_stream": self.n_stream_spin.value(),
+            "length": self.length_spin.value(),
+            "scale": self.scale_spin.value(),
+            "top_surface_a": self.top_surface_spin.value(),
+            # Dome
+            "dome_enabled": self.dome_check.isChecked(),
+            "dome_fullness": self.dome_fullness_spin.value(),
+            "dome_center_height": self.dome_h1.value(),
+            "dome_cp1_span": self.dome_s2.value(),
+            "dome_cp1_height": self.dome_h2.value(),
+            "dome_cp2_span": self.dome_s3.value(),
+            "dome_cp2_height": self.dome_h3.value(),
+            # Blunting
+            "blunting_enabled": self.blunting_check.isChecked(),
+            "blunting_radius": self.blunting_radius_spin.value(),
+            "blunting_sweep": self.blunting_sweep_combo.currentText(),
+            # Min thickness
+            "min_thickness_enabled": self.min_thickness_check.isChecked(),
+            "min_thickness_pct": self.min_thickness_spin.value(),
+            # Export
+            "half_vehicle": self.half_vehicle_check.isChecked(),
+            "shock_surface": self.shock_surface_check.isChecked(),
+        }
+
+    def set_params_dict(self, d):
+        """Restore design parameters from a dict (e.g. loaded from JSON)."""
+        def _s(widget, key, method="setValue"):
+            if key in d:
+                getattr(widget, method)(d[key])
+
+        # Flow
+        _s(self.mach_spin, "mach")
+        _s(self.shock_spin, "shock_angle")
+        # Polynomial
+        if "order" in d:
+            idx = self.order_combo.findText(d["order"])
+            if idx >= 0:
+                self.order_combo.setCurrentIndex(idx)
+        _s(self.a3_spin, "a3")
+        _s(self.a2_spin, "a2")
+        _s(self.a0_spin, "a0")
+        # Mesh / geometry
+        _s(self.n_le_spin, "n_le")
+        _s(self.n_stream_spin, "n_stream")
+        _s(self.length_spin, "length")
+        _s(self.scale_spin, "scale")
+        _s(self.top_surface_spin, "top_surface_a")
+        # Dome
+        if "dome_enabled" in d:
+            self.dome_check.setChecked(d["dome_enabled"])
+        _s(self.dome_fullness_spin, "dome_fullness")
+        _s(self.dome_h1, "dome_center_height")
+        _s(self.dome_s2, "dome_cp1_span")
+        _s(self.dome_h2, "dome_cp1_height")
+        _s(self.dome_s3, "dome_cp2_span")
+        _s(self.dome_h3, "dome_cp2_height")
+        # Blunting
+        if "blunting_enabled" in d:
+            self.blunting_check.setChecked(d["blunting_enabled"])
+        _s(self.blunting_radius_spin, "blunting_radius")
+        if "blunting_sweep" in d:
+            idx = self.blunting_sweep_combo.findText(d["blunting_sweep"])
+            if idx >= 0:
+                self.blunting_sweep_combo.setCurrentIndex(idx)
+        # Min thickness
+        if "min_thickness_enabled" in d:
+            self.min_thickness_check.setChecked(d["min_thickness_enabled"])
+        _s(self.min_thickness_spin, "min_thickness_pct")
+        # Export
+        if "half_vehicle" in d:
+            self.half_vehicle_check.setChecked(d["half_vehicle"])
+        if "shock_surface" in d:
+            self.shock_surface_check.setChecked(d["shock_surface"])
+
     def generate(self):
         try:
             mach = self.mach_spin.value()

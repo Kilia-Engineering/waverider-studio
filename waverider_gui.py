@@ -899,7 +899,10 @@ class WaveriderGUI(QMainWindow):
 
         # Set default values
         self.set_default_parameters()
-        
+
+        # Auto-load last session parameters (overrides defaults if file exists)
+        self._auto_load_params()
+
     # ---- Menu bar -------------------------------------------------------
 
     def _create_menu_bar(self):
@@ -922,6 +925,20 @@ class WaveriderGUI(QMainWindow):
         export_action.triggered.connect(self.export_cad)
         file_menu.addAction(export_action)
 
+        file_menu.addSeparator()
+
+        save_params_action = QAction("Save Parameters...", self)
+        save_params_action.setShortcut("Ctrl+S")
+        save_params_action.setStatusTip("Save current design parameters to a JSON file")
+        save_params_action.triggered.connect(self._save_parameters)
+        file_menu.addAction(save_params_action)
+
+        load_params_action = QAction("Load Parameters...", self)
+        load_params_action.setShortcut("Ctrl+O")
+        load_params_action.setStatusTip("Load design parameters from a JSON file")
+        load_params_action.triggered.connect(self._load_parameters)
+        file_menu.addAction(load_params_action)
+
         # --- View menu ---
         view_menu = menubar.addMenu("View")
         view_names = ["3D Waverider", "Base Plane", "Leading Edge",
@@ -943,6 +960,151 @@ class WaveriderGUI(QMainWindow):
             claude_action = QAction("Claude Assistant (not installed)", self)
             claude_action.setEnabled(False)
             tools_menu.addAction(claude_action)
+
+    # ── Save / Load parameters ──────────────────────────────────────────
+
+    def _get_oc_params_dict(self):
+        """Return OC waverider design parameters as a dict."""
+        return {
+            "mach": self.m_inf_spin.value(),
+            "beta": self.beta_spin.value(),
+            "height": self.height_spin.value(),
+            "width": self.width_spin.value(),
+            "match_shock": self.match_shock_check.isChecked(),
+            "x1": self.x1_spin.value(),
+            "x2": self.x2_spin.value(),
+            "x3": self.x3_spin.value(),
+            "x4": self.x4_spin.value(),
+            "n_planes": self.n_planes_spin.value(),
+            "n_streamwise": self.n_streamwise_spin.value(),
+            "delta_streamwise": self.delta_streamwise_spin.value(),
+            "n_upper_surface": self.n_us_spin.value(),
+            "n_shockwave": self.n_sw_spin.value(),
+            "blunting_enabled": self.blunting_check.isChecked(),
+            "blunting_radius": self.blunting_radius_spin.value(),
+            "blunting_method": self.blunting_method_combo.currentText(),
+            "blunting_sweep": self.blunting_sweep_combo.currentText(),
+            "min_thickness_enabled": self.min_thickness_check.isChecked(),
+            "min_thickness_pct": self.min_thickness_spin.value(),
+        }
+
+    def _set_oc_params_dict(self, d):
+        """Restore OC waverider design parameters from a dict."""
+        def _s(widget, key, method="setValue"):
+            if key in d:
+                getattr(widget, method)(d[key])
+        _s(self.m_inf_spin, "mach")
+        _s(self.beta_spin, "beta")
+        _s(self.height_spin, "height")
+        _s(self.width_spin, "width")
+        if "match_shock" in d:
+            self.match_shock_check.setChecked(d["match_shock"])
+        _s(self.x1_spin, "x1")
+        _s(self.x2_spin, "x2")
+        _s(self.x3_spin, "x3")
+        _s(self.x4_spin, "x4")
+        _s(self.n_planes_spin, "n_planes")
+        _s(self.n_streamwise_spin, "n_streamwise")
+        _s(self.delta_streamwise_spin, "delta_streamwise")
+        _s(self.n_us_spin, "n_upper_surface")
+        _s(self.n_sw_spin, "n_shockwave")
+        if "blunting_enabled" in d:
+            self.blunting_check.setChecked(d["blunting_enabled"])
+        _s(self.blunting_radius_spin, "blunting_radius")
+        if "blunting_method" in d:
+            idx = self.blunting_method_combo.findText(d["blunting_method"])
+            if idx >= 0:
+                self.blunting_method_combo.setCurrentIndex(idx)
+        if "blunting_sweep" in d:
+            idx = self.blunting_sweep_combo.findText(d["blunting_sweep"])
+            if idx >= 0:
+                self.blunting_sweep_combo.setCurrentIndex(idx)
+        if "min_thickness_enabled" in d:
+            self.min_thickness_check.setChecked(d["min_thickness_enabled"])
+        _s(self.min_thickness_spin, "min_thickness_pct")
+
+    def _params_file_path(self):
+        """Return the default auto-save file path (next to the script)."""
+        import os
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "last_session.json")
+
+    def _save_parameters(self):
+        """Save current parameters to a user-chosen JSON file."""
+        import json
+        from PyQt5.QtWidgets import QFileDialog
+        default = self._params_file_path()
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Parameters", default,
+            "JSON Files (*.json);;All Files (*)")
+        if not path:
+            return
+        self._write_params_to_file(path)
+
+    def _load_parameters(self):
+        """Load parameters from a user-chosen JSON file."""
+        import json
+        from PyQt5.QtWidgets import QFileDialog
+        default = self._params_file_path()
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Parameters", default,
+            "JSON Files (*.json);;All Files (*)")
+        if not path:
+            return
+        self._read_params_from_file(path)
+
+    def _write_params_to_file(self, path):
+        """Write all tab parameters to a JSON file."""
+        import json, datetime
+        data = {
+            "version": "1.0",
+            "timestamp": datetime.datetime.now().isoformat(),
+            "oc_waverider": self._get_oc_params_dict(),
+        }
+        # Cone-derived tab
+        if hasattr(self, 'shadow_waverider_tab') and self.shadow_waverider_tab is not None:
+            data["cone_derived"] = self.shadow_waverider_tab.get_params_dict()
+        try:
+            with open(path, 'w') as f:
+                json.dump(data, f, indent=2)
+            self.statusBar().showMessage(f"Parameters saved → {path}", 5000)
+        except Exception as e:
+            self.statusBar().showMessage(f"Save failed: {e}", 5000)
+
+    def _read_params_from_file(self, path):
+        """Read parameters from a JSON file and apply to widgets."""
+        import json
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            self.statusBar().showMessage(f"Load failed: {e}", 5000)
+            return
+        if "oc_waverider" in data:
+            self._set_oc_params_dict(data["oc_waverider"])
+        if "cone_derived" in data:
+            if hasattr(self, 'shadow_waverider_tab') and self.shadow_waverider_tab is not None:
+                self.shadow_waverider_tab.set_params_dict(data["cone_derived"])
+        self.statusBar().showMessage(f"Parameters loaded ← {path}", 5000)
+
+    def _auto_save_params(self):
+        """Auto-save parameters to the default file (called on close)."""
+        try:
+            self._write_params_to_file(self._params_file_path())
+        except Exception:
+            pass  # don't block shutdown
+
+    def _auto_load_params(self):
+        """Auto-load parameters from the default file (called on startup)."""
+        import os
+        path = self._params_file_path()
+        if os.path.exists(path):
+            self._read_params_from_file(path)
+
+    def closeEvent(self, event):
+        """Auto-save parameters on application close."""
+        self._auto_save_params()
+        super().closeEvent(event)
 
     def _switch_view(self, index):
         """Switch to a specific visualization view from the View menu."""
