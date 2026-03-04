@@ -206,11 +206,8 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
     """
     Build a 4-face NURBS solid from waverider stream data (right half).
 
-    Constructs upper/lower B-spline surfaces from the structured grid,
-    a back face, and a symmetry face, then sews them into a closed solid.
-
-    Uses grid-based GeomAPI_PointsToBSplineSurface (respects grid topology,
-    no oscillation) with fallback to interpPlate if the grid approach fails.
+    Constructs upper/lower interpPlate surfaces, a back face, and a symmetry
+    face, then sews them into a closed solid.
 
     Parameters
     ----------
@@ -236,68 +233,68 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
     """
     n_half = len(upper_streams)
 
+    # Interior points for upper surface
+    us_points = []
+    for i in range(1, n_half - 1):
+        for j in range(1, upper_streams[i].shape[0] - 1):
+            us_points.append(tuple(upper_streams[i][j]))
+
+    # Interior points for lower surface
+    ls_points = []
+    for i in range(1, n_half - 1):
+        for j in range(1, lower_streams[i].shape[0] - 1):
+            ls_points.append(tuple(lower_streams[i][j]))
+
     sym_start = tuple(centerline_upper[0])
     sym_end = tuple(centerline_upper[-1])
     sym_start_lower = tuple(centerline_lower[0])
     sym_end_lower = tuple(centerline_lower[-1])
 
-    # --- Build upper/lower surface faces ---
-    # Try grid-based B-spline first (faithful to grid, no oscillation)
-    try:
-        upper_face = _make_bspline_face_from_grid(upper_streams)
-        lower_face = _make_bspline_face_from_grid(lower_streams)
-        print(f"[SolidBuilder] Grid B-spline surfaces OK "
-              f"({n_half}x{upper_streams[0].shape[0]} grid)")
-    except Exception as e:
-        import traceback
-        print(f"[SolidBuilder] Grid B-spline failed ({e}), "
-              f"falling back to interpPlate")
-        traceback.print_exc()
-        # Fallback: interpPlate with unstructured points + boundary wire
-        us_points = []
-        for i in range(1, n_half - 1):
-            for j in range(1, upper_streams[i].shape[0] - 1):
-                us_points.append(tuple(upper_streams[i][j]))
-        ls_points = []
-        for i in range(1, n_half - 1):
-            for j in range(1, lower_streams[i].shape[0] - 1):
-                ls_points.append(tuple(lower_streams[i][j]))
-
-        # Upper boundary wire
-        edge_wire_upper = cq.Workplane("XY").spline(
-            [tuple(x) for x in centerline_upper])
+    # Upper surface boundary: centerline + LE spline + TE spline + wingtip
+    edge_wire_upper = cq.Workplane("XY").spline(
+        [tuple(x) for x in centerline_upper])
+    edge_wire_upper = edge_wire_upper.add(
+        cq.Workplane("XY").spline([tuple(x) for x in le_curve]))
+    edge_wire_upper = edge_wire_upper.add(
+        cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
+    wingtip_upper = upper_streams[-1]
+    wt_u_p0 = tuple(float(c) for c in wingtip_upper[0])
+    wt_u_p1 = tuple(float(c) for c in wingtip_upper[-1])
+    wt_u_dist = np.linalg.norm(wingtip_upper[0] - wingtip_upper[-1])
+    print(f"[SolidBuilder] Wingtip upper: n_pts={len(wingtip_upper)}, "
+          f"p0={wt_u_p0}, p1={wt_u_p1}, dist={wt_u_dist:.6f}")
+    if wt_u_dist > 1e-8:
+        wt_u_edge = cq.Edge.makeLine(cq.Vector(*wt_u_p0), cq.Vector(*wt_u_p1))
         edge_wire_upper = edge_wire_upper.add(
-            cq.Workplane("XY").spline([tuple(x) for x in le_curve]))
-        edge_wire_upper = edge_wire_upper.add(
-            cq.Workplane("XY").spline([tuple(x) for x in te_upper]))
-        wingtip_upper = upper_streams[-1]
-        wt_u_dist = np.linalg.norm(wingtip_upper[0] - wingtip_upper[-1])
-        if wt_u_dist > 1e-8:
-            wt_u_edge = cq.Edge.makeLine(
-                cq.Vector(*tuple(float(c) for c in wingtip_upper[0])),
-                cq.Vector(*tuple(float(c) for c in wingtip_upper[-1])))
-            edge_wire_upper = edge_wire_upper.add(
-                cq.Workplane("XY").newObject([wt_u_edge]))
-        upper_face = cq.Workplane("XY").interpPlate(
-            edge_wire_upper, us_points, 0).val()
+            cq.Workplane("XY").newObject([wt_u_edge]))
+    else:
+        print(f"[SolidBuilder] Wingtip upper edge degenerate, skipping")
 
-        # Lower boundary wire
-        edge_wire_lower = cq.Workplane("XY").spline(
-            [tuple(x) for x in centerline_lower])
+    upper_surface = cq.Workplane("XY").interpPlate(
+        edge_wire_upper, us_points, 0)
+
+    # Lower surface boundary
+    edge_wire_lower = cq.Workplane("XY").spline(
+        [tuple(x) for x in centerline_lower])
+    edge_wire_lower = edge_wire_lower.add(
+        cq.Workplane("XY").spline([tuple(x) for x in le_curve]))
+    edge_wire_lower = edge_wire_lower.add(
+        cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
+    wingtip_lower = lower_streams[-1]
+    wt_l_p0 = tuple(float(c) for c in wingtip_lower[0])
+    wt_l_p1 = tuple(float(c) for c in wingtip_lower[-1])
+    wt_l_dist = np.linalg.norm(wingtip_lower[0] - wingtip_lower[-1])
+    print(f"[SolidBuilder] Wingtip lower: n_pts={len(wingtip_lower)}, "
+          f"p0={wt_l_p0}, p1={wt_l_p1}, dist={wt_l_dist:.6f}")
+    if wt_l_dist > 1e-8:
+        wt_l_edge = cq.Edge.makeLine(cq.Vector(*wt_l_p0), cq.Vector(*wt_l_p1))
         edge_wire_lower = edge_wire_lower.add(
-            cq.Workplane("XY").spline([tuple(x) for x in le_curve]))
-        edge_wire_lower = edge_wire_lower.add(
-            cq.Workplane("XY").spline([tuple(x) for x in te_lower]))
-        wingtip_lower = lower_streams[-1]
-        wt_l_dist = np.linalg.norm(wingtip_lower[0] - wingtip_lower[-1])
-        if wt_l_dist > 1e-8:
-            wt_l_edge = cq.Edge.makeLine(
-                cq.Vector(*tuple(float(c) for c in wingtip_lower[0])),
-                cq.Vector(*tuple(float(c) for c in wingtip_lower[-1])))
-            edge_wire_lower = edge_wire_lower.add(
-                cq.Workplane("XY").newObject([wt_l_edge]))
-        lower_face = cq.Workplane("XY").interpPlate(
-            edge_wire_lower, ls_points, 0).val()
+            cq.Workplane("XY").newObject([wt_l_edge]))
+    else:
+        print(f"[SolidBuilder] Wingtip lower edge degenerate, skipping")
+
+    lower_surface = cq.Workplane("XY").interpPlate(
+        edge_wire_lower, ls_points, 0)
 
     # Back face
     e1 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_lower])
@@ -329,7 +326,8 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
     sym_face = cq.Face.makeFromWires(cq.Wire.assembleEdges(sym_edges))
 
     # Assemble 4-face solid via sewing
-    right_side = _sew_faces_to_solid([upper_face, lower_face, back, sym_face])
+    right_side = _sew_faces_to_solid([
+        upper_surface.val(), lower_surface.val(), back, sym_face])
 
     return right_side
 
