@@ -751,6 +751,7 @@ class ShadowWaveriderTab(QWidget):
         left_layout.addWidget(self._create_poly_group())
         left_layout.addWidget(self._create_mesh_group())
         left_layout.addWidget(self._create_dome_group())
+        left_layout.addWidget(self._create_volume_loft_group())
         left_layout.addWidget(self._create_blunting_group())
         left_layout.addWidget(self._create_min_thickness_group())
         left_layout.addWidget(self._create_generate_group())
@@ -970,72 +971,39 @@ class ShadowWaveriderTab(QWidget):
             "Center endpoint is fixed at the centerline, tip is on the LE.")
         layout.addWidget(self.dome_check, 0, 0, 1, 3)
 
-        # Fullness — how far forward the dome distributes (monotonic, C2)
-        layout.addWidget(QLabel("Fullness:"), 1, 0)
-        self.dome_fullness_spin = QDoubleSpinBox()
-        self.dome_fullness_spin.setRange(0.0, 1.0)
-        self.dome_fullness_spin.setValue(0.50)
-        self.dome_fullness_spin.setDecimals(2)
-        self.dome_fullness_spin.setSingleStep(0.05)
-        self.dome_fullness_spin.setKeyboardTracking(True)
-        self.dome_fullness_spin.setToolTip(
-            "Controls how far forward the dome extends from TE toward the nose.\n"
-            "  0.0 = dome concentrated at trailing edge\n"
-            "  0.5 = moderate forward distribution (default)\n"
-            "  1.0 = maximum forward distribution\n"
-            "Uses monotonic C2-continuous growth for smooth curvature.")
-        layout.addWidget(self.dome_fullness_spin, 1, 1, 1, 2)
-
         # Center endpoint — fixed at span=0.0, only height is adjustable
-        layout.addWidget(QLabel("Center Height:"), 2, 0)
+        layout.addWidget(QLabel("Center Height:"), 1, 0)
         self.dome_h1 = QDoubleSpinBox()
         self.dome_h1.setRange(0.0, 1.0); self.dome_h1.setValue(0.05)
         self.dome_h1.setDecimals(3); self.dome_h1.setSingleStep(0.005)
         self.dome_h1.setKeyboardTracking(True)
         self.dome_h1.setToolTip("Dome peak height at the centerline (model units)")
-        layout.addWidget(self.dome_h1, 2, 1, 1, 2)
+        layout.addWidget(self.dome_h1, 1, 1, 1, 2)
 
-        # Intermediate control point 1 — inner shaping point
-        layout.addWidget(QLabel("CP 1:"), 3, 0)
+        # Intermediate control point — shapes the arch between center and tip
+        layout.addWidget(QLabel("CP:"), 2, 0)
         self.dome_s2 = QDoubleSpinBox()
-        self.dome_s2.setRange(0.05, 0.95); self.dome_s2.setValue(0.33)
+        self.dome_s2.setRange(0.05, 0.95); self.dome_s2.setValue(0.50)
         self.dome_s2.setDecimals(2); self.dome_s2.setSingleStep(0.01)
         self.dome_s2.setKeyboardTracking(True)
-        self.dome_s2.setToolTip("Spanwise position of inner shaping point (0 = center, 1 = tip)")
-        layout.addWidget(self.dome_s2, 3, 1)
+        self.dome_s2.setToolTip("Spanwise position of shaping point (0 = center, 1 = tip)")
+        layout.addWidget(self.dome_s2, 2, 1)
 
         self.dome_h2 = QDoubleSpinBox()
-        self.dome_h2.setRange(0.0, 1.0); self.dome_h2.setValue(0.035)
+        self.dome_h2.setRange(0.0, 1.0); self.dome_h2.setValue(0.03)
         self.dome_h2.setDecimals(3); self.dome_h2.setSingleStep(0.005)
         self.dome_h2.setKeyboardTracking(True)
-        self.dome_h2.setToolTip("Height offset at inner shaping point (model units)")
-        layout.addWidget(self.dome_h2, 3, 2)
-
-        # Intermediate control point 2 — outer shaping point
-        layout.addWidget(QLabel("CP 2:"), 4, 0)
-        self.dome_s3 = QDoubleSpinBox()
-        self.dome_s3.setRange(0.05, 0.95); self.dome_s3.setValue(0.66)
-        self.dome_s3.setDecimals(2); self.dome_s3.setSingleStep(0.01)
-        self.dome_s3.setKeyboardTracking(True)
-        self.dome_s3.setToolTip("Spanwise position of outer shaping point (0 = center, 1 = tip)")
-        layout.addWidget(self.dome_s3, 4, 1)
-
-        self.dome_h3 = QDoubleSpinBox()
-        self.dome_h3.setRange(0.0, 1.0); self.dome_h3.setValue(0.015)
-        self.dome_h3.setDecimals(3); self.dome_h3.setSingleStep(0.005)
-        self.dome_h3.setKeyboardTracking(True)
-        self.dome_h3.setToolTip("Height offset at outer shaping point (model units)")
-        layout.addWidget(self.dome_h3, 4, 2)
+        self.dome_h2.setToolTip("Height offset at the shaping point (model units)")
+        layout.addWidget(self.dome_h2, 2, 2)
 
         # Tip endpoint — informational, fixed on the LE
-        layout.addWidget(QLabel("Tip:"), 5, 0)
+        layout.addWidget(QLabel("Tip:"), 3, 0)
         tip_label = QLabel("(on leading edge)")
         tip_label.setStyleSheet("color: gray; font-style: italic;")
-        layout.addWidget(tip_label, 5, 1, 1, 2)
+        layout.addWidget(tip_label, 3, 1, 1, 2)
 
         # Live update of CP overlay when values change
-        for spin in (self.dome_h1, self.dome_s2, self.dome_h2, self.dome_s3, self.dome_h3,
-                     self.dome_fullness_spin):
+        for spin in (self.dome_h1, self.dome_s2, self.dome_h2):
             spin.valueChanged.connect(self._update_dome_cp_overlay)
         self.dome_check.stateChanged.connect(self._update_dome_cp_overlay)
 
@@ -1058,44 +1026,30 @@ class ShadowWaveriderTab(QWidget):
 
         wr = self.waverider
         import numpy as np
-        from scipy.interpolate import CubicSpline, interp1d
 
         # Get trailing edge cross-section from upper surface
         # After transform: upper_surface shape (n_le, n_stream, 3) with [X_stream, Y_vert, Z_span]
         te_x = wr.upper_surface[:, -1, 0]  # streamwise at TE
+        te_y = wr.upper_surface[:, -1, 1]  # vertical at TE
         te_z = wr.upper_surface[:, -1, 2]  # span at TE
 
         x_te = te_x[len(te_x) // 2]  # streamwise position of TE (use center)
         half_span = np.max(np.abs(te_z))
 
-        # Build baseline Y profile from PRE-DOME TE cross-section.
-        # te_base_y stores Y values at TE BEFORE dome offsets were applied,
-        # so the overlay can compute: pre_dome_baseline + current_spinbox_dome
-        # This allows live preview as the user changes dome spinbox values.
-        if hasattr(wr, 'te_base_y') and wr.te_base_y is not None and len(wr.te_base_y) == len(te_z):
-            te_y_base = wr.te_base_y  # pre-dome Y values (internal Y = post-transform Y)
-        else:
-            te_y_base = wr.upper_surface[:, -1, 1]  # fallback: use surface as-is
-
-        right_mask = te_z >= -1e-10  # include center point
-        z_right_te = te_z[right_mask]
-        y_right_te = te_y_base[right_mask]
-        sort_idx = np.argsort(z_right_te)
-        z_sorted = z_right_te[sort_idx]
-        y_sorted = y_right_te[sort_idx]
-        span_norm = z_sorted / half_span if half_span > 1e-10 else z_sorted
-        baseline_func = interp1d(span_norm, y_sorted, kind='linear',
-                                 bounds_error=False,
-                                 fill_value=(y_sorted[0], y_sorted[-1]))
-
-        # Build the CP profile: center (fixed) + 2 intermediate CPs + tip (fixed)
+        # Build the CP profile: center (fixed) + intermediate CP + tip (fixed)
         cp_data = [
             (0.0, self.dome_h1.value()),                    # center endpoint (fixed span=0)
-            (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP 1
-            (self.dome_s3.value(), self.dome_h3.value()),    # intermediate CP 2
+            (self.dome_s2.value(), self.dome_h2.value()),    # intermediate shaping CP
         ]
 
-        # Build dome offset spline for visualization
+        # Find baseline Y at each span fraction (from current TE cross-section)
+        center_idx = len(te_y) // 2
+        base_y_center = te_y[center_idx]
+
+        # Build spline profile points for visualization
+        from scipy.interpolate import CubicSpline
+        span_fracs = sorted(set([cp[0] for cp in cp_data]))
+        # Add tip anchor
         all_s = []
         all_h = []
         for s, h in cp_data:
@@ -1107,11 +1061,9 @@ class ShadowWaveriderTab(QWidget):
             unique[round(s, 6)] = h
         s_sorted = sorted(unique.keys())
         h_sorted = [unique[s] for s in s_sorted]
-        # Add fixed tip anchor (zero offset at wingtip)
         s_sorted.append(1.0)
         h_sorted.append(0.0)
 
-        spline = None
         if len(s_sorted) >= 2:
             try:
                 spline = CubicSpline(np.array(s_sorted), np.array(h_sorted),
@@ -1127,18 +1079,14 @@ class ShadowWaveriderTab(QWidget):
             h_fine = np.array(h_sorted)
 
         # Convert to 3D coordinates at the TE cross-section
-        # baseline_func is built from te_base_y (pre-dome baseline).
-        # Simply add dome heights once — no subtraction needed.
-        baseline_y_fine = baseline_func(s_fine)
-
-        # Right side (positive span): pre-dome baseline + dome heights
+        # Right side (positive span)
         z_right = s_fine * half_span
-        y_right = baseline_y_fine + h_fine
+        y_right = base_y_center + h_fine
         x_right = np.full_like(z_right, x_te)
 
         # Left side (negative span) — mirror
         z_left = -s_fine * half_span
-        y_left = baseline_y_fine + h_fine
+        y_left = base_y_center + h_fine
         x_left = np.full_like(z_left, x_te)
 
         # Full profile: left tip → center → right tip
@@ -1151,83 +1099,10 @@ class ShadowWaveriderTab(QWidget):
                         linestyle='-', zorder=15)
         line._dome_cp = True
 
-        # Draw intermediate station dome profiles (t=0.25, 0.5, 0.75)
-        # Each profile: center end tangent to centerline, tip end on LE curve
-        le_x_all = wr.upper_surface[:, 0, 0]   # streamwise at LE per station
-        le_y_all = wr.upper_surface[:, 0, 1]   # Y at LE per station
-        le_z_all = wr.upper_surface[:, 0, 2]   # span at LE per station
-        x_le_center = le_x_all[len(le_x_all) // 2]
-        pre_dome_center_y = float(baseline_func(0.0))  # pre-dome Y at centerline
-
-        # LE right-half data sorted by span (LE sweeps back: x increases with z)
-        right_le = le_z_all >= -1e-10
-        le_x_r = le_x_all[right_le]
-        le_y_r = le_y_all[right_le]
-        le_z_r = le_z_all[right_le]
-        le_sort = np.argsort(le_z_r)
-        le_x_sorted = le_x_r[le_sort]   # monotonic increasing for swept LE
-        le_y_sorted = le_y_r[le_sort]
-        le_z_sorted = le_z_r[le_sort]
-
-        dome_alpha = 1.0 - 0.3 * self.dome_fullness_spin.value()  # 0.7 to 1.0
-
-        for t_station in [0.75, 0.50, 0.25]:
-            # Growth at this station (same formula as surface generation)
-            ss = 10.0*t_station**3 - 15.0*t_station**4 + 6.0*t_station**5
-            growth = ss ** dome_alpha if ss > 1e-15 else 0.0
-            if growth < 1e-6:
-                continue
-
-            # Streamwise position of this station
-            x_station = x_le_center + t_station * (x_te - x_le_center)
-
-            # Exact LE intersection: interpolate LE curve at x_station
-            # LE is swept back so le_x increases monotonically with le_z
-            eff_half_span = float(np.interp(x_station, le_x_sorted, le_z_sorted))
-            if eff_half_span < 1e-10:
-                continue
-            tip_y_val = float(np.interp(x_station, le_x_sorted, le_y_sorted))
-
-            # Dome heights at this station: profile shape scaled by growth
-            if spline is not None:
-                h_station = np.array([max(float(spline(s)), 0.0) * growth
-                                      for s in s_fine])
-            else:
-                h_station = h_fine * growth
-
-            # Baseline: use TE cross-section shape rescaled to effective span
-            # This makes all profiles look like the TE dome profile (same character)
-            s_te = s_fine * eff_half_span / half_span if half_span > 1e-10 else s_fine
-            te_base = baseline_func(s_te)
-            # Smooth correction to clamp tip exactly onto LE curve
-            base_tip = float(baseline_func(eff_half_span / half_span if half_span > 1e-10 else 1.0))
-            delta = tip_y_val - base_tip
-            if abs(delta) > 1e-10:
-                blend = 10.0*s_fine**3 - 15.0*s_fine**4 + 6.0*s_fine**5
-                station_baseline = te_base + delta * blend
-            else:
-                station_baseline = te_base
-            y_station = station_baseline + h_station
-
-            # Span: 0 to effective half-span (narrower toward nose)
-            z_st_r = s_fine * eff_half_span
-            z_st_l = -z_st_r
-            x_st = np.full_like(z_st_r, x_station)
-
-            z_st_full = np.concatenate([z_st_l[::-1], z_st_r[1:]])
-            y_st_full = np.concatenate([y_station[::-1], y_station[1:]])
-            x_st_full = np.concatenate([x_st[::-1], x_st[1:]])
-
-            vis_alpha = 0.3 + 0.2 * t_station  # more visible closer to TE
-            ln, = ax.plot(z_st_full, x_st_full, y_st_full,
-                         color='#FFD700', linewidth=1.0, linestyle='--',
-                         alpha=vis_alpha, zorder=12)
-            ln._dome_cp = True
-
-        # Draw CP markers (both sides) — baseline is pre-dome, just add height
+        # Draw CP markers (both sides)
         for s, h in cp_data:
             z_pt = s * half_span
-            y_pt = float(baseline_func(s)) + h
+            y_pt = base_y_center + h
             # Right side
             sc = ax.scatter([z_pt], [x_te], [y_pt], c='#FFD700', s=80,
                            marker='o', edgecolors='black', linewidths=1, zorder=20)
@@ -1237,12 +1112,224 @@ class ShadowWaveriderTab(QWidget):
                             marker='o', edgecolors='black', linewidths=1, zorder=20)
             sc2._dome_cp = True
 
-        # Tip markers — on the pre-dome surface at wingtip (dome offset=0 at tip)
-        tip_y = float(baseline_func(1.0))
+        # Tip markers
         for z_tip in [half_span, -half_span]:
-            sc3 = ax.scatter([z_tip], [x_te], [tip_y], c='#FFD700', s=40,
+            sc3 = ax.scatter([z_tip], [x_te], [base_y_center], c='#FFD700', s=40,
                             marker='D', edgecolors='black', linewidths=1, zorder=20)
             sc3._dome_cp = True
+
+        self.canvas_3d.draw()
+
+    def _create_volume_loft_group(self):
+        """Create the Volume Loft parameter group box."""
+        group = QGroupBox("Volume Loft")
+        layout = QGridLayout()
+
+        self.vol_loft_check = QCheckBox("Enable volume loft")
+        self.vol_loft_check.setToolTip(
+            "Add a lofted volume increase to the upper surface.\n"
+            "Defines a new back-face profile above the original upper surface,\n"
+            "tapering from full height at the TE to zero at the nose.\n"
+            "Works alongside the dome feature (additive).")
+        layout.addWidget(self.vol_loft_check, 0, 0, 1, 3)
+
+        # Center height offset (at span=0, centerline)
+        layout.addWidget(QLabel("Center offset:"), 1, 0)
+        self.vol_loft_center_spin = QDoubleSpinBox()
+        self.vol_loft_center_spin.setRange(0.0, 0.5)
+        self.vol_loft_center_spin.setValue(0.04)
+        self.vol_loft_center_spin.setDecimals(3)
+        self.vol_loft_center_spin.setSingleStep(0.005)
+        self.vol_loft_center_spin.setEnabled(False)
+        self.vol_loft_center_spin.setToolTip("Height offset at centerline (model units)")
+        layout.addWidget(self.vol_loft_center_spin, 1, 1, 1, 2)
+
+        # CP1: span fraction + height offset
+        layout.addWidget(QLabel("CP1:"), 2, 0)
+        self.vol_loft_cp1_span_spin = QDoubleSpinBox()
+        self.vol_loft_cp1_span_spin.setRange(0.05, 0.95)
+        self.vol_loft_cp1_span_spin.setValue(0.25)
+        self.vol_loft_cp1_span_spin.setDecimals(2)
+        self.vol_loft_cp1_span_spin.setSingleStep(0.05)
+        self.vol_loft_cp1_span_spin.setEnabled(False)
+        self.vol_loft_cp1_span_spin.setToolTip("Span fraction of control point 1 (0=center, 1=tip)")
+        layout.addWidget(self.vol_loft_cp1_span_spin, 2, 1)
+
+        self.vol_loft_cp1_height_spin = QDoubleSpinBox()
+        self.vol_loft_cp1_height_spin.setRange(0.0, 0.5)
+        self.vol_loft_cp1_height_spin.setValue(0.035)
+        self.vol_loft_cp1_height_spin.setDecimals(3)
+        self.vol_loft_cp1_height_spin.setSingleStep(0.005)
+        self.vol_loft_cp1_height_spin.setEnabled(False)
+        self.vol_loft_cp1_height_spin.setToolTip("Height offset at CP1 (model units)")
+        layout.addWidget(self.vol_loft_cp1_height_spin, 2, 2)
+
+        # CP2: span fraction + height offset
+        layout.addWidget(QLabel("CP2:"), 3, 0)
+        self.vol_loft_cp2_span_spin = QDoubleSpinBox()
+        self.vol_loft_cp2_span_spin.setRange(0.05, 0.95)
+        self.vol_loft_cp2_span_spin.setValue(0.55)
+        self.vol_loft_cp2_span_spin.setDecimals(2)
+        self.vol_loft_cp2_span_spin.setSingleStep(0.05)
+        self.vol_loft_cp2_span_spin.setEnabled(False)
+        self.vol_loft_cp2_span_spin.setToolTip("Span fraction of control point 2 (0=center, 1=tip)")
+        layout.addWidget(self.vol_loft_cp2_span_spin, 3, 1)
+
+        self.vol_loft_cp2_height_spin = QDoubleSpinBox()
+        self.vol_loft_cp2_height_spin.setRange(0.0, 0.5)
+        self.vol_loft_cp2_height_spin.setValue(0.02)
+        self.vol_loft_cp2_height_spin.setDecimals(3)
+        self.vol_loft_cp2_height_spin.setSingleStep(0.005)
+        self.vol_loft_cp2_height_spin.setEnabled(False)
+        self.vol_loft_cp2_height_spin.setToolTip("Height offset at CP2 (model units)")
+        layout.addWidget(self.vol_loft_cp2_height_spin, 3, 2)
+
+        # Tip (informational)
+        layout.addWidget(QLabel("Tip:"), 4, 0)
+        tip_label = QLabel("(on leading edge, offset = 0)")
+        tip_label.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(tip_label, 4, 1, 1, 2)
+
+        # Growth curve selector
+        layout.addWidget(QLabel("Growth:"), 5, 0)
+        self.vol_loft_growth_combo = QComboBox()
+        self.vol_loft_growth_combo.addItems(["Linear", "Smooth (S-curve)"])
+        self.vol_loft_growth_combo.setToolTip(
+            "How the volume addition tapers from TE (full) to LE (zero).\n"
+            "Linear: uniform ramp\n"
+            "Smooth: S-curve (smootherstep), slower start and finish")
+        self.vol_loft_growth_combo.setEnabled(False)
+        layout.addWidget(self.vol_loft_growth_combo, 5, 1, 1, 2)
+
+        # Enable/disable spinboxes
+        def _on_vol_loft_toggled(state):
+            enabled = bool(state)
+            self.vol_loft_center_spin.setEnabled(enabled)
+            self.vol_loft_cp1_span_spin.setEnabled(enabled)
+            self.vol_loft_cp1_height_spin.setEnabled(enabled)
+            self.vol_loft_cp2_span_spin.setEnabled(enabled)
+            self.vol_loft_cp2_height_spin.setEnabled(enabled)
+            self.vol_loft_growth_combo.setEnabled(enabled)
+        self.vol_loft_check.stateChanged.connect(_on_vol_loft_toggled)
+
+        # Live update of overlay when values change
+        for spin in (self.vol_loft_center_spin,
+                     self.vol_loft_cp1_span_spin, self.vol_loft_cp1_height_spin,
+                     self.vol_loft_cp2_span_spin, self.vol_loft_cp2_height_spin):
+            spin.valueChanged.connect(self._update_loft_overlay)
+        self.vol_loft_check.stateChanged.connect(self._update_loft_overlay)
+        self.vol_loft_growth_combo.currentIndexChanged.connect(self._update_loft_overlay)
+
+        group.setLayout(layout)
+        return group
+
+    def _update_loft_overlay(self):
+        """Draw/update the volume loft back-face profile on the 3D view."""
+        ax = self.canvas_3d.ax
+
+        # Remove previous loft overlay elements
+        for artist in list(ax.lines) + list(ax.collections):
+            if getattr(artist, '_vol_loft', False):
+                artist.remove()
+
+        # Only draw if enabled and a waverider exists
+        if not self.vol_loft_check.isChecked() or not hasattr(self, 'waverider') or self.waverider is None:
+            self.canvas_3d.draw()
+            return
+
+        wr = self.waverider
+        import numpy as np
+
+        # Get trailing edge cross-section from upper surface
+        te_y = wr.upper_surface[:, -1, 1]  # vertical at TE
+        te_z = wr.upper_surface[:, -1, 2]  # span at TE
+        te_x_val = wr.upper_surface[len(te_y) // 2, -1, 0]  # streamwise at TE
+
+        center_idx = len(te_y) // 2
+        half_span = np.max(np.abs(te_z))
+        base_y_center = te_y[center_idx]
+
+        # Build the volume loft spline for visualization
+        cp_data = [
+            (0.0, self.vol_loft_center_spin.value()),
+            (self.vol_loft_cp1_span_spin.value(), self.vol_loft_cp1_height_spin.value()),
+            (self.vol_loft_cp2_span_spin.value(), self.vol_loft_cp2_height_spin.value()),
+        ]
+
+        from scipy.interpolate import CubicSpline
+        # Deduplicate
+        unique = {}
+        for s, h in cp_data:
+            unique[round(s, 6)] = h
+        s_sorted = sorted(unique.keys())
+        h_sorted = [unique[s] for s in s_sorted]
+        s_sorted.append(1.0)
+        h_sorted.append(0.0)
+
+        if len(s_sorted) >= 2:
+            try:
+                spline = CubicSpline(np.array(s_sorted), np.array(h_sorted),
+                                     bc_type=((1, 0.0), 'natural'))
+                s_fine = np.linspace(0, 1, 50)
+                h_fine = np.array([max(float(spline(s)), 0.0) for s in s_fine])
+            except Exception:
+                s_fine = np.array(s_sorted)
+                h_fine = np.array(h_sorted)
+        else:
+            s_fine = np.array(s_sorted)
+            h_fine = np.array(h_sorted)
+
+        # Also get the original TE upper curve for reference
+        # Right half: center_idx to end
+        orig_te_z_right = te_z[center_idx:]
+        orig_te_y_right = te_y[center_idx:]
+        orig_span_fracs = np.abs(orig_te_z_right) / half_span if half_span > 1e-10 else np.zeros_like(orig_te_z_right)
+
+        # Convert volume loft profile to 3D coordinates at TE cross-section
+        z_right = s_fine * half_span
+        y_right = base_y_center + h_fine  # offset above the centerline base
+        x_right = np.full_like(z_right, te_x_val)
+
+        # Mirror for left side
+        z_left = -s_fine * half_span
+        y_left = base_y_center + h_fine
+        x_left = np.full_like(z_left, te_x_val)
+
+        # Full profile: left → center → right
+        z_full = np.concatenate([z_left[::-1], z_right[1:]])
+        y_full = np.concatenate([y_left[::-1], y_right[1:]])
+        x_full = np.concatenate([x_left[::-1], x_right[1:]])
+
+        # Plot mapping: plot_X=Z(span), plot_Y=X(stream), plot_Z=Y(vert)
+        line, = ax.plot(z_full, x_full, y_full, color='deepskyblue', linewidth=2.5,
+                        linestyle='-', zorder=15)
+        line._vol_loft = True
+
+        # Draw original TE upper curve as dashed reference
+        z_orig_full = np.concatenate([-orig_te_z_right[::-1], orig_te_z_right[1:]])
+        y_orig_full = np.concatenate([orig_te_y_right[::-1], orig_te_y_right[1:]])
+        x_orig_full = np.full_like(z_orig_full, te_x_val)
+        ref_line, = ax.plot(z_orig_full, x_orig_full, y_orig_full,
+                            color='deepskyblue', linewidth=1.0, linestyle='--',
+                            alpha=0.6, zorder=14)
+        ref_line._vol_loft = True
+
+        # Draw CP markers (both sides)
+        for s, h in cp_data:
+            z_pt = s * half_span
+            y_pt = base_y_center + h
+            sc = ax.scatter([z_pt], [te_x_val], [y_pt], c='deepskyblue', s=80,
+                           marker='o', edgecolors='black', linewidths=1, zorder=20)
+            sc._vol_loft = True
+            sc2 = ax.scatter([-z_pt], [te_x_val], [y_pt], c='deepskyblue', s=80,
+                            marker='o', edgecolors='black', linewidths=1, zorder=20)
+            sc2._vol_loft = True
+
+        # Tip markers
+        for z_tip in [half_span, -half_span]:
+            sc3 = ax.scatter([z_tip], [te_x_val], [te_y[center_idx]], c='deepskyblue', s=40,
+                            marker='D', edgecolors='black', linewidths=1, zorder=20)
+            sc3._vol_loft = True
 
         self.canvas_3d.draw()
 
@@ -1250,11 +1337,10 @@ class ShadowWaveriderTab(QWidget):
         group = QGroupBox("Leading Edge Blunting")
         layout = QGridLayout()
 
-        self.blunting_check = QCheckBox("Enable LE rounding")
+        self.blunting_check = QCheckBox("Enable LE fillet")
         self.blunting_check.setToolTip(
-            "Round the sharp leading edge with a Bezier spline profile.\n"
-            "Applied at the geometry level: tangent to upper and lower surfaces,\n"
-            "apex constrained near the shock cone.")
+            "Apply a fillet to the leading edge during STEP export.\n"
+            "Uses OpenCASCADE BRepFilletAPI with optional variable radius.")
         self.blunting_check.stateChanged.connect(self._on_blunting_toggled)
         layout.addWidget(self.blunting_check, 0, 0, 1, 2)
 
@@ -1331,14 +1417,122 @@ class ShadowWaveriderTab(QWidget):
         self.blunting_preview_btn.setEnabled(enabled and self.waverider is not None)
 
     def _preview_blunting(self):
-        """Regenerate with blunting to preview the rounded LE."""
+        """Show blunted LE preview on the 3D view."""
         if self.waverider is None:
             QMessageBox.warning(self, "No waverider", "Generate a waverider first.")
             return
-        # Just regenerate — blunting is now applied at geometry level
-        self.generate()
-        self.info_label.setText(
-            f"LE blunting applied: r = {self.blunting_radius_spin.value():.4f} m")
+
+        radius = self.blunting_radius_spin.value()
+        if radius <= 0:
+            return
+
+        try:
+            wr = self.waverider
+            # ConeWaverider has upper_surface/lower_surface as (n_span, n_stream, 3) arrays
+            # Leading edge is at streamwise index 0
+            original_le = wr.leading_edge  # (n_le, 3)
+
+            # Compute blunted LE points using local tangent information
+            # Taper radius near nose: full at wingtip, near-zero at center
+            n_le = wr.upper_surface.shape[0]
+            n_stream = wr.upper_surface.shape[1]
+            center_idx = n_le // 2  # nose/center index
+            blunted_points = []
+
+            # Use a point well downstream for robust tangent estimation
+            # (cone-derived upper is flat, lower curves gradually)
+            j_tan = max(2, min(n_stream // 4, n_stream - 1))
+
+            for i in range(n_le):
+                le_pt = wr.upper_surface[i, 0, :]
+
+                # Taper: full radius everywhere, quick taper only near nose
+                dist_from_center = abs(i - center_idx)
+                max_dist = max(center_idx, n_le - 1 - center_idx)
+                frac = dist_from_center / max_dist if max_dist > 0 else 1.0
+                # Full radius for 85%+ of the LE, taper in last 15% near nose
+                taper_zone = 0.15
+                if frac < taper_zone:
+                    taper = frac / taper_zone  # 0→1 within taper zone
+                else:
+                    taper = 1.0
+                local_radius = radius * taper
+
+                if local_radius < 1e-6:
+                    blunted_points.append(le_pt)
+                    continue
+
+                # Upper tangent (downstream from LE)
+                t_u = wr.upper_surface[i, j_tan, :] - wr.upper_surface[i, 0, :]
+                n = np.linalg.norm(t_u)
+                t_u = t_u / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
+
+                t_l = wr.lower_surface[i, j_tan, :] - wr.lower_surface[i, 0, :]
+                n = np.linalg.norm(t_l)
+                t_l = t_l / n if n > 1e-12 else np.array([1, 0, 0], dtype=float)
+
+                bisector = t_u + t_l
+                b_norm = np.linalg.norm(bisector)
+                if b_norm > 1e-12:
+                    bisector = bisector / b_norm
+                else:
+                    bisector = np.array([1, 0, 0], dtype=float)
+
+                cos_half = np.clip(np.dot(t_u, t_l), -1, 1)
+                half_angle = np.arccos(cos_half) / 2.0
+
+                # Skip if surfaces are nearly tangent
+                if half_angle < 0.05:
+                    blunted_points.append(le_pt)
+                    continue
+
+                d_center = local_radius / np.sin(half_angle)
+                d_center = min(d_center, local_radius * 5)
+                center = le_pt + d_center * bisector
+
+                tp_upper = le_pt + np.dot(center - le_pt, t_u) * t_u
+                tp_lower = le_pt + np.dot(center - le_pt, t_l) * t_l
+
+                v_up = tp_upper - center
+                v_lo = tp_lower - center
+                v_up_hat = v_up / (np.linalg.norm(v_up) + 1e-12)
+                v_lo_hat = v_lo / (np.linalg.norm(v_lo) + 1e-12)
+                v_mid = v_up_hat + v_lo_hat
+                v_mid_norm = np.linalg.norm(v_mid)
+                if v_mid_norm > 1e-12:
+                    v_mid = v_mid / v_mid_norm
+                arc_mid = center + local_radius * v_mid
+                blunted_points.append(arc_mid)
+
+            blunted_le = np.array(blunted_points)
+
+            # Draw on 3D canvas using same axis mapping as plot_waverider:
+            # Z(span) -> plot X, X(streamwise) -> plot Y, Y(vertical) -> plot Z
+            ax = self.canvas_3d.ax
+            for line in list(ax.lines):
+                if hasattr(line, '_blunting_preview'):
+                    line.remove()
+
+            line_orig, = ax.plot(
+                original_le[:, 2], original_le[:, 0], original_le[:, 1],
+                'r--', linewidth=1.5, label='Original LE')
+            line_orig._blunting_preview = True
+
+            line_blunt, = ax.plot(
+                blunted_le[:, 2], blunted_le[:, 0], blunted_le[:, 1],
+                color='#4ADE80', linewidth=2.5, label='Blunted LE')
+            line_blunt._blunting_preview = True
+
+            ax.legend(loc='upper right', fontsize=8)
+            self.canvas_3d.draw()
+
+            self.info_label.setText(
+                f"LE blunting preview: r = {radius:.4f} m | "
+                f"Original (red) vs Blunted (green)")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Preview error",
+                                 f"Failed to preview blunting:\n\n{str(e)}")
 
     def _create_generate_group(self):
         group = QGroupBox("Generate")
@@ -2266,95 +2460,6 @@ class ShadowWaveriderTab(QWidget):
         self.shock_spin.setValue(opt)
         self.info_label.setText(f"Set β={opt:.1f}°")
     
-    # ── Save / Load parameters ──────────────────────────────────────────
-
-    def get_params_dict(self):
-        """Return all design parameters as a plain dict (JSON-serialisable)."""
-        return {
-            # Flow
-            "mach": self.mach_spin.value(),
-            "shock_angle": self.shock_spin.value(),
-            # Polynomial
-            "order": self.order_combo.currentText(),
-            "a3": self.a3_spin.value(),
-            "a2": self.a2_spin.value(),
-            "a0": self.a0_spin.value(),
-            # Mesh / geometry
-            "n_le": self.n_le_spin.value(),
-            "n_stream": self.n_stream_spin.value(),
-            "length": self.length_spin.value(),
-            "scale": self.scale_spin.value(),
-            "top_surface_a": self.top_surface_spin.value(),
-            # Dome
-            "dome_enabled": self.dome_check.isChecked(),
-            "dome_fullness": self.dome_fullness_spin.value(),
-            "dome_center_height": self.dome_h1.value(),
-            "dome_cp1_span": self.dome_s2.value(),
-            "dome_cp1_height": self.dome_h2.value(),
-            "dome_cp2_span": self.dome_s3.value(),
-            "dome_cp2_height": self.dome_h3.value(),
-            # Blunting
-            "blunting_enabled": self.blunting_check.isChecked(),
-            "blunting_radius": self.blunting_radius_spin.value(),
-            "blunting_sweep": self.blunting_sweep_combo.currentText(),
-            # Min thickness
-            "min_thickness_enabled": self.min_thickness_check.isChecked(),
-            "min_thickness_pct": self.min_thickness_spin.value(),
-            # Export
-            "half_vehicle": self.half_vehicle_check.isChecked(),
-            "shock_surface": self.shock_surface_check.isChecked(),
-        }
-
-    def set_params_dict(self, d):
-        """Restore design parameters from a dict (e.g. loaded from JSON)."""
-        def _s(widget, key, method="setValue"):
-            if key in d:
-                getattr(widget, method)(d[key])
-
-        # Flow
-        _s(self.mach_spin, "mach")
-        _s(self.shock_spin, "shock_angle")
-        # Polynomial
-        if "order" in d:
-            idx = self.order_combo.findText(d["order"])
-            if idx >= 0:
-                self.order_combo.setCurrentIndex(idx)
-        _s(self.a3_spin, "a3")
-        _s(self.a2_spin, "a2")
-        _s(self.a0_spin, "a0")
-        # Mesh / geometry
-        _s(self.n_le_spin, "n_le")
-        _s(self.n_stream_spin, "n_stream")
-        _s(self.length_spin, "length")
-        _s(self.scale_spin, "scale")
-        _s(self.top_surface_spin, "top_surface_a")
-        # Dome
-        if "dome_enabled" in d:
-            self.dome_check.setChecked(d["dome_enabled"])
-        _s(self.dome_fullness_spin, "dome_fullness")
-        _s(self.dome_h1, "dome_center_height")
-        _s(self.dome_s2, "dome_cp1_span")
-        _s(self.dome_h2, "dome_cp1_height")
-        _s(self.dome_s3, "dome_cp2_span")
-        _s(self.dome_h3, "dome_cp2_height")
-        # Blunting
-        if "blunting_enabled" in d:
-            self.blunting_check.setChecked(d["blunting_enabled"])
-        _s(self.blunting_radius_spin, "blunting_radius")
-        if "blunting_sweep" in d:
-            idx = self.blunting_sweep_combo.findText(d["blunting_sweep"])
-            if idx >= 0:
-                self.blunting_sweep_combo.setCurrentIndex(idx)
-        # Min thickness
-        if "min_thickness_enabled" in d:
-            self.min_thickness_check.setChecked(d["min_thickness_enabled"])
-        _s(self.min_thickness_spin, "min_thickness_pct")
-        # Export
-        if "half_vehicle" in d:
-            self.half_vehicle_check.setChecked(d["half_vehicle"])
-        if "shock_surface" in d:
-            self.shock_surface_check.setChecked(d["shock_surface"])
-
     def generate(self):
         try:
             mach = self.mach_spin.value()
@@ -2364,21 +2469,22 @@ class ShadowWaveriderTab(QWidget):
 
             # Build dome spline control points (if enabled)
             dome_spline = None
-            dome_fullness = 0.5
             if self.dome_check.isChecked():
                 dome_spline = [
                     (0.0, self.dome_h1.value()),                    # center (fixed span)
-                    (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP 1
-                    (self.dome_s3.value(), self.dome_h3.value()),    # intermediate CP 2
+                    (self.dome_s2.value(), self.dome_h2.value()),    # intermediate CP
                 ]
-                dome_fullness = self.dome_fullness_spin.value()
 
-            # LE blunting parameters
-            blunt_r = 0.0
-            blunt_sweep = False
-            if self.blunting_check.isChecked():
-                blunt_r = self.blunting_radius_spin.value()
-                blunt_sweep = (self.blunting_sweep_combo.currentIndex() == 1)
+            # Build volume loft spline control points (if enabled)
+            vol_loft_spline = None
+            vol_loft_growth = 'linear'
+            if self.vol_loft_check.isChecked():
+                vol_loft_spline = [
+                    (0.0, self.vol_loft_center_spin.value()),
+                    (self.vol_loft_cp1_span_spin.value(), self.vol_loft_cp1_height_spin.value()),
+                    (self.vol_loft_cp2_span_spin.value(), self.vol_loft_cp2_height_spin.value()),
+                ]
+                vol_loft_growth = 'smooth' if self.vol_loft_growth_combo.currentIndex() == 1 else 'linear'
 
             if self.order_combo.currentIndex() == 0:
                 self.waverider = create_second_order_waverider(
@@ -2386,8 +2492,7 @@ class ShadowWaveriderTab(QWidget):
                     A0=self.a0_spin.value(), n_leading_edge=self.n_le_spin.value(),
                     n_streamwise=self.n_stream_spin.value(), length=length,
                     top_surface_control=tsc, upper_surface_spline=dome_spline,
-                    dome_fullness=dome_fullness,
-                    blunting_radius=blunt_r, blunting_sweep_scaled=blunt_sweep)
+                    volume_loft_spline=vol_loft_spline, volume_loft_growth=vol_loft_growth)
             else:
                 self.waverider = create_third_order_waverider(
                     mach=mach, shock_angle=shock, A3=self.a3_spin.value(),
@@ -2395,12 +2500,12 @@ class ShadowWaveriderTab(QWidget):
                     n_leading_edge=self.n_le_spin.value(), n_streamwise=self.n_stream_spin.value(),
                     length=length, top_surface_control=tsc,
                     upper_surface_spline=dome_spline,
-                    dome_fullness=dome_fullness,
-                    blunting_radius=blunt_r, blunting_sweep_scaled=blunt_sweep)
-            
+                    volume_loft_spline=vol_loft_spline, volume_loft_growth=vol_loft_growth)
+
             self.cone_label.setText(f"{self.waverider.cone_angle_deg:.2f}")
             self.update_view()
             self._update_dome_cp_overlay()
+            self._update_loft_overlay()
             self.update_results()
             self.info_label.setText(f"✓ θc={self.waverider.cone_angle_deg:.1f}°, Area={self.waverider.planform_area:.4f}, L={length:.2f}m")
             if self.blunting_check.isChecked():
@@ -2573,11 +2678,6 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
 
         # Scale from SI meters to mm for STEP export
         right_side = right_side.scale(scale)
-        bb = right_side.BoundingBox()
-        print(f"[Shadow STEP] Right-side solid BB: "
-              f"x=[{bb.xmin:.1f},{bb.xmax:.1f}] "
-              f"y=[{bb.ymin:.1f},{bb.ymax:.1f}] "
-              f"z=[{bb.zmin:.1f},{bb.zmax:.1f}]")
 
         # Apply post-solid LE fillet if blunting is enabled
         if blunting_radius > 0:
@@ -2589,24 +2689,12 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
                 right_side, blunting_radius * scale, le_pts,
                 nose_cap=False, sweep_scaled=sweep_scaled)
 
-        # Combine halves using BRep compound (avoids boolean union failures)
-        from OCP.TopoDS import TopoDS_Compound
-        from OCP.BRep import BRep_Builder
-        bld = BRep_Builder()
-        comp = TopoDS_Compound()
-        bld.MakeCompound(comp)
-        bld.Add(comp, right_side.wrapped)
-
-        if not half_only:
+        if half_only:
+            result = cq.Workplane("XY").newObject([right_side])
+        else:
+            # Mirror across XY plane (Z=0) to get left side
             left_side = right_side.mirror(mirrorPlane='XY')
-            bb2 = left_side.BoundingBox()
-            print(f"[Shadow STEP] Left-side (mirrored) BB: "
-                  f"x=[{bb2.xmin:.1f},{bb2.xmax:.1f}] "
-                  f"y=[{bb2.ymin:.1f},{bb2.ymax:.1f}] "
-                  f"z=[{bb2.zmin:.1f},{bb2.zmax:.1f}]")
-            bld.Add(comp, left_side.wrapped)
-
-        result_shape = cq.Shape(comp)
+            result = cq.Workplane("XY").newObject([right_side]).union(left_side)
 
         # Build shock cone surface as a separate body if requested
         if include_shock:
@@ -2624,16 +2712,22 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
             # Scale from SI meters to mm (same as waverider body)
             shock_shape = shock_shape.scale(scale)
 
-            shock_comp = TopoDS_Compound()
-            bld.MakeCompound(shock_comp)
-            bld.Add(shock_comp, result_shape.wrapped)
-            bld.Add(shock_comp, shock_shape.wrapped)
-            result_shape = cq.Shape(shock_comp)
-            print(f"[Shadow STEP] Compound includes shock surface")
+            # Extract the waverider solid from result
+            waverider_shape = result.val()
 
-        cq.exporters.export(
-            cq.Workplane("XY").newObject([result_shape]), filename)
-        print(f"[Shadow STEP] Exported → {filename}")
+            # Create compound with both bodies (separate in CAD)
+            from OCP.TopoDS import TopoDS_Compound
+            from OCP.BRep import BRep_Builder
+            builder = BRep_Builder()
+            comp = TopoDS_Compound()
+            builder.MakeCompound(comp)
+            builder.Add(comp, waverider_shape.wrapped)
+            builder.Add(comp, shock_shape.wrapped)
+            cq.exporters.export(
+                cq.Workplane("XY").newObject([cq.Shape(comp)]), filename)
+            print(f"[Shadow STEP] Exported waverider + shock surface → {filename}")
+        else:
+            cq.exporters.export(result, filename)
     
     def _export_step_faces(self, filename, scale, min_thickness=0.0):
         """
@@ -2920,6 +3014,98 @@ CG:             [{wr.cg[0]:.4f}, {wr.cg[1]:.4f}, {wr.cg[2]:.4f}]
         if fn:
             pd.DataFrame(self.design_space_results).to_csv(fn, index=False)
             QMessageBox.information(self, "Success", f"Saved: {fn}")
+
+
+    # ------------------------------------------------------------------
+    # Save / Load parameter serialization
+    # ------------------------------------------------------------------
+    def get_params_dict(self):
+        """Return all design parameters as a JSON-serializable dict."""
+        return {
+            # Flow conditions
+            'mach': self.mach_spin.value(),
+            'shock_angle': self.shock_spin.value(),
+            # Polynomial
+            'order': self.order_combo.currentText(),
+            'a3': self.a3_spin.value(),
+            'a2': self.a2_spin.value(),
+            'a0': self.a0_spin.value(),
+            # Mesh / geometry
+            'n_le': self.n_le_spin.value(),
+            'n_stream': self.n_stream_spin.value(),
+            'length': self.length_spin.value(),
+            'scale': self.scale_spin.value(),
+            'top_surface_a': self.top_surface_spin.value(),
+            # Dome
+            'dome_enabled': self.dome_check.isChecked(),
+            'dome_h1': self.dome_h1.value(),
+            'dome_s2': self.dome_s2.value(),
+            'dome_h2': self.dome_h2.value(),
+            # Volume loft
+            'vol_loft_enabled': self.vol_loft_check.isChecked(),
+            'vol_loft_center': self.vol_loft_center_spin.value(),
+            'vol_loft_cp1_span': self.vol_loft_cp1_span_spin.value(),
+            'vol_loft_cp1_height': self.vol_loft_cp1_height_spin.value(),
+            'vol_loft_cp2_span': self.vol_loft_cp2_span_spin.value(),
+            'vol_loft_cp2_height': self.vol_loft_cp2_height_spin.value(),
+            'vol_loft_growth': self.vol_loft_growth_combo.currentText(),
+            # Leading edge blunting
+            'blunting_enabled': self.blunting_check.isChecked(),
+            'blunting_radius': self.blunting_radius_spin.value(),
+            'blunting_sweep': self.blunting_sweep_combo.currentText(),
+            # Minimum thickness
+            'min_thickness_enabled': self.min_thickness_check.isChecked(),
+            'min_thickness_pct': self.min_thickness_spin.value(),
+            # Export options
+            'half_vehicle': self.half_vehicle_check.isChecked(),
+            'shock_surface': self.shock_surface_check.isChecked(),
+        }
+
+    def set_params_dict(self, d):
+        """Restore parameters from a dict (e.g. loaded from JSON)."""
+        from PyQt5.QtWidgets import QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox
+
+        def _s(widget, value):
+            """Safely set a widget's value."""
+            if value is None:
+                return
+            if isinstance(widget, (QDoubleSpinBox, QSpinBox)):
+                widget.setValue(value)
+            elif isinstance(widget, QCheckBox):
+                widget.setChecked(bool(value))
+            elif isinstance(widget, QComboBox):
+                idx = widget.findText(str(value))
+                widget.setCurrentIndex(idx if idx >= 0 else 0)
+
+        _s(self.mach_spin, d.get('mach'))
+        _s(self.shock_spin, d.get('shock_angle'))
+        _s(self.order_combo, d.get('order'))
+        _s(self.a3_spin, d.get('a3'))
+        _s(self.a2_spin, d.get('a2'))
+        _s(self.a0_spin, d.get('a0'))
+        _s(self.n_le_spin, d.get('n_le'))
+        _s(self.n_stream_spin, d.get('n_stream'))
+        _s(self.length_spin, d.get('length'))
+        _s(self.scale_spin, d.get('scale'))
+        _s(self.top_surface_spin, d.get('top_surface_a'))
+        _s(self.dome_check, d.get('dome_enabled'))
+        _s(self.dome_h1, d.get('dome_h1'))
+        _s(self.dome_s2, d.get('dome_s2'))
+        _s(self.dome_h2, d.get('dome_h2'))
+        _s(self.vol_loft_check, d.get('vol_loft_enabled'))
+        _s(self.vol_loft_center_spin, d.get('vol_loft_center'))
+        _s(self.vol_loft_cp1_span_spin, d.get('vol_loft_cp1_span'))
+        _s(self.vol_loft_cp1_height_spin, d.get('vol_loft_cp1_height'))
+        _s(self.vol_loft_cp2_span_spin, d.get('vol_loft_cp2_span'))
+        _s(self.vol_loft_cp2_height_spin, d.get('vol_loft_cp2_height'))
+        _s(self.vol_loft_growth_combo, d.get('vol_loft_growth'))
+        _s(self.blunting_check, d.get('blunting_enabled'))
+        _s(self.blunting_radius_spin, d.get('blunting_radius'))
+        _s(self.blunting_sweep_combo, d.get('blunting_sweep'))
+        _s(self.min_thickness_check, d.get('min_thickness_enabled'))
+        _s(self.min_thickness_spin, d.get('min_thickness_pct'))
+        _s(self.half_vehicle_check, d.get('half_vehicle'))
+        _s(self.shock_surface_check, d.get('shock_surface'))
 
 
 if __name__ == "__main__":
