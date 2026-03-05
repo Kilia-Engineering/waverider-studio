@@ -613,6 +613,202 @@ class MeshSelectDialog(QDialog):
         return self._result_path, self._result_source
 
 
+class GmshWorker(QThread):
+    """Worker thread for Gmsh mesh generation (keeps GUI responsive)"""
+    finished = pyqtSignal(dict)   # {stl_path, num_triangles, num_nodes, file_size_kb, step_scale}
+    error = pyqtSignal(str)       # error message
+    progress = pyqtSignal(str)    # status text for GUI label
+
+    def __init__(self, step_path, stl_path, min_size, max_size):
+        super().__init__()
+        self.step_path = step_path
+        self.stl_path = stl_path
+        self.min_size = min_size
+        self.max_size = max_size
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        import gmsh
+        try:
+            print(f"\n{'='*60}")
+            print(f"Gmsh Mesh Generation")
+            print(f"{'='*60}")
+            print(f"STEP file: {self.step_path}")
+            print(f"Min element size:  {self.min_size:.5f} m")
+            print(f"Max element size:  {self.max_size:.5f} m")
+            sys.stdout.flush()
+
+            # Initialize Gmsh
+            gmsh.initialize()
+            gmsh.option.setNumber("General.Terminal", 1)
+            gmsh.option.setNumber("General.Verbosity", 5)
+            gmsh.logger.start()
+
+            # OCC healing options
+            gmsh.option.setNumber("Geometry.OCCFixDegenerated", 1)
+            gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
+            gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
+            gmsh.option.setNumber("Geometry.OCCSewFaces", 1)
+            gmsh.option.setNumber("Geometry.Tolerance", 1e-6)
+            gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-6)
+
+            # Mesh quality options
+            gmsh.option.setNumber("Mesh.AngleToleranceFacetOverlap", 0.1)
+            gmsh.option.setNumber("Mesh.AnisoMax", 1e10)
+            gmsh.option.setNumber("Mesh.AllowSwapAngle", 30)
+
+            # ── Stage 1: Load geometry ──
+            self.progress.emit("Loading geometry into Gmsh...")
+            print("Loading geometry into Gmsh...")
+            sys.stdout.flush()
+
+            gmsh.model.occ.importShapes(self.step_path)
+            gmsh.model.occ.synchronize()
+
+            if self._cancelled:
+                raise InterruptedError("Cancelled by user")
+
+            # ── Stage 2: Process geometry ──
+            self.progress.emit("Processing geometry (removing duplicates)...")
+            print("Processing geometry (removing duplicates)...")
+            sys.stdout.flush()
+
+            gmsh.model.occ.removeAllDuplicates()
+            gmsh.model.occ.synchronize()
+
+            if self._cancelled:
+                raise InterruptedError("Cancelled by user")
+
+            # Detect mm vs m
+            bb = gmsh.model.getBoundingBox(-1, -1)
+            max_extent = max(bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2])
+            step_scale = 1.0
+            if max_extent > 100:
+                step_scale = 0.001
+                msg = (f"[Gmsh] Geometry extent {max_extent:.1f} — "
+                       f"likely mm, will scale output to meters")
+                print(msg)
+                sys.stdout.flush()
+
+            # ── Stage 3: Set mesh parameters ──
+            min_s = self.min_size / step_scale if step_scale < 1 else self.min_size
+            max_s = self.max_size / step_scale if step_scale < 1 else self.max_size
+            gmsh.option.setNumber("Mesh.CharacteristicLengthMin", min_s)
+            gmsh.option.setNumber("Mesh.CharacteristicLengthMax", max_s)
+            gmsh.option.setNumber("Mesh.Algorithm", 6)         # Frontal-Delaunay
+            gmsh.option.setNumber("Mesh.Algorithm3D", 1)       # Delaunay
+            gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 1)
+            gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
+            gmsh.option.setNumber("Mesh.MinimumCirclePoints", 5)
+            gmsh.option.setNumber("Mesh.CharacteristicLengthFromPoints", 1)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+
+            # ── Stage 4: Generate mesh ──
+            self.progress.emit("Generating surface mesh...")
+            print("Generating surface mesh...")
+            sys.stdout.flush()
+
+            try:
+                gmsh.model.mesh.generate(2)
+            except Exception:
+                if self._cancelled:
+                    raise InterruptedError("Cancelled by user")
+                print("Algorithm 6 failed, trying Algorithm 1 (MeshAdapt)...")
+                sys.stdout.flush()
+                self.progress.emit("Retrying with MeshAdapt algorithm...")
+                gmsh.option.setNumber("Mesh.Algorithm", 1)
+                gmsh.model.mesh.generate(2)
+
+            if self._cancelled:
+                raise InterruptedError("Cancelled by user")
+
+            # Dump gmsh log
+            try:
+                log_lines = gmsh.logger.get()
+                if log_lines:
+                    print("--- Gmsh log (most recent) ---")
+                    for line in log_lines[-400:]:
+                        print(line)
+                    print("--- End Gmsh log ---")
+                    sys.stdout.flush()
+            except Exception:
+                pass
+
+            # Mesh statistics
+            num_nodes = len(gmsh.model.mesh.getNodes()[0])
+            num_triangles = len(gmsh.model.mesh.getElementsByType(2)[0])
+            print(f"✓ Mesh generated: {num_triangles} triangles, {num_nodes} nodes")
+            sys.stdout.flush()
+
+            # ── Stage 5: Save STL ──
+            self.progress.emit(f"Saving STL ({num_triangles} triangles)...")
+            print(f"Saving STL to: {self.stl_path}")
+            sys.stdout.flush()
+
+            gmsh.write(self.stl_path)
+
+            try:
+                gmsh.logger.stop()
+            except Exception:
+                pass
+            gmsh.finalize()
+
+            # Scale mm → m if needed
+            if step_scale < 1:
+                try:
+                    from stl import mesh as stl_mesh
+                    m = stl_mesh.Mesh.from_file(self.stl_path,
+                                                 calculate_normals=False)
+                    m.vectors *= step_scale
+                    m.save(self.stl_path)
+                    print(f"[Gmsh] Scaled STL output by {step_scale} (mm → m)")
+                    sys.stdout.flush()
+                except Exception as scale_err:
+                    print(f"[Gmsh] Warning: could not scale STL: {scale_err}")
+
+            file_size_kb = os.path.getsize(self.stl_path) / 1024
+            print(f"✓ STL saved: {file_size_kb:.1f} KB")
+            print(f"{'='*60}\n")
+            sys.stdout.flush()
+
+            self.finished.emit({
+                'stl_path': self.stl_path,
+                'num_triangles': num_triangles,
+                'num_nodes': num_nodes,
+                'file_size_kb': file_size_kb,
+                'step_scale': step_scale,
+            })
+
+        except InterruptedError:
+            try:
+                gmsh.logger.stop()
+            except Exception:
+                pass
+            try:
+                gmsh.finalize()
+            except Exception:
+                pass
+            self.error.emit("Mesh generation cancelled by user")
+            print("\n✗ Mesh generation cancelled\n")
+            sys.stdout.flush()
+
+        except Exception as e:
+            try:
+                gmsh.logger.stop()
+            except Exception:
+                pass
+            try:
+                gmsh.finalize()
+            except Exception:
+                pass
+            self.error.emit(str(e))
+            print(f"\n✗ Mesh generation error: {e}\n")
+            sys.stdout.flush()
+
+
 class AnalysisWorker(QThread):
     """Worker thread for PySAGAS analysis (keeps GUI responsive)"""
     finished = pyqtSignal(dict)  # Emits results
@@ -791,17 +987,32 @@ class MeshCanvas(FigureCanvas):
             from stl import mesh as stl_mesh
             
             # Load the STL file
-            mesh_data = stl_mesh.Mesh.from_file(stl_file)
-            
+            # calculate_normals=False prevents "Singular matrix" error
+            # from degenerate triangles (zero-area faces from Gmsh
+            # meshing compound STEP bodies at the Z=0 symmetry plane)
+            mesh_data = stl_mesh.Mesh.from_file(stl_file,
+                                                 calculate_normals=False)
+
             self.ax.clear()
-            
+
             # Restore labels after clear
             self.ax.set_xlabel('X [m]')
             self.ax.set_ylabel('Y [m]')
             self.ax.set_zlabel('Z [m]')
-            
-            # Extract vertices
+
+            # Extract vertices and filter out degenerate triangles
+            # (zero-area faces from Gmsh meshing compound STEP bodies)
             vectors = mesh_data.vectors
+            edges1 = vectors[:, 1] - vectors[:, 0]
+            edges2 = vectors[:, 2] - vectors[:, 0]
+            crosses = np.cross(edges1, edges2)
+            areas = np.linalg.norm(crosses, axis=1)
+            valid = areas > 1e-15
+            n_removed = np.sum(~valid)
+            if n_removed > 0:
+                print(f"[STL] Removed {n_removed} degenerate triangles "
+                      f"from {len(vectors)}")
+                vectors = vectors[valid]
             
             # Plot with better appearance
             collection = self.create_mesh_collection(vectors)
@@ -3631,7 +3842,11 @@ class WaveriderGUI(QMainWindow):
         self.mesh_max_spin.setValue(max_size)
     
     def generate_stl_mesh(self):
-        """Generate high-quality STL mesh using Gmsh from imported STEP file"""
+        """Generate high-quality STL mesh using Gmsh from imported STEP file.
+
+        Runs Gmsh in a background QThread so the GUI stays responsive.
+        The 'Generate' button becomes 'Cancel' while running.
+        """
         if self.imported_step_path is None or not os.path.exists(self.imported_step_path):
             QMessageBox.warning(
                 self, "No STEP file",
@@ -3639,224 +3854,133 @@ class WaveriderGUI(QMainWindow):
             )
             return
 
+        # Check if gmsh is available
         try:
-            # Check if gmsh is available
-            try:
-                import gmsh
-            except ImportError:
-                reply = QMessageBox.question(
-                    self, "Gmsh not installed",
-                    "Gmsh is required for high-quality mesh generation.\n\n"
-                    "Install with: pip install gmsh\n\n"
-                    "Continue with lower-quality CadQuery meshing instead?",
-                    QMessageBox.Yes | QMessageBox.No
-                )
-                if reply == QMessageBox.No:
-                    return
-                else:
-                    # Fallback to CadQuery
-                    self.generate_stl_mesh_cadquery()
-                    return
-
-            # Get mesh parameters
-            min_size = self.mesh_min_spin.value()
-            max_size = self.mesh_max_spin.value()
-
-            self.mesh_gen_info.setText("Generating mesh with Gmsh...")
-            self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
-            QApplication.processEvents()
-
-            step_path = self.imported_step_path
-
-            print(f"\n{'='*60}")
-            print(f"Gmsh Mesh Generation")
-            print(f"{'='*60}")
-            print(f"STEP file: {step_path}")
-            print(f"Min element size:  {min_size:.5f} m")
-            print(f"Max element size:  {max_size:.5f} m")
-            sys.stdout.flush()
-
-            # Initialize Gmsh
-            gmsh.initialize()
-            gmsh.option.setNumber("General.Terminal", 1)
-
-            # Verbosity + logger for diagnosing "hangs"
-            gmsh.option.setNumber("General.Verbosity", 5)
-            gmsh.option.setNumber("General.Terminal", 1)  # stream gmsh messages to stdout
-            gmsh.logger.start()
-
-            # OCC healing options - AGGRESSIVE settings to fix problematic geometry
-            gmsh.option.setNumber("Geometry.OCCFixDegenerated", 1)
-            gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
-            gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
-            gmsh.option.setNumber("Geometry.OCCSewFaces", 1)
-            gmsh.option.setNumber("Geometry.Tolerance", 1e-6)  # Tolerance for geometry operations
-            gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-6)
-            
-            # Additional mesh quality options to prevent getting stuck
-            gmsh.option.setNumber("Mesh.AngleToleranceFacetOverlap", 0.1)
-            gmsh.option.setNumber("Mesh.AnisoMax", 1e10)
-            gmsh.option.setNumber("Mesh.AllowSwapAngle", 30)
-
-            print("Loading geometry into Gmsh...")
-            sys.stdout.flush()
-
-            # Load STEP file
-            gmsh.model.occ.importShapes(step_path)
-            gmsh.model.occ.synchronize()
-
-            # Remove duplicate entities introduced by STEP import, then resync
-            gmsh.model.occ.removeAllDuplicates()
-            gmsh.model.occ.synchronize()
-
-            # Detect if STEP is in mm (max extent > 100 likely means mm)
-            bb = gmsh.model.getBoundingBox(-1, -1)
-            max_extent = max(bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2])
-            step_scale = 1.0
-            if max_extent > 100:
-                step_scale = 0.001
-                print(f"[Gmsh] Geometry extent {max_extent:.1f} — likely mm, will scale output to meters")
-                sys.stdout.flush()
-
-            # Set mesh parameters (in geometry units)
-            gmsh.option.setNumber("Mesh.CharacteristicLengthMin", min_size / step_scale if step_scale < 1 else min_size)
-            gmsh.option.setNumber("Mesh.CharacteristicLengthMax", max_size / step_scale if step_scale < 1 else max_size)
-            gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay (usually best)
-            gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
-            
-            # Limit element count to prevent infinite refinement
-            gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 1)
-            gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
-            gmsh.option.setNumber("Mesh.MinimumCirclePoints", 7)  # Reduce for faster meshing
-            
-            print("Generating surface mesh...")
-            print("(If this takes >60 seconds, try increasing mesh size or simplifying geometry)")
-            sys.stdout.flush()
-            
-            # Generate 2D mesh (surface only)
-            try:
-                gmsh.model.mesh.generate(2)
-            except Exception as mesh_err:
-                print(f"Mesh generation failed with Algorithm 6, trying Algorithm 1...")
-                sys.stdout.flush()
-                # Try simpler MeshAdapt algorithm as fallback
-                gmsh.option.setNumber("Mesh.Algorithm", 1)  # MeshAdapt
-                gmsh.model.mesh.generate(2)
-
-            # Dump gmsh log (helps identify tiny edges/faces or repeated refinement)
-            try:
-                log_lines = gmsh.logger.get()
-                if log_lines:
-                    print("--- Gmsh log (most recent) ---")
-                    for line in log_lines[-400:]:  # limit output
-                        print(line)
-                    print("--- End Gmsh log ---")
-                    sys.stdout.flush()
-            except Exception:
-                pass
-            
-            # Get mesh statistics
-            num_nodes = len(gmsh.model.mesh.getNodes()[0])
-            num_triangles = len(gmsh.model.mesh.getElementsByType(2)[0])
-            
-            print(f"✓ Mesh generated: {num_triangles} triangles, {num_nodes} nodes")
-            sys.stdout.flush()
-            
-            # Save STL
-            stl_filename, _ = QFileDialog.getSaveFileName(
-                self, "Save STL Mesh",
-                "waverider_mesh.stl",
-                "STL files (*.stl);;All files (*)"
+            import gmsh  # noqa: F401
+        except ImportError:
+            reply = QMessageBox.question(
+                self, "Gmsh not installed",
+                "Gmsh is required for high-quality mesh generation.\n\n"
+                "Install with: pip install gmsh\n\n"
+                "Continue with lower-quality CadQuery meshing instead?",
+                QMessageBox.Yes | QMessageBox.No
             )
-            
-            if not stl_filename:
-                try:
-                    gmsh.logger.stop()
-                except Exception:
-                    pass
-                gmsh.finalize()
-                self.mesh_gen_info.setText("Mesh generation cancelled")
-                self.mesh_gen_info.setStyleSheet("color: #888888; font-style: italic;")
+            if reply == QMessageBox.No:
                 return
-            
-            print(f"Saving STL to: {stl_filename}")
-            sys.stdout.flush()
-            
-            gmsh.write(stl_filename)
+            else:
+                self.generate_stl_mesh_cadquery()
+                return
 
-            # Stop logger before finalizing
-            try:
-                gmsh.logger.stop()
-            except Exception:
-                pass
+        # Ask for save path upfront (before starting the thread)
+        stl_filename, _ = QFileDialog.getSaveFileName(
+            self, "Save STL Mesh",
+            "waverider_mesh.stl",
+            "STL files (*.stl);;All files (*)"
+        )
+        if not stl_filename:
+            return
 
-            gmsh.finalize()
+        min_size = self.mesh_min_spin.value()
+        max_size = self.mesh_max_spin.value()
 
-            # If geometry was in mm, scale STL vertices to meters
-            if step_scale < 1:
-                try:
-                    from stl import mesh as stl_mesh
-                    m = stl_mesh.Mesh.from_file(stl_filename)
-                    m.vectors *= step_scale
-                    m.save(stl_filename)
-                    print(f"[Gmsh] Scaled STL output by {step_scale} (mm → m)")
-                    sys.stdout.flush()
-                except Exception as scale_err:
-                    print(f"[Gmsh] Warning: could not scale STL: {scale_err}")
+        # Switch button to cancel mode
+        self._gmsh_btn_text = self.generate_mesh_btn.text()
+        self._gmsh_btn_style = self.generate_mesh_btn.styleSheet()
+        self.generate_mesh_btn.setText("Cancel Mesh Generation")
+        self.generate_mesh_btn.setStyleSheet(
+            "QPushButton { background-color: #EF4444; color: white; "
+            "font-weight: bold; padding: 8px; } "
+            "QPushButton:hover { background-color: #DC2626; }"
+        )
+        self.generate_mesh_btn.clicked.disconnect()
+        self.generate_mesh_btn.clicked.connect(self._cancel_gmsh)
 
-            # Store STL file path
-            self.last_stl_file = stl_filename
-            
-            # Get file size
-            file_size_kb = os.path.getsize(stl_filename) / 1024
-            
-            print(f"✓ STL saved: {file_size_kb:.1f} KB")
-            print(f"{'='*60}\n")
-            sys.stdout.flush()
-            
-            # Update UI
-            self.mesh_gen_info.setText(
-                f"✓ Mesh generated: {num_triangles} triangles, {file_size_kb:.1f} KB"
-            )
-            self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
-            
-            # Update button states and auto A_ref
-            self._update_aero_tab_state()
-            self._auto_aref_from_mesh()
+        self.mesh_gen_info.setText("Starting Gmsh...")
+        self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
 
-            # Update geometry status
-            self.aero_geo_status.setText("Mesh generated — ready to analyze")
-            self.aero_geo_status.setStyleSheet("color: #4ADE80;")
+        # Launch worker thread
+        self._gmsh_worker = GmshWorker(
+            self.imported_step_path, stl_filename, min_size, max_size)
+        self._gmsh_worker.progress.connect(self._on_gmsh_progress)
+        self._gmsh_worker.finished.connect(self._on_gmsh_finished)
+        self._gmsh_worker.error.connect(self._on_gmsh_error)
+        self._gmsh_worker.start()
 
-            # Show success message
-            QMessageBox.information(
-                self, "Mesh Generated",
-                f"High-quality mesh generated successfully!\n\n"
-                f"Triangles: {num_triangles}\n"
-                f"Nodes: {num_nodes}\n"
-                f"File size: {file_size_kb:.1f} KB\n"
-                f"Saved to: {stl_filename}\n\n"
-                f"You can now preview the mesh or run analysis."
-            )
-            
-        except Exception as e:
-            # Ensure gmsh is finalized if it was initialized
-            try:
-                try:
-                    gmsh.logger.stop()
-                except Exception:
-                    pass
-                gmsh.finalize()
-            except Exception:
-                pass
-            self.mesh_gen_info.setText(f"✗ Mesh generation failed")
+    def _cancel_gmsh(self):
+        """Cancel a running Gmsh mesh generation."""
+        if hasattr(self, '_gmsh_worker') and self._gmsh_worker is not None:
+            self._gmsh_worker.cancel()
+            self.mesh_gen_info.setText("Cancelling...")
+            self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
+
+    def _restore_gmsh_button(self):
+        """Restore the generate button after Gmsh completes or fails."""
+        try:
+            self.generate_mesh_btn.clicked.disconnect()
+        except Exception:
+            pass
+        self.generate_mesh_btn.clicked.connect(self.generate_stl_mesh)
+        self.generate_mesh_btn.setText(
+            getattr(self, '_gmsh_btn_text', "Generate STL Mesh with Gmsh"))
+        self.generate_mesh_btn.setStyleSheet(
+            getattr(self, '_gmsh_btn_style',
+                    "QPushButton { background-color: #F59E0B; color: #0A0A0A; "
+                    "font-weight: bold; padding: 8px; } "
+                    "QPushButton:hover { background-color: #D97706; }"))
+        self._gmsh_worker = None
+
+    def _on_gmsh_progress(self, msg):
+        """Update GUI label from Gmsh worker progress signal."""
+        self.mesh_gen_info.setText(msg)
+        self.mesh_gen_info.setStyleSheet("color: #F59E0B;")
+
+    def _on_gmsh_finished(self, result):
+        """Handle successful Gmsh mesh generation."""
+        self._restore_gmsh_button()
+
+        stl_path = result['stl_path']
+        num_triangles = result['num_triangles']
+        num_nodes = result['num_nodes']
+        file_size_kb = result['file_size_kb']
+
+        self.last_stl_file = stl_path
+
+        self.mesh_gen_info.setText(
+            f"\u2713 Mesh generated: {num_triangles} triangles, "
+            f"{file_size_kb:.1f} KB"
+        )
+        self.mesh_gen_info.setStyleSheet("color: #4ADE80;")
+
+        self._update_aero_tab_state()
+        self._auto_aref_from_mesh()
+
+        self.aero_geo_status.setText("Mesh generated \u2014 ready to analyze")
+        self.aero_geo_status.setStyleSheet("color: #4ADE80;")
+
+        QMessageBox.information(
+            self, "Mesh Generated",
+            f"High-quality mesh generated successfully!\n\n"
+            f"Triangles: {num_triangles}\n"
+            f"Nodes: {num_nodes}\n"
+            f"File size: {file_size_kb:.1f} KB\n"
+            f"Saved to: {stl_path}\n\n"
+            f"You can now preview the mesh or run analysis."
+        )
+
+    def _on_gmsh_error(self, error_msg):
+        """Handle Gmsh mesh generation failure."""
+        self._restore_gmsh_button()
+
+        if "cancelled" in error_msg.lower():
+            self.mesh_gen_info.setText("Mesh generation cancelled")
+            self.mesh_gen_info.setStyleSheet("color: #888888; font-style: italic;")
+        else:
+            self.mesh_gen_info.setText("\u2717 Mesh generation failed")
             self.mesh_gen_info.setStyleSheet("color: #EF4444;")
             QMessageBox.critical(
                 self, "Mesh Generation Failed",
-                f"Could not generate mesh:\n\n{str(e)}"
+                f"Could not generate mesh:\n\n{error_msg}"
             )
-            print(f"\n✗ Mesh generation error: {str(e)}\n")
-            sys.stdout.flush()
     
     def generate_stl_mesh_cadquery(self):
         """Fallback: Generate STL using CadQuery (lower quality)"""
