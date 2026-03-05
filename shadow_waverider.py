@@ -716,6 +716,24 @@ class ShadowWaverider:
         x_positions = self.leading_edge[:, 0]  # internal X = span
         x_max = np.max(np.abs(x_positions))
 
+        # Pre-compute TE baseline Y (before dome/loft) for each LE station.
+        # Stored for overlay visualization so it can show offsets relative
+        # to the original surface, not the already-modified surface.
+        te_baseline_sf = []
+        te_baseline_y = []
+        for le_pt in self.leading_edge:
+            x_s, y_s, z_s = le_pt
+            sf = abs(x_s) / x_max if x_max > 1e-10 else 0.0
+            if A == 0.0:
+                y_te = y_s
+            else:
+                dz = self.z_end - z_s
+                y_te = y_s + abs(y_s) * (np.exp((A / 100.0) * dz) - 1.0)
+            te_baseline_sf.append(sf)
+            te_baseline_y.append(y_te)
+        self._te_baseline_sf = np.array(te_baseline_sf)
+        self._te_baseline_y = np.array(te_baseline_y)
+
         for i, le_point in enumerate(self.leading_edge):
             x_start, y_start, z_start = le_point
 
