@@ -641,8 +641,15 @@ class GmshWorker(QThread):
             print(f"Max element size:  {self.max_size:.5f} m")
             sys.stdout.flush()
 
-            # Initialize Gmsh
-            gmsh.initialize()
+            # Initialize Gmsh — patch signal.signal to avoid
+            # "signal only works in main thread" error in QThread
+            import signal
+            _orig_signal = signal.signal
+            try:
+                signal.signal = lambda *args, **kwargs: signal.SIG_DFL
+                gmsh.initialize()
+            finally:
+                signal.signal = _orig_signal
             gmsh.option.setNumber("General.Terminal", 1)
             gmsh.option.setNumber("General.Verbosity", 5)
             gmsh.logger.start()
