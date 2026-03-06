@@ -181,6 +181,14 @@ except ImportError as e:
     print(f"Cone waverider tab not available: {e}")
     CONE_WAVERIDER_AVAILABLE = False
     
+# Import planar waverider tab
+try:
+    from planar_waverider_tab import PlanarWaveriderTab
+    PLANAR_WAVERIDER_AVAILABLE = True
+except ImportError as e:
+    print(f"Planar waverider tab not available: {e}")
+    PLANAR_WAVERIDER_AVAILABLE = False
+
 # Import Claude assistant tab
 try:
     from claude_assistant_tab import ClaudeAssistantTab
@@ -2400,6 +2408,13 @@ class WaveriderGUI(QMainWindow):
             self.shadow_waverider_tab = ShadowWaveriderTab(parent=self)
             self._cone_tab_index = self.tab_widget.count()
             self.tab_widget.addTab(self.shadow_waverider_tab, "Cone-derived Waverider")
+
+        # ── Tab 5: Planar Waverider (Jessen et al. 2026) ──
+        self._planar_tab_index = -1
+        if PLANAR_WAVERIDER_AVAILABLE:
+            self.planar_waverider_tab = PlanarWaveriderTab(parent=self)
+            self._planar_tab_index = self.tab_widget.count()
+            self.tab_widget.addTab(self.planar_waverider_tab, "Planar Waverider")
 
         layout.addWidget(self.tab_widget)
         return panel
