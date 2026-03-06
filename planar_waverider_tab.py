@@ -37,6 +37,112 @@ except ImportError:
 #  Background worker for geometry generation + aero analysis
 # ──────────────────────────────────────────────────────────────────────
 
+class StepExportWorker(QThread):
+    """Exports STEP file in a background thread to avoid freezing the GUI."""
+
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(str)   # filename
+    error = pyqtSignal(str)
+
+    def __init__(self, waverider, filename, parent=None):
+        super().__init__(parent)
+        self.waverider = waverider
+        self.filename = filename
+
+    def run(self):
+        try:
+            import cadquery as cq
+            from cadquery import exporters
+
+            wr = self.waverider
+            scale = 1000.0  # m -> mm
+            ny, nx = wr.upper_surface_x.shape
+
+            # Subsample: ~15 streamwise sections, ~25 spanwise points
+            step_i = max(1, nx // 15)
+            step_j = max(1, ny // 25)
+
+            self.progress.emit("Building cross-sections...")
+            wires = []
+            i_indices = list(range(0, nx, step_i))
+            if (nx - 1) not in i_indices:
+                i_indices.append(nx - 1)
+
+            for idx, i in enumerate(i_indices):
+                self.progress.emit(
+                    f"Section {idx + 1}/{len(i_indices)}...")
+
+                pts = []
+                # Upper surface (subsampled)
+                for j in range(0, ny, step_j):
+                    pts.append(cq.Vector(
+                        wr.upper_surface_x[j, i] * scale,
+                        wr.upper_surface_y[j, i] * scale,
+                        wr.upper_surface_z[j, i] * scale,
+                    ))
+                # Ensure last spanwise point included
+                if (ny - 1) % step_j != 0:
+                    pts.append(cq.Vector(
+                        wr.upper_surface_x[ny - 1, i] * scale,
+                        wr.upper_surface_y[ny - 1, i] * scale,
+                        wr.upper_surface_z[ny - 1, i] * scale,
+                    ))
+
+                # Lower surface reversed (subsampled)
+                j_indices_rev = list(range(ny - 1, -1, -step_j))
+                if 0 not in j_indices_rev:
+                    j_indices_rev.append(0)
+                for j in j_indices_rev:
+                    lv = cq.Vector(
+                        wr.lower_surface_x[j, i] * scale,
+                        wr.lower_surface_y[j, i] * scale,
+                        wr.lower_surface_z[j, i] * scale,
+                    )
+                    # Skip if coincident with last upper point
+                    if pts and lv.sub(pts[-1]).Length < 1e-4:
+                        continue
+                    pts.append(lv)
+
+                # Close loop
+                if pts and pts[0].sub(pts[-1]).Length > 1e-4:
+                    pts.append(pts[0])
+
+                # Skip degenerate sections (near LE tip where chord ~ 0)
+                if len(pts) < 4:
+                    continue
+
+                # Build wire from spline
+                try:
+                    spline = cq.Edge.makeSpline(pts, periodic=True)
+                    wire = cq.Wire.assembleEdges([spline])
+                except Exception:
+                    # Fallback: line segments
+                    edges = []
+                    for k in range(len(pts) - 1):
+                        if pts[k].sub(pts[k + 1]).Length > 1e-4:
+                            edges.append(cq.Edge.makeLine(pts[k], pts[k + 1]))
+                    if len(edges) >= 3:
+                        wire = cq.Wire.assembleEdges(edges)
+                    else:
+                        continue
+                wires.append(wire)
+
+            if len(wires) < 2:
+                self.error.emit("Not enough valid cross-sections for loft")
+                return
+
+            self.progress.emit(f"Lofting {len(wires)} sections...")
+            solid = cq.Solid.makeLoft(wires)
+            compound = cq.Workplane("XY").newObject([solid])
+
+            self.progress.emit("Writing STEP file...")
+            exporters.export(compound, self.filename)
+            self.finished.emit(self.filename)
+
+        except Exception as e:
+            self.error.emit(f"{e}\n{traceback.format_exc()}")
+
+
 class PlanarWaveriderWorker(QThread):
     """Generates waverider geometry and runs aero analysis in a thread."""
 
@@ -897,72 +1003,29 @@ class PlanarWaveriderTab(QWidget):
         if not CADQUERY_AVAILABLE:
             QMessageBox.warning(self, "Warning", "CadQuery not available!")
             return
+        if hasattr(self, '_step_worker') and self._step_worker is not None \
+                and self._step_worker.isRunning():
+            QMessageBox.warning(self, "Busy", "STEP export already running.")
+            return
         fn, _ = QFileDialog.getSaveFileName(
             self, "Save STEP", "planar_waverider.step", "STEP (*.step)")
         if not fn:
             return
-        try:
-            self._export_step_cq(fn)
-            QMessageBox.information(self, "Success", f"Saved: {fn}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error",
-                                 f"{e}\n{traceback.format_exc()}")
 
-    def _export_step_cq(self, filename):
-        """Export planar waverider as STEP solid via CadQuery.
+        self.progress_label.setText("Exporting STEP...")
+        self._step_worker = StepExportWorker(self.waverider, fn)
+        self._step_worker.progress.connect(self._on_progress)
+        self._step_worker.finished.connect(self._on_step_done)
+        self._step_worker.error.connect(self._on_step_error)
+        self._step_worker.start()
 
-        Builds a lofted solid from cross-section splines at each
-        streamwise station, then exports.
-        """
-        import cadquery as cq
-        from cadquery import exporters
+    def _on_step_done(self, filename):
+        self.progress_label.setText("STEP export done")
+        QMessageBox.information(self, "Success", f"Saved: {filename}")
 
-        wr = self.waverider
-        scale = 1000.0  # m -> mm
-
-        ny, nx = wr.upper_surface_x.shape
-
-        # Build cross-section wires at each streamwise station
-        wires = []
-        for i in range(0, nx, max(1, nx // 30)):  # ~30 sections
-            pts_upper = []
-            pts_lower = []
-            for j in range(ny):
-                xu = wr.upper_surface_x[j, i] * scale
-                yu = wr.upper_surface_y[j, i] * scale
-                zu = wr.upper_surface_z[j, i] * scale
-                pts_upper.append((xu, yu, zu))
-
-                xl = wr.lower_surface_x[j, i] * scale
-                yl = wr.lower_surface_y[j, i] * scale
-                zl = wr.lower_surface_z[j, i] * scale
-                pts_lower.append((xl, yl, zl))
-
-            # Build closed cross-section: upper forward, lower reversed
-            section_pts = pts_upper + pts_lower[::-1]
-            # Close the loop
-            if section_pts[0] != section_pts[-1]:
-                section_pts.append(section_pts[0])
-
-            # Make a wire from the cross-section points
-            edges = []
-            for k in range(len(section_pts) - 1):
-                p1 = cq.Vector(*section_pts[k])
-                p2 = cq.Vector(*section_pts[k + 1])
-                if p1.sub(p2).Length > 1e-6:
-                    edges.append(cq.Edge.makeLine(p1, p2))
-
-            if len(edges) >= 3:
-                wire = cq.Wire.assembleEdges(edges)
-                wires.append(wire)
-
-        if len(wires) < 2:
-            raise RuntimeError("Not enough cross-sections for loft")
-
-        # Loft through cross-section wires
-        solid = cq.Solid.makeLoft(wires)
-        compound = cq.Workplane("XY").newObject([solid])
-        exporters.export(compound, filename)
+    def _on_step_error(self, msg):
+        self.progress_label.setText("STEP export failed")
+        QMessageBox.critical(self, "Error", msg)
 
     def _send_to_aero_tab(self):
         """Send mesh data to the main aero analysis tab."""
