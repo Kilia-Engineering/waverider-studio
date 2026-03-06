@@ -38,7 +38,7 @@ except ImportError:
 # ──────────────────────────────────────────────────────────────────────
 
 class StepExportWorker(QThread):
-    """Exports STEP file in a background thread to avoid freezing the GUI."""
+    """Exports STEP file in a background thread using B-spline surfaces."""
 
     progress = pyqtSignal(str)
     finished = pyqtSignal(str)   # filename
@@ -53,89 +53,93 @@ class StepExportWorker(QThread):
         try:
             import cadquery as cq
             from cadquery import exporters
+            from waverider_generator.cad_export import (
+                _make_bspline_face, _sew_faces_to_solid,
+            )
 
             wr = self.waverider
             scale = 1000.0  # m -> mm
             ny, nx = wr.upper_surface_x.shape
 
-            # Subsample: ~15 streamwise sections, ~25 spanwise points
-            step_i = max(1, nx // 15)
-            step_j = max(1, ny // 25)
+            # Subsample to keep OCCT happy (~20 spanwise, ~25 streamwise)
+            step_j = max(1, ny // 20)
+            step_i = max(1, nx // 25)
+            j_idx = list(range(0, ny, step_j))
+            if (ny - 1) not in j_idx:
+                j_idx.append(ny - 1)
+            i_idx = list(range(0, nx, step_i))
+            if (nx - 1) not in i_idx:
+                i_idx.append(nx - 1)
 
-            self.progress.emit("Building cross-sections...")
-            wires = []
-            i_indices = list(range(0, nx, step_i))
-            if (nx - 1) not in i_indices:
-                i_indices.append(nx - 1)
+            # Build upper surface as list of streamlines
+            # Each streamline: one spanwise station, going LE→TE
+            self.progress.emit("Building upper surface...")
+            upper_streams = []
+            for j in j_idx:
+                pts = np.column_stack([
+                    wr.upper_surface_x[j, i_idx] * scale,
+                    wr.upper_surface_y[j, i_idx] * scale,
+                    wr.upper_surface_z[j, i_idx] * scale,
+                ])
+                upper_streams.append(pts)
 
-            for idx, i in enumerate(i_indices):
-                self.progress.emit(
-                    f"Section {idx + 1}/{len(i_indices)}...")
+            # Build lower surface
+            self.progress.emit("Building lower surface...")
+            lower_streams = []
+            for j in j_idx:
+                pts = np.column_stack([
+                    wr.lower_surface_x[j, i_idx] * scale,
+                    wr.lower_surface_y[j, i_idx] * scale,
+                    wr.lower_surface_z[j, i_idx] * scale,
+                ])
+                lower_streams.append(pts)
 
-                pts = []
-                # Upper surface (subsampled)
-                for j in range(0, ny, step_j):
-                    pts.append(cq.Vector(
-                        wr.upper_surface_x[j, i] * scale,
-                        wr.upper_surface_y[j, i] * scale,
-                        wr.upper_surface_z[j, i] * scale,
-                    ))
-                # Ensure last spanwise point included
-                if (ny - 1) % step_j != 0:
-                    pts.append(cq.Vector(
-                        wr.upper_surface_x[ny - 1, i] * scale,
-                        wr.upper_surface_y[ny - 1, i] * scale,
-                        wr.upper_surface_z[ny - 1, i] * scale,
-                    ))
+            self.progress.emit("Fitting B-spline surfaces...")
+            upper_faces = _make_bspline_face(upper_streams)
+            lower_faces = _make_bspline_face(lower_streams)
 
-                # Lower surface reversed (subsampled)
-                j_indices_rev = list(range(ny - 1, -1, -step_j))
-                if 0 not in j_indices_rev:
-                    j_indices_rev.append(0)
-                for j in j_indices_rev:
-                    lv = cq.Vector(
-                        wr.lower_surface_x[j, i] * scale,
-                        wr.lower_surface_y[j, i] * scale,
-                        wr.lower_surface_z[j, i] * scale,
-                    )
-                    # Skip if coincident with last upper point
-                    if pts and lv.sub(pts[-1]).Length < 1e-4:
-                        continue
-                    pts.append(lv)
+            # Base face (trailing edge, x = L)
+            self.progress.emit("Building base face...")
+            n_base = len(j_idx)
+            base_upper = np.zeros((n_base, 3))
+            base_lower = np.zeros((n_base, 3))
+            for k, j in enumerate(j_idx):
+                base_upper[k] = [
+                    wr.upper_surface_x[j, -1] * scale,
+                    wr.upper_surface_y[j, -1] * scale,
+                    wr.upper_surface_z[j, -1] * scale,
+                ]
+                base_lower[k] = [
+                    wr.lower_surface_x[j, -1] * scale,
+                    wr.lower_surface_y[j, -1] * scale,
+                    wr.lower_surface_z[j, -1] * scale,
+                ]
 
-                # Close loop
-                if pts and pts[0].sub(pts[-1]).Length > 1e-4:
-                    pts.append(pts[0])
+            # Base face as a ruled surface between upper TE and lower TE
+            from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+            from OCP.TColgp import TColgp_Array2OfPnt
+            from OCP.gp import gp_Pnt
+            from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
 
-                # Skip degenerate sections (near LE tip where chord ~ 0)
-                if len(pts) < 4:
-                    continue
+            base_grid = TColgp_Array2OfPnt(1, n_base, 1, 2)
+            for k in range(n_base):
+                base_grid.SetValue(k + 1, 1,
+                                   gp_Pnt(*base_upper[k].tolist()))
+                base_grid.SetValue(k + 1, 2,
+                                   gp_Pnt(*base_lower[k].tolist()))
+            approx = GeomAPI_PointsToBSplineSurface()
+            approx.Interpolate(base_grid)
+            face_builder = BRepBuilderAPI_MakeFace(approx.Surface(), 1e-3)
+            face_builder.Build()
+            base_face = cq.Face(face_builder.Face())
 
-                # Build wire from spline
-                try:
-                    spline = cq.Edge.makeSpline(pts, periodic=True)
-                    wire = cq.Wire.assembleEdges([spline])
-                except Exception:
-                    # Fallback: line segments
-                    edges = []
-                    for k in range(len(pts) - 1):
-                        if pts[k].sub(pts[k + 1]).Length > 1e-4:
-                            edges.append(cq.Edge.makeLine(pts[k], pts[k + 1]))
-                    if len(edges) >= 3:
-                        wire = cq.Wire.assembleEdges(edges)
-                    else:
-                        continue
-                wires.append(wire)
-
-            if len(wires) < 2:
-                self.error.emit("Not enough valid cross-sections for loft")
-                return
-
-            self.progress.emit(f"Lofting {len(wires)} sections...")
-            solid = cq.Solid.makeLoft(wires)
-            compound = cq.Workplane("XY").newObject([solid])
+            # Sew into solid
+            self.progress.emit("Sewing faces into solid...")
+            all_faces = upper_faces + lower_faces + [base_face]
+            solid = _sew_faces_to_solid(all_faces, tolerance=0.1 * scale)
 
             self.progress.emit("Writing STEP file...")
+            compound = cq.Workplane("XY").newObject([solid])
             exporters.export(compound, self.filename)
             self.finished.emit(self.filename)
 
