@@ -100,19 +100,23 @@ class PlanarWaveriderCanvas(FigureCanvas):
 
         # Plot upper surface
         if show_upper:
-            self.ax.plot_surface(
+            surf_u = self.ax.plot_surface(
                 wr.upper_surface_x, wr.upper_surface_y, wr.upper_surface_z,
                 color='#4488CC', alpha=0.5, edgecolor='#335577',
                 linewidth=0.2, shade=True,
             )
+            surf_u._facecolors2d = surf_u._facecolor3d
+            surf_u._edgecolors2d = surf_u._edgecolor3d
 
         # Plot lower surface
         if show_lower:
-            self.ax.plot_surface(
+            surf_l = self.ax.plot_surface(
                 wr.lower_surface_x, wr.lower_surface_y, wr.lower_surface_z,
                 color='#CC6644', alpha=0.6, edgecolor='#884422',
                 linewidth=0.2, shade=True,
             )
+            surf_l._facecolors2d = surf_l._facecolor3d
+            surf_l._edgecolors2d = surf_l._edgecolor3d
 
         # Plot leading edge
         if show_le and wr.leading_edge is not None:
@@ -125,6 +129,21 @@ class PlanarWaveriderCanvas(FigureCanvas):
         self.ax.set_ylabel('Y (spanwise)', color='#888888', fontsize=8)
         self.ax.set_zlabel('Z (vertical)', color='#888888', fontsize=8)
         self.ax.tick_params(colors='#666666', labelsize=7)
+
+        # Legend (proxy artists for surfaces)
+        import matplotlib.patches as mpatches
+        handles = []
+        if show_upper:
+            handles.append(mpatches.Patch(color='#4488CC', label='Upper Surface'))
+        if show_lower:
+            handles.append(mpatches.Patch(color='#CC6644', label='Lower Surface'))
+        if show_le:
+            handles.append(self.ax.plot([], [], color='#FFAA00',
+                                        linewidth=2, label='Leading Edge')[0])
+        if handles:
+            self.ax.legend(handles=handles, loc='upper right', fontsize=7,
+                           facecolor='#2A2A2A', edgecolor='#555555',
+                           labelcolor='#CCCCCC')
 
         # Equal aspect ratio
         self._set_axes_equal()
@@ -146,25 +165,44 @@ class PlanarWaveriderCanvas(FigureCanvas):
         ax.set_zlim3d([centers[2] - max_range, centers[2] + max_range])
 
     def _draw_info(self, wr, res):
-        """Draw text info overlay on the figure."""
+        """Draw text info overlay on the figure (matches cone-derived style)."""
         # Remove old text annotations
         for txt in self.fig.texts:
             txt.remove()
 
-        lines = [
-            f"M = {res.get('M_inf', 0):.2f}   Alt = {res.get('altitude_km', 0):.0f} km",
-            f"L/D = {res.get('L_over_D', 0):.3f}",
-            f"CL = {res.get('CL', 0):.5f}   CD = {res.get('CD', 0):.5f}",
-            f"Wedge = {wr.wedge_angle_deg:.3f} deg",
-            f"S_ref = {res.get('S_ref', 0):.4f} m2",
-        ]
-        text = '\n'.join(lines)
+        bw, bh = wr.base_dimensions()
+        vol = wr.volume()
+        S_ref = res.get('S_ref', 0)
+        # Volumetric efficiency: V / S_ref^(3/2)
+        vol_eff = vol / S_ref**1.5 if S_ref > 1e-8 else 0.0
+
+        info = (
+            "WAVERIDER INFO\n"
+            f"  Method          Planar (Jessen 2026)\n"
+            f"  Mach            {res.get('M_inf', 0):.2f}\n"
+            f"  Shock \u03b2         {wr.beta_deg:.2f}\u00b0\n"
+            f"  Wedge \u03b8         {wr.wedge_angle_deg:.4f}\u00b0\n"
+            f"  Power-law n     {wr.n:.2f}\n"
+            f"  Epsilon         {wr.epsilon:.3f}\n"
+            f"  p1, p2, p3      {wr.p1:.2f}, {wr.p2:.2f}, {wr.p3:.2f}\n"
+            f"  LE Radius       {wr.R:.4f} m\n"
+            f"  Length           {wr.length:.4f} m\n"
+            f"  Width            {wr.width:.4f} m\n"
+            f"  Planform Area    {S_ref:.4f} m\u00b2\n"
+            f"  Volume           {vol:.6f} m\u00b3\n"
+            f"  Vol Efficiency   {vol_eff:.6f}\n"
+            f"  Base             {bw:.4f} x {bh:.4f} m\n"
+            f"  L/D              {res.get('L_over_D', 0):.4f}\n"
+            f"  CL               {res.get('CL', 0):.6f}\n"
+            f"  CD               {res.get('CD', 0):.6f}"
+        )
+
         self.fig.text(
-            0.02, 0.97, text, transform=self.fig.transFigure,
+            0.02, 0.97, info, transform=self.fig.transFigure,
             fontsize=8, color='#CCCCCC', family='monospace',
             verticalalignment='top',
             bbox=dict(boxstyle='round,pad=0.4', facecolor='#1A1A1A',
-                      edgecolor='#444444', alpha=0.85),
+                      edgecolor='#FF8800', alpha=0.85),
         )
 
 
@@ -864,13 +902,67 @@ class PlanarWaveriderTab(QWidget):
         if not fn:
             return
         try:
-            verts, faces = self.waverider.get_mesh()
-            # Scale to mm for CAD convention
-            verts_mm = verts * 1000.0
-            to_CAD(verts_mm, faces, fn)
+            self._export_step_cq(fn)
             QMessageBox.information(self, "Success", f"Saved: {fn}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
+            QMessageBox.critical(self, "Error",
+                                 f"{e}\n{traceback.format_exc()}")
+
+    def _export_step_cq(self, filename):
+        """Export planar waverider as STEP solid via CadQuery.
+
+        Builds a lofted solid from cross-section splines at each
+        streamwise station, then exports.
+        """
+        import cadquery as cq
+        from cadquery import exporters
+
+        wr = self.waverider
+        scale = 1000.0  # m -> mm
+
+        ny, nx = wr.upper_surface_x.shape
+
+        # Build cross-section wires at each streamwise station
+        wires = []
+        for i in range(0, nx, max(1, nx // 30)):  # ~30 sections
+            pts_upper = []
+            pts_lower = []
+            for j in range(ny):
+                xu = wr.upper_surface_x[j, i] * scale
+                yu = wr.upper_surface_y[j, i] * scale
+                zu = wr.upper_surface_z[j, i] * scale
+                pts_upper.append((xu, yu, zu))
+
+                xl = wr.lower_surface_x[j, i] * scale
+                yl = wr.lower_surface_y[j, i] * scale
+                zl = wr.lower_surface_z[j, i] * scale
+                pts_lower.append((xl, yl, zl))
+
+            # Build closed cross-section: upper forward, lower reversed
+            section_pts = pts_upper + pts_lower[::-1]
+            # Close the loop
+            if section_pts[0] != section_pts[-1]:
+                section_pts.append(section_pts[0])
+
+            # Make a wire from the cross-section points
+            edges = []
+            for k in range(len(section_pts) - 1):
+                p1 = cq.Vector(*section_pts[k])
+                p2 = cq.Vector(*section_pts[k + 1])
+                if p1.sub(p2).Length > 1e-6:
+                    edges.append(cq.Edge.makeLine(p1, p2))
+
+            if len(edges) >= 3:
+                wire = cq.Wire.assembleEdges(edges)
+                wires.append(wire)
+
+        if len(wires) < 2:
+            raise RuntimeError("Not enough cross-sections for loft")
+
+        # Loft through cross-section wires
+        solid = cq.Solid.makeLoft(wires)
+        compound = cq.Workplane("XY").newObject([solid])
+        exporters.export(compound, filename)
 
     def _send_to_aero_tab(self):
         """Send mesh data to the main aero analysis tab."""
