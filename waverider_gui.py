@@ -1285,6 +1285,9 @@ class WaveriderGUI(QMainWindow):
         # Add cone-derived waverider params if tab exists
         if hasattr(self, 'shadow_waverider_tab'):
             data['cone_waverider'] = self.shadow_waverider_tab.get_params_dict()
+        # Add planar waverider params if tab exists
+        if hasattr(self, 'planar_waverider_tab'):
+            data['planar_waverider'] = self.planar_waverider_tab.get_params_dict()
         with open(path, 'w') as f:
             json.dump(data, f, indent=2)
 
@@ -1296,6 +1299,8 @@ class WaveriderGUI(QMainWindow):
             self._set_oc_params_dict(data['oc_waverider'])
         if 'cone_waverider' in data and hasattr(self, 'shadow_waverider_tab'):
             self.shadow_waverider_tab.set_params_dict(data['cone_waverider'])
+        if 'planar_waverider' in data and hasattr(self, 'planar_waverider_tab'):
+            self.planar_waverider_tab.set_params_dict(data['planar_waverider'])
 
     def _save_parameters(self):
         """Save parameters to a user-chosen JSON file."""

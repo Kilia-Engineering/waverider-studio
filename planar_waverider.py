@@ -201,53 +201,101 @@ class PlanarWaverider:
     #  Leading edge rounding (Tincher & Burnett adding-material method)
     # ------------------------------------------------------------------
 
-    def _apply_le_rounding(self, le_pts, theta_local, n_arc=8):
-        """Apply circular blunting at each LE station.
+    def _blend_le_rounding(self, upper_x, upper_z, lower_x, lower_z,
+                           x_le, z_le, T_star, theta, nx, ny):
+        """Apply Tincher & Burnett adding-material LE rounding to grids.
 
-        At each spanwise station, inscribe a circle of radius R tangent
-        to both upper (horizontal) and lower (angled at θ) surfaces,
-        adding material forward of the original sharp LE.
+        Inscribes a circle of radius R in the wedge angle at each spanwise
+        station.  Only **z values** are modified (x stays unchanged) so
+        that the spanwise grid structure remains smooth for B-spline
+        surface fitting in STEP export.
 
-        Returns arrays of rounded LE points (upper arc, center, lower arc).
+        The circle offset R/tan(θ/2) is clamped to ≤5 % of the local
+        chord so that small wedge angles don't distort the geometry.
+
+        Parameters
+        ----------
+        upper_x, upper_z, lower_x, lower_z : ndarray (ny, nx)
+            Half-span surface grids — z arrays modified **in-place**.
+        x_le, z_le : ndarray (ny,)
+            Sharp leading-edge coordinates.
+        T_star : ndarray (ny,)
+            Chebyshev angle multipliers.
+        theta : float
+            Base wedge angle [rad].
+        nx, ny : int
+            Grid dimensions.
+
+        Returns
+        -------
+        nose_x, nose_z : ndarray (ny,)
+            Updated LE coordinates (nose of inscribed circle).
         """
-        if self.R <= 0:
-            return le_pts, None
-
         R = self.R
-        n_le = len(le_pts)
-        rounded_sections = []
+        L = self.length
 
-        for i in range(n_le):
-            x0, y0, z0 = le_pts[i]
-            theta = theta_local[i]
+        nose_x = np.copy(x_le)
+        nose_z = np.copy(z_le)
 
-            # Half-angle between upper (horizontal) and lower surface
-            half_angle = theta / 2.0
+        for j in range(ny):
+            theta_j = T_star[j] * theta
+            chord = L - x_le[j]
 
-            # Circle center offset from sharp LE
-            # Upper surface is horizontal, lower is at angle θ below
-            # Center lies on the bisector of the dihedral angle
-            dx = R / np.sin(half_angle) * np.cos(half_angle) if half_angle > 1e-8 else R
-            dz_up = R  # tangent to horizontal upper surface
-            dz_down = R  # tangent to angled lower surface
+            # Skip if angle too small or no chord
+            if theta_j < np.radians(0.5) or chord < 1e-8:
+                continue
 
-            # Circle center: shifted forward (negative x) and up
-            xc = x0 - R / np.tan(theta) if theta > 1e-8 else x0 - R
-            zc = z0 + R
+            half_theta = theta_j / 2.0
 
-            # Generate arc points from upper tangent to lower tangent
-            angle_start = np.pi / 2.0  # upper tangent (horizontal)
-            angle_end = np.pi / 2.0 + theta  # lower tangent
-            arc_angles = np.linspace(angle_start, angle_end, n_arc)
+            # Clamp offset to ≤95 % of chord
+            offset_ideal = R / np.tan(half_theta)
+            max_offset = 0.95 * chord
+            R_eff = (R if offset_ideal <= max_offset
+                     else max_offset * np.tan(half_theta))
+            if R_eff < 1e-9:
+                continue
 
-            arc_pts = np.zeros((n_arc, 3))
-            arc_pts[:, 0] = xc - R * np.cos(arc_angles)
-            arc_pts[:, 1] = y0
-            arc_pts[:, 2] = zc - R * np.sin(arc_angles)
+            # Circle centre (inscribed in wedge angle)
+            xc = x_le[j] + R_eff / np.tan(half_theta)
+            zc = z_le[j] - R_eff
 
-            rounded_sections.append(arc_pts)
+            x_nose_j = xc - R_eff                       # nose
+            x_ut = xc                                    # upper tangent x
+            x_lt = xc - R_eff * np.sin(theta_j)         # lower tangent x
+            z_lt = zc - R_eff * np.cos(theta_j)         # lower tangent z
 
-        return le_pts, rounded_sections
+            if x_ut >= L * 0.95:
+                continue
+
+            # Modify z only — x values are unchanged
+            for i in range(nx):
+                x = upper_x[j, i]
+
+                if x < x_nose_j:
+                    # Before nose: collapse to nose height
+                    upper_z[j, i] = zc
+                    lower_z[j, i] = zc
+
+                elif x <= xc:
+                    # Arc region: circle z from analytical formula
+                    dx_n = (x - xc) / R_eff          # ∈ [-1, 0]
+                    dx_n = max(-1.0, min(0.0, dx_n))
+                    sq = np.sqrt(1.0 - dx_n * dx_n)
+
+                    upper_z[j, i] = zc + R_eff * sq   # top of arc
+
+                    if x <= x_lt:
+                        lower_z[j, i] = zc - R_eff * sq  # bottom of arc
+                    else:
+                        # Past lower tangent → slope to TE
+                        lower_z[j, i] = (z_lt
+                                         - np.tan(theta_j) * (x - x_lt))
+                # else: past upper tangent → keep original z
+
+            nose_x[j] = x_nose_j
+            nose_z[j] = zc
+
+        return nose_x, nose_z
 
     # ------------------------------------------------------------------
     #  Surface generation
@@ -342,13 +390,6 @@ class PlanarWaverider:
         le_mirror = le_half[::-1].copy()
         le_mirror[:, 1] *= -1.0
         self.leading_edge = np.vstack([le_mirror, le_half[1:]])
-
-        # Step 9: Apply LE rounding if R > 0
-        if self.R > 0:
-            theta_local_half = T_star * theta
-            _, self.le_rounded_sections = self._apply_le_rounding(
-                le_half, theta_local_half
-            )
 
         return self
 

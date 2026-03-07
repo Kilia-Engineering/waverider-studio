@@ -49,6 +49,114 @@ class StepExportWorker(QThread):
         self.waverider = waverider
         self.filename = filename
 
+    def _build_blunted_streams(self, wr, scale, y_positions, n_pts):
+        """Build upper and lower streamlines with embedded LE arc geometry.
+
+        Uses the Tincher & Burnett adding-material method: inscribe a circle
+        of radius R in the wedge angle at each spanwise station, then
+        parametrically sample the arc at high resolution and the downstream
+        flat/sloped surface at coarser resolution.
+
+        All geometry is computed analytically from the waverider parameters
+        so streamlines can be placed at arbitrary y positions (not limited
+        to grid indices).
+
+        Parameters
+        ----------
+        wr : PlanarWaverider
+        scale : float  (m → mm)
+        y_positions : ndarray  — spanwise y coordinates [m]
+        n_pts : int  — total streamwise points per streamline
+
+        Returns
+        -------
+        upper_streams, lower_streams : list of ndarray (n_pts, 3)
+        """
+        theta_base = np.radians(wr.wedge_angle_deg)
+        R = wr.R
+        L = wr.length
+
+        n_arc = 12      # points in the arc region
+        n_rest = n_pts - n_arc  # points from tangent to TE
+
+        upper_streams = []
+        lower_streams = []
+
+        for y_j in y_positions:
+            # Compute LE position analytically
+            x_le_j = float(wr._leading_edge_x(y_j))
+            z_le_j = float(wr._leading_edge_z(x_le_j))
+
+            # Local deflection angle (Chebyshev perturbed)
+            T_star_j = float(wr._angle_perturbation(np.array([abs(y_j)]))[0])
+            theta_j = T_star_j * theta_base
+            chord = L - x_le_j
+
+            # Decide if blunting is applicable at this station
+            can_blunt = (R > 0 and theta_j > np.radians(0.5) and chord > 1e-6)
+
+            if can_blunt:
+                half_theta = theta_j / 2.0
+
+                # Clamp offset to ≤95% of chord — maximises LE
+                # rounding along the full sweep toward wingtips
+                offset_ideal = R / np.tan(half_theta)
+                max_offset = 0.95 * chord
+                if offset_ideal <= max_offset:
+                    R_eff = R
+                else:
+                    R_eff = max_offset * np.tan(half_theta)
+
+                if R_eff < 1e-9:
+                    can_blunt = False
+
+            if can_blunt:
+                # Inscribed circle centre
+                xc = x_le_j + R_eff / np.tan(half_theta)
+                zc = z_le_j - R_eff
+
+                # Lower tangent point
+                x_lt = xc - R_eff * np.sin(theta_j)
+                z_lt = zc - R_eff * np.cos(theta_j)
+
+                # Arc region: parameterize by angle phi
+                phi_upper = np.linspace(np.pi, np.pi / 2.0, n_arc)
+                phi_lower = np.linspace(np.pi, 3.0 * np.pi / 2.0 - theta_j,
+                                        n_arc)
+
+                x_arc_u = (xc + R_eff * np.cos(phi_upper)) * scale
+                z_arc_u = (zc + R_eff * np.sin(phi_upper)) * scale
+                x_arc_l = (xc + R_eff * np.cos(phi_lower)) * scale
+                z_arc_l = (zc + R_eff * np.sin(phi_lower)) * scale
+
+                # Downstream region: upper tangent to TE
+                x_rest = np.linspace(xc, L, n_rest + 1)[1:]
+                z_rest_upper = np.full(n_rest, z_le_j) * scale
+                z_rest_lower = (z_lt - np.tan(theta_j)
+                                * (x_rest - x_lt)) * scale
+                x_rest_s = x_rest * scale
+
+                x_upper = np.concatenate([x_arc_u, x_rest_s])
+                z_upper = np.concatenate([z_arc_u, z_rest_upper])
+                x_lower = np.concatenate([x_arc_l, x_rest_s])
+                z_lower = np.concatenate([z_arc_l, z_rest_lower])
+
+                y_arr = np.full(n_pts, y_j * scale)
+                upper_streams.append(np.column_stack([x_upper, y_arr, z_upper]))
+                lower_streams.append(np.column_stack([x_lower, y_arr, z_lower]))
+
+            else:
+                # No blunting — uniform x distribution
+                x_j = np.linspace(x_le_j, L, n_pts) * scale
+                y_arr = np.full(n_pts, y_j * scale)
+                z_upper = np.full(n_pts, z_le_j * scale)
+                z_lower = (z_le_j - np.tan(theta_j)
+                           * np.linspace(0, chord, n_pts)) * scale
+                upper_streams.append(np.column_stack([x_j, y_arr, z_upper]))
+                lower_streams.append(np.column_stack([x_j, y_arr, z_lower]))
+
+        return upper_streams, lower_streams
+
     def run(self):
         try:
             import cadquery as cq
@@ -59,67 +167,52 @@ class StepExportWorker(QThread):
 
             wr = self.waverider
             scale = 1000.0  # m -> mm
-            ny, nx = wr.upper_surface_x.shape
+            L = wr.length
+            w = wr.width
+            half_w = w / 2.0
 
-            # Subsample to keep OCCT happy (~20 spanwise, ~25 streamwise)
-            step_j = max(1, ny // 20)
-            step_i = max(1, nx // 25)
-            j_idx = list(range(0, ny, step_j))
-            if (ny - 1) not in j_idx:
-                j_idx.append(ny - 1)
-            i_idx = list(range(0, nx, step_i))
-            if (nx - 1) not in i_idx:
-                i_idx.append(nx - 1)
+            n_pts = 30  # streamwise points per streamline
 
-            # Build upper surface as list of streamlines
-            # Each streamline: one spanwise station, going LE→TE
-            self.progress.emit("Building upper surface...")
-            upper_streams = []
-            for j in j_idx:
-                pts = np.column_stack([
-                    wr.upper_surface_x[j, i_idx] * scale,
-                    wr.upper_surface_y[j, i_idx] * scale,
-                    wr.upper_surface_z[j, i_idx] * scale,
-                ])
-                upper_streams.append(pts)
+            # --- Build custom y distribution with fine tip resolution ---
+            # Core: ~20 uniform stations across 96% of the span
+            n_main = 20
+            y_uniform = np.linspace(-half_w * 0.96, half_w * 0.96, n_main)
 
-            # Build lower surface
-            self.progress.emit("Building lower surface...")
-            lower_streams = []
-            for j in j_idx:
-                pts = np.column_stack([
-                    wr.lower_surface_x[j, i_idx] * scale,
-                    wr.lower_surface_y[j, i_idx] * scale,
-                    wr.lower_surface_z[j, i_idx] * scale,
-                ])
-                lower_streams.append(pts)
+            # Extra fine stations near wingtips for smooth geometric taper.
+            # Fractional offsets from tip (relative to half-span):
+            tip_fracs = np.array([0.005, 0.01, 0.02, 0.04, 0.08])
+            tip_offsets = tip_fracs * half_w
+            y_left_tip = -half_w + tip_offsets
+            y_right_tip = half_w - tip_offsets[::-1]
+
+            y_positions = np.unique(np.concatenate([
+                y_left_tip, y_uniform, y_right_tip
+            ]))
+
+            # Build streamlines (works for both R>0 and R=0)
+            self.progress.emit(
+                f"Building surfaces ({len(y_positions)} stations, "
+                f"R={wr.R*1000:.1f} mm)...")
+            upper_streams, lower_streams = self._build_blunted_streams(
+                wr, scale, y_positions, n_pts)
 
             self.progress.emit("Fitting B-spline surfaces...")
             upper_faces = _make_bspline_face(upper_streams)
             lower_faces = _make_bspline_face(lower_streams)
 
-            # Base face (trailing edge, x = L)
-            self.progress.emit("Building base face...")
-            n_base = len(j_idx)
-            base_upper = np.zeros((n_base, 3))
-            base_lower = np.zeros((n_base, 3))
-            for k, j in enumerate(j_idx):
-                base_upper[k] = [
-                    wr.upper_surface_x[j, -1] * scale,
-                    wr.upper_surface_y[j, -1] * scale,
-                    wr.upper_surface_z[j, -1] * scale,
-                ]
-                base_lower[k] = [
-                    wr.lower_surface_x[j, -1] * scale,
-                    wr.lower_surface_y[j, -1] * scale,
-                    wr.lower_surface_z[j, -1] * scale,
-                ]
-
-            # Base face as a ruled surface between upper TE and lower TE
             from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
             from OCP.TColgp import TColgp_Array2OfPnt
             from OCP.gp import gp_Pnt
             from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+
+            # Base face (trailing edge, x = L)
+            self.progress.emit("Building base face...")
+            n_streams = len(upper_streams)
+
+            # TE base face — ruled surface between upper TE and lower TE
+            base_upper = np.array([s[-1] for s in upper_streams])
+            base_lower = np.array([s[-1] for s in lower_streams])
+            n_base = n_streams
 
             base_grid = TColgp_Array2OfPnt(1, n_base, 1, 2)
             for k in range(n_base):
@@ -132,6 +225,10 @@ class StepExportWorker(QThread):
             face_builder = BRepBuilderAPI_MakeFace(approx.Surface(), 1e-3)
             face_builder.Build()
             base_face = cq.Face(face_builder.Face())
+
+            # No explicit wingtip caps needed — the fine-resolution tip
+            # stations make upper/lower surfaces converge smoothly to a
+            # near-point, closing the geometry naturally.
 
             # Sew into solid
             self.progress.emit("Sewing faces into solid...")
@@ -962,6 +1059,59 @@ class PlanarWaveriderTab(QWidget):
         self.p2_spin.setValue(1.02)
         self.p3_spin.setValue(0.97)
         self.radius_spin.setValue(0.0025)
+
+    # ── Parameter serialisation (JSON save / load) ─────────────────
+
+    def get_params_dict(self):
+        """Return all design parameters as a JSON-serialisable dict."""
+        return {
+            'mach': self.mach_spin.value(),
+            'altitude': self.alt_spin.value(),
+            'alpha': self.alpha_spin.value(),
+            'length': self.length_spin.value(),
+            'width': self.width_spin.value(),
+            'n': self.n_spin.value(),
+            'beta': self.beta_spin.value(),
+            'epsilon': self.epsilon_spin.value(),
+            'p1': self.p1_spin.value(),
+            'p2': self.p2_spin.value(),
+            'p3': self.p3_spin.value(),
+            'le_radius': self.radius_spin.value(),
+            'nx': self.nx_spin.value(),
+            'ny': self.ny_spin.value(),
+            'twall_mode': self.twall_combo.currentText(),
+            'twall': self.twall_spin.value(),
+        }
+
+    def set_params_dict(self, d):
+        """Restore parameters from a dict (e.g. loaded from JSON)."""
+        from PyQt5.QtWidgets import QDoubleSpinBox, QSpinBox, QComboBox
+
+        def _s(widget, value):
+            if value is None:
+                return
+            if isinstance(widget, (QDoubleSpinBox, QSpinBox)):
+                widget.setValue(value)
+            elif isinstance(widget, QComboBox):
+                idx = widget.findText(str(value))
+                widget.setCurrentIndex(idx if idx >= 0 else 0)
+
+        _s(self.mach_spin, d.get('mach'))
+        _s(self.alt_spin, d.get('altitude'))
+        _s(self.alpha_spin, d.get('alpha'))
+        _s(self.length_spin, d.get('length'))
+        _s(self.width_spin, d.get('width'))
+        _s(self.n_spin, d.get('n'))
+        _s(self.beta_spin, d.get('beta'))
+        _s(self.epsilon_spin, d.get('epsilon'))
+        _s(self.p1_spin, d.get('p1'))
+        _s(self.p2_spin, d.get('p2'))
+        _s(self.p3_spin, d.get('p3'))
+        _s(self.radius_spin, d.get('le_radius'))
+        _s(self.nx_spin, d.get('nx'))
+        _s(self.ny_spin, d.get('ny'))
+        _s(self.twall_combo, d.get('twall_mode'))
+        _s(self.twall_spin, d.get('twall'))
 
     # ── Export ──────────────────────────────────────────────────────
 
