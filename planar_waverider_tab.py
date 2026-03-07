@@ -50,23 +50,23 @@ class StepExportWorker(QThread):
         self.filename = filename
 
     def _build_blunted_streams(self, wr, scale, y_positions, n_pts):
-        """Build upper and lower streamlines with embedded LE arc geometry.
+        """Build upper and lower streamlines with Tincher & Burnett blunting.
 
-        Uses the Tincher & Burnett adding-material method: inscribe a circle
-        of radius R in the wedge angle at each spanwise station, then
-        parametrically sample the arc at high resolution and the downstream
-        flat/sloped surface at coarser resolution.
+        Each station gets its own x distribution from its LE (or arc nose)
+        to the trailing edge.  Upper and lower streamlines share the SAME
+        x values at each index — only z differs — which prevents B-spline
+        surface artefacts from misaligned x coordinates.
 
-        All geometry is computed analytically from the waverider parameters
-        so streamlines can be placed at arbitrary y positions (not limited
-        to grid indices).
+        For blunted stations the first n_arc points are cosine-clustered
+        over the inscribed-circle arc region [x_nose, xc] to guarantee
+        good arc resolution, and the remaining points cover [xc, L].
 
         Parameters
         ----------
         wr : PlanarWaverider
-        scale : float  (m → mm)
-        y_positions : ndarray  — spanwise y coordinates [m]
-        n_pts : int  — total streamwise points per streamline
+        scale : float  (m -> mm)
+        y_positions : ndarray  -- spanwise y coordinates [m]
+        n_pts : int  -- total streamwise points per streamline
 
         Returns
         -------
@@ -76,84 +76,81 @@ class StepExportWorker(QThread):
         R = wr.R
         L = wr.length
 
-        n_arc = 12      # points in the arc region
-        n_rest = n_pts - n_arc  # points from tangent to TE
+        n_arc = 12      # dedicated arc-region points (blunted only)
+        n_rest = n_pts - n_arc
 
         upper_streams = []
         lower_streams = []
 
         for y_j in y_positions:
-            # Compute LE position analytically
             x_le_j = float(wr._leading_edge_x(y_j))
             z_le_j = float(wr._leading_edge_z(x_le_j))
 
-            # Local deflection angle (Chebyshev perturbed)
             T_star_j = float(wr._angle_perturbation(np.array([abs(y_j)]))[0])
             theta_j = T_star_j * theta_base
             chord = L - x_le_j
 
-            # Decide if blunting is applicable at this station
             can_blunt = (R > 0 and theta_j > np.radians(0.5) and chord > 1e-6)
+            R_eff = 0.0
 
             if can_blunt:
                 half_theta = theta_j / 2.0
-
-                # Clamp offset to ≤95% of chord — maximises LE
-                # rounding along the full sweep toward wingtips
                 offset_ideal = R / np.tan(half_theta)
                 max_offset = 0.95 * chord
-                if offset_ideal <= max_offset:
-                    R_eff = R
-                else:
-                    R_eff = max_offset * np.tan(half_theta)
-
+                R_eff = R if offset_ideal <= max_offset else (
+                    max_offset * np.tan(half_theta))
                 if R_eff < 1e-9:
                     can_blunt = False
 
             if can_blunt:
-                # Inscribed circle centre
                 xc = x_le_j + R_eff / np.tan(half_theta)
                 zc = z_le_j - R_eff
-
-                # Lower tangent point
+                x_nose = xc - R_eff
                 x_lt = xc - R_eff * np.sin(theta_j)
                 z_lt = zc - R_eff * np.cos(theta_j)
+                R2_exact = R_eff * R_eff
 
-                # Arc region: parameterize by angle phi
-                phi_upper = np.linspace(np.pi, np.pi / 2.0, n_arc)
-                phi_lower = np.linspace(np.pi, 3.0 * np.pi / 2.0 - theta_j,
-                                        n_arc)
+                # Arc region: cosine-clustered from x_nose to xc
+                t_arc = np.linspace(0.0, 1.0, n_arc)
+                x_arc = x_nose + R_eff * (1.0 - np.cos(t_arc * np.pi / 2.0))
 
-                x_arc_u = (xc + R_eff * np.cos(phi_upper)) * scale
-                z_arc_u = (zc + R_eff * np.sin(phi_upper)) * scale
-                x_arc_l = (xc + R_eff * np.cos(phi_lower)) * scale
-                z_arc_l = (zc + R_eff * np.sin(phi_lower)) * scale
+                # Downstream: xc to L (exclude xc, already last arc pt)
+                x_down = np.linspace(xc, L, n_rest + 1)[1:]
 
-                # Downstream region: upper tangent to TE
-                x_rest = np.linspace(xc, L, n_rest + 1)[1:]
-                z_rest_upper = np.full(n_rest, z_le_j) * scale
-                z_rest_lower = (z_lt - np.tan(theta_j)
-                                * (x_rest - x_lt)) * scale
-                x_rest_s = x_rest * scale
+                x_local = np.concatenate([x_arc, x_down])
 
-                x_upper = np.concatenate([x_arc_u, x_rest_s])
-                z_upper = np.concatenate([z_arc_u, z_rest_upper])
-                x_lower = np.concatenate([x_arc_l, x_rest_s])
-                z_lower = np.concatenate([z_arc_l, z_rest_lower])
+                # Compute z at each x
+                z_upper = np.empty(n_pts)
+                z_lower = np.empty(n_pts)
 
-                y_arr = np.full(n_pts, y_j * scale)
-                upper_streams.append(np.column_stack([x_upper, y_arr, z_upper]))
-                lower_streams.append(np.column_stack([x_lower, y_arr, z_lower]))
+                for i, x in enumerate(x_local):
+                    dx = x - xc
+                    dx2 = dx * dx
+                    # Tiny tolerance for the nose point (dx^2 == R^2)
+                    if dx2 <= R2_exact * (1.0 + 1e-10):
+                        sq = np.sqrt(max(0.0, R2_exact - dx2))
+                        z_upper[i] = zc + sq     # top of circle
+                        if x <= x_lt:
+                            z_lower[i] = zc - sq  # bottom of circle
+                        else:
+                            # Past lower tangent — compression slope
+                            z_lower[i] = z_lt - np.tan(theta_j) * (x - x_lt)
+                    else:
+                        # Past upper tangent — flat upper, sloped lower
+                        z_upper[i] = z_le_j
+                        z_lower[i] = z_le_j - np.tan(theta_j) * (x - x_le_j)
 
             else:
-                # No blunting — uniform x distribution
-                x_j = np.linspace(x_le_j, L, n_pts) * scale
-                y_arr = np.full(n_pts, y_j * scale)
-                z_upper = np.full(n_pts, z_le_j * scale)
-                z_lower = (z_le_j - np.tan(theta_j)
-                           * np.linspace(0, chord, n_pts)) * scale
-                upper_streams.append(np.column_stack([x_j, y_arr, z_upper]))
-                lower_streams.append(np.column_stack([x_j, y_arr, z_lower]))
+                # No blunting — uniform x from LE to TE
+                x_local = np.linspace(x_le_j, L, n_pts)
+                z_upper = np.full(n_pts, z_le_j)
+                z_lower = z_le_j - np.tan(theta_j) * (x_local - x_le_j)
+
+            y_arr = np.full(n_pts, y_j * scale)
+            upper_streams.append(
+                np.column_stack([x_local * scale, y_arr, z_upper * scale]))
+            lower_streams.append(
+                np.column_stack([x_local * scale, y_arr, z_lower * scale]))
 
         return upper_streams, lower_streams
 
@@ -174,8 +171,9 @@ class StepExportWorker(QThread):
             n_pts = 30  # streamwise points per streamline
 
             # --- Build custom y distribution with fine tip resolution ---
-            # Core: ~20 uniform stations across 96% of the span
-            n_main = 20
+            # Core: ~21 uniform stations across 96% of the span
+            # (odd count ensures y=0 is included for the centerline)
+            n_main = 21
             y_uniform = np.linspace(-half_w * 0.96, half_w * 0.96, n_main)
 
             # Extra fine stations near wingtips for smooth geometric taper.
