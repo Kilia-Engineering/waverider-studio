@@ -50,16 +50,26 @@ class StepExportWorker(QThread):
         self.filename = filename
 
     def _build_blunted_streams(self, wr, scale, y_positions, n_pts):
-        """Build upper and lower streamlines with Tincher & Burnett blunting.
+        """Build upper and lower streamlines with T&B adding-material blunting.
+
+        Uses the Tincher & Burnett ADDING-MATERIAL method: an exterior
+        circle of radius R wraps around the outside of the sharp LE,
+        tangent to both upper (horizontal) and lower (compression) surfaces.
+        The nose extends slightly upstream of x_le, adding material.
+
+        Exterior circle geometry (for wedge half-angle θ/2):
+          xc    = x_le + R·tan(θ/2)     [tiny offset downstream]
+          zc    = z_le + R               [center ABOVE upper surface]
+          x_nose = xc - R ≈ x_le - R    [nose upstream of sharp LE]
+          Upper tangent at (xc, z_le)    [bottom of circle touches z_le]
+          Lower tangent at (xc - R·sinθ, zc - R·cosθ)
+
+        Both upper and lower surfaces follow the BOTTOM arc of the circle
+        (z = zc - sqrt(R² - dx²)) from the nose, then transition to the
+        original flat/sloped surfaces at their respective tangent points.
 
         Uses a common normalized half-cosine parameterization across all
-        stations: t ∈ [0, 1] mapped to [x_start, L] per station.  This
-        gives consistent cross-station parameterization for B-spline surface
-        fitting and avoids extreme spacing ratios that cause OCC interpolation
-        failures for small R/chord values.
-
-        Upper and lower streamlines share the SAME x values at each index —
-        only z differs.
+        stations for consistent B-spline surface fitting.
 
         Parameters
         ----------
@@ -94,26 +104,24 @@ class StepExportWorker(QThread):
             chord = L - x_le_j
 
             can_blunt = (R > 0 and theta_j > np.radians(0.5) and chord > 1e-6)
-            R_eff = 0.0
+            R_eff = R
 
             if can_blunt:
                 half_theta = theta_j / 2.0
-                offset_ideal = R / np.tan(half_theta)
-                max_offset = 0.95 * chord
-                if offset_ideal > max_offset:
-                    # Inscribed circle can't fit within chord at design R —
-                    # skip blunting to avoid clamped R_eff artifacts at tips
+                # Exterior circle offset is R·tan(θ/2) — tiny for small θ
+                offset = R_eff * np.tan(half_theta)
+                # Only skip if chord is too small to host any blunting
+                if chord < R_eff * 0.5:
                     can_blunt = False
-                else:
-                    R_eff = R
 
             if can_blunt:
-                xc = x_le_j + R_eff / np.tan(half_theta)
-                zc = z_le_j - R_eff
-                x_nose = xc - R_eff
-                x_lt = xc - R_eff * np.sin(theta_j)
-                z_lt = zc - R_eff * np.cos(theta_j)
-                R2_exact = R_eff * R_eff
+                # --- T&B adding-material exterior circle ---
+                xc = x_le_j + offset              # center x (tiny offset)
+                zc = z_le_j + R_eff               # center z (ABOVE upper)
+                x_nose = xc - R_eff               # nose (≈ x_le - R)
+                x_lt = xc - R_eff * np.sin(theta_j)  # lower tangent x
+                z_lt = zc - R_eff * np.cos(theta_j)   # lower tangent z
+                R2 = R_eff * R_eff
 
                 # Map common parameter to this station's x range
                 local_chord = L - x_nose
@@ -126,23 +134,31 @@ class StepExportWorker(QThread):
                 for i, x in enumerate(x_local):
                     dx = x - xc
                     dx2 = dx * dx
-                    # Tiny tolerance for the nose boundary (dx^2 == R^2)
-                    if dx2 <= R2_exact * (1.0 + 1e-10):
-                        sq = np.sqrt(max(0.0, R2_exact - dx2))
-                        z_upper[i] = zc + sq     # top of circle
-                        if x <= x_lt:
-                            z_lower[i] = zc - sq  # bottom of circle
+                    if dx2 <= R2 * (1.0 + 1e-10):
+                        # In the arc region: both use BOTTOM arc
+                        sq = np.sqrt(max(0.0, R2 - dx2))
+                        z_arc = zc - sq  # bottom of exterior circle
+
+                        # Upper: bottom arc until upper tangent (x=xc)
+                        if x < xc:
+                            z_upper[i] = z_arc
                         else:
-                            # Past lower tangent — compression slope
-                            z_lower[i] = z_lt - np.tan(theta_j) * (x - x_lt)
+                            z_upper[i] = z_le_j
+
+                        # Lower: bottom arc until lower tangent (x=x_lt),
+                        # then compression slope
+                        if x < x_lt:
+                            z_lower[i] = z_arc  # same as upper (zero thickness nose)
+                        else:
+                            z_lower[i] = z_le_j - np.tan(theta_j) * (x - x_le_j)
                     else:
-                        # Past upper tangent — flat upper, sloped lower
+                        # Past the circle — original surfaces
                         z_upper[i] = z_le_j
                         z_lower[i] = z_le_j - np.tan(theta_j) * (x - x_le_j)
 
             else:
                 # No blunting — half-cosine from LE to TE
-                x_local = x_le_j + t_param * chord
+                x_local = x_le_j + t_param * chord if chord > 1e-9 else np.full(n_pts, x_le_j)
                 z_upper = np.full(n_pts, z_le_j)
                 z_lower = z_le_j - np.tan(theta_j) * (x_local - x_le_j)
 

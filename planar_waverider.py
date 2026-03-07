@@ -205,13 +205,14 @@ class PlanarWaverider:
                            x_le, z_le, T_star, theta, nx, ny):
         """Apply Tincher & Burnett adding-material LE rounding to grids.
 
-        Inscribes a circle of radius R in the wedge angle at each spanwise
-        station.  Only **z values** are modified (x stays unchanged) so
-        that the spanwise grid structure remains smooth for B-spline
-        surface fitting in STEP export.
+        Uses an EXTERIOR circle of radius R that wraps around the outside
+        of the sharp LE.  The circle is tangent to both the upper
+        (horizontal) and lower (compression) surfaces.  The nose extends
+        slightly upstream of x_le, adding material.
 
-        The circle offset R/tan(θ/2) is clamped to ≤5 % of the local
-        chord so that small wedge angles don't distort the geometry.
+        Circle offset is R·tan(θ/2) [tiny], center is ABOVE z_le by R.
+        Only **z values** are modified (x stays unchanged) so that the
+        spanwise grid structure remains smooth for visualization.
 
         Parameters
         ----------
@@ -246,50 +247,48 @@ class PlanarWaverider:
                 continue
 
             half_theta = theta_j / 2.0
+            R_eff = R
 
-            # Clamp offset to ≤95 % of chord
-            offset_ideal = R / np.tan(half_theta)
-            max_offset = 0.95 * chord
-            R_eff = (R if offset_ideal <= max_offset
-                     else max_offset * np.tan(half_theta))
-            if R_eff < 1e-9:
+            # Skip if chord too small to host blunting
+            if chord < R_eff * 0.5:
                 continue
 
-            # Circle centre (inscribed in wedge angle)
-            xc = x_le[j] + R_eff / np.tan(half_theta)
-            zc = z_le[j] - R_eff
+            # --- T&B adding-material EXTERIOR circle ---
+            # Offset = R·tan(θ/2)  [tiny for small θ, NOT R/tan(θ/2)]
+            offset = R_eff * np.tan(half_theta)
+            xc = x_le[j] + offset                        # center x
+            zc = z_le[j] + R_eff                          # center z (ABOVE)
 
-            x_nose_j = xc - R_eff                       # nose
-            x_ut = xc                                    # upper tangent x
-            x_lt = xc - R_eff * np.sin(theta_j)         # lower tangent x
-            z_lt = zc - R_eff * np.cos(theta_j)         # lower tangent z
-
-            if x_ut >= L * 0.95:
-                continue
+            x_nose_j = xc - R_eff                         # nose (≈ x_le - R)
+            x_ut = xc                                      # upper tangent x
+            x_lt = xc - R_eff * np.sin(theta_j)           # lower tangent x
+            z_lt = zc - R_eff * np.cos(theta_j)           # lower tangent z
 
             # Modify z only — x values are unchanged
             for i in range(nx):
                 x = upper_x[j, i]
 
                 if x < x_nose_j:
-                    # Before nose: collapse to nose height
+                    # Before nose: collapse to nose height (zc = z_le + R)
                     upper_z[j, i] = zc
                     lower_z[j, i] = zc
 
                 elif x <= xc:
-                    # Arc region: circle z from analytical formula
+                    # Arc region: both surfaces use BOTTOM arc
                     dx_n = (x - xc) / R_eff          # ∈ [-1, 0]
                     dx_n = max(-1.0, min(0.0, dx_n))
                     sq = np.sqrt(1.0 - dx_n * dx_n)
+                    z_arc = zc - R_eff * sq           # bottom of circle
 
-                    upper_z[j, i] = zc + R_eff * sq   # top of arc
+                    # Upper: bottom arc until upper tangent (x=xc)
+                    upper_z[j, i] = z_arc
 
+                    # Lower: bottom arc until lower tangent, then slope
                     if x <= x_lt:
-                        lower_z[j, i] = zc - R_eff * sq  # bottom of arc
+                        lower_z[j, i] = z_arc  # same as upper (nose region)
                     else:
-                        # Past lower tangent → slope to TE
-                        lower_z[j, i] = (z_lt
-                                         - np.tan(theta_j) * (x - x_lt))
+                        lower_z[j, i] = (z_le[j]
+                                         - np.tan(theta_j) * (x - x_le[j]))
                 # else: past upper tangent → keep original z
 
             nose_x[j] = x_nose_j
