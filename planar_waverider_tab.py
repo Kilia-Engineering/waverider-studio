@@ -52,14 +52,14 @@ class StepExportWorker(QThread):
     def _build_blunted_streams(self, wr, scale, y_positions, n_pts):
         """Build upper and lower streamlines with Tincher & Burnett blunting.
 
-        Each station gets its own x distribution from its LE (or arc nose)
-        to the trailing edge.  Upper and lower streamlines share the SAME
-        x values at each index — only z differs — which prevents B-spline
-        surface artefacts from misaligned x coordinates.
+        Uses a common normalized half-cosine parameterization across all
+        stations: t ∈ [0, 1] mapped to [x_start, L] per station.  This
+        gives consistent cross-station parameterization for B-spline surface
+        fitting and avoids extreme spacing ratios that cause OCC interpolation
+        failures for small R/chord values.
 
-        For blunted stations the first n_arc points are cosine-clustered
-        over the inscribed-circle arc region [x_nose, xc] to guarantee
-        good arc resolution, and the remaining points cover [xc, L].
+        Upper and lower streamlines share the SAME x values at each index —
+        only z differs.
 
         Parameters
         ----------
@@ -76,8 +76,11 @@ class StepExportWorker(QThread):
         R = wr.R
         L = wr.length
 
-        n_arc = 12      # dedicated arc-region points (blunted only)
-        n_rest = n_pts - n_arc
+        # Common normalized parameter: half-cosine clustering at LE
+        # t=0 → LE (fine spacing), t=1 → TE (coarse spacing)
+        t_param = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi / 2.0, n_pts)))
+        # Rescale so t_param[-1] == 1.0 exactly
+        t_param = t_param / t_param[-1]
 
         upper_streams = []
         lower_streams = []
@@ -103,6 +106,13 @@ class StepExportWorker(QThread):
                     can_blunt = False
 
             if can_blunt:
+                # Skip blunting in STEP when arc is sub-resolution
+                # (R_eff < 0.01% of chord → invisible in CAD)
+                arc_fraction = R_eff / chord if chord > 0 else 0
+                if arc_fraction < 1e-4:
+                    can_blunt = False
+
+            if can_blunt:
                 xc = x_le_j + R_eff / np.tan(half_theta)
                 zc = z_le_j - R_eff
                 x_nose = xc - R_eff
@@ -110,23 +120,18 @@ class StepExportWorker(QThread):
                 z_lt = zc - R_eff * np.cos(theta_j)
                 R2_exact = R_eff * R_eff
 
-                # Arc region: cosine-clustered from x_nose to xc
-                t_arc = np.linspace(0.0, 1.0, n_arc)
-                x_arc = x_nose + R_eff * (1.0 - np.cos(t_arc * np.pi / 2.0))
+                # Map common parameter to this station's x range
+                local_chord = L - x_nose
+                x_local = x_nose + t_param * local_chord
 
-                # Downstream: xc to L (exclude xc, already last arc pt)
-                x_down = np.linspace(xc, L, n_rest + 1)[1:]
-
-                x_local = np.concatenate([x_arc, x_down])
-
-                # Compute z at each x
+                # Compute z at each x analytically
                 z_upper = np.empty(n_pts)
                 z_lower = np.empty(n_pts)
 
                 for i, x in enumerate(x_local):
                     dx = x - xc
                     dx2 = dx * dx
-                    # Tiny tolerance for the nose point (dx^2 == R^2)
+                    # Tiny tolerance for the nose boundary (dx^2 == R^2)
                     if dx2 <= R2_exact * (1.0 + 1e-10):
                         sq = np.sqrt(max(0.0, R2_exact - dx2))
                         z_upper[i] = zc + sq     # top of circle
@@ -141,8 +146,8 @@ class StepExportWorker(QThread):
                         z_lower[i] = z_le_j - np.tan(theta_j) * (x - x_le_j)
 
             else:
-                # No blunting — uniform x from LE to TE
-                x_local = np.linspace(x_le_j, L, n_pts)
+                # No blunting — half-cosine from LE to TE
+                x_local = x_le_j + t_param * chord
                 z_upper = np.full(n_pts, z_le_j)
                 z_lower = z_le_j - np.tan(theta_j) * (x_local - x_le_j)
 
@@ -168,7 +173,21 @@ class StepExportWorker(QThread):
             w = wr.width
             half_w = w / 2.0
 
-            n_pts = 30  # streamwise points per streamline
+            # --- Adaptive streamwise resolution based on R/chord ---
+            # Half-cosine first spacing ≈ chord * π²/(4*n²), so to resolve
+            # the blunting arc (width ≈ R_eff) we need n ≥ (π/2)*√(chord/R).
+            # Clamp to [50, 120] for tractable B-spline fitting.
+            n_pts = 50  # default (increased from 30 for better LE resolution)
+            if wr.R > 0:
+                theta_base = np.radians(wr.wedge_angle_deg)
+                if theta_base > np.radians(0.5):
+                    arc_width = wr.R  # inscribed circle radius ≈ arc width
+                    chord_center = L  # centerline chord ≈ L (x_le ≈ 0)
+                    if arc_width > 0 and arc_width / chord_center >= 1e-4:
+                        n_needed = int(np.ceil(
+                            (np.pi / 2.0) * np.sqrt(chord_center / arc_width)))
+                        n_pts = max(n_pts, min(n_needed, 120))
+            print(f"[STEP] Using n_pts={n_pts} streamwise points")
 
             # --- Build custom y distribution with fine tip resolution ---
             # Core: ~21 uniform stations across 96% of the span
@@ -220,8 +239,16 @@ class StepExportWorker(QThread):
                                    gp_Pnt(*base_lower[k].tolist()))
             approx = GeomAPI_PointsToBSplineSurface()
             approx.Interpolate(base_grid)
+            if not approx.IsDone():
+                raise RuntimeError(
+                    f"Base face B-spline interpolation failed "
+                    f"on {n_base}x2 grid.")
             face_builder = BRepBuilderAPI_MakeFace(approx.Surface(), 1e-3)
             face_builder.Build()
+            if not face_builder.IsDone():
+                raise RuntimeError(
+                    f"Base face MakeFace failed "
+                    f"(error={face_builder.Error()}).")
             base_face = cq.Face(face_builder.Face())
 
             # No explicit wingtip caps needed — the fine-resolution tip

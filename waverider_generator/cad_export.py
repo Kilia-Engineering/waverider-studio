@@ -135,11 +135,19 @@ def _make_bspline_face(streams):
     # Interpolate through all grid points
     approx = GeomAPI_PointsToBSplineSurface()
     approx.Interpolate(grid)
+    if not approx.IsDone():
+        raise RuntimeError(
+            f"B-spline interpolation failed on {n_u}x{n_v} grid. "
+            "Check point spacing and grid regularity.")
     bspline_surface = approx.Surface()
 
     # Create face from the B-spline surface
     face_builder = BRepBuilderAPI_MakeFace(bspline_surface, 1e-6)
     face_builder.Build()
+    if not face_builder.IsDone():
+        raise RuntimeError(
+            f"BRepBuilderAPI_MakeFace failed on {n_u}x{n_v} B-spline surface "
+            f"(error code={face_builder.Error()}).")
     face = cq.Face(face_builder.Face())
 
     print(f"[BSpline] Surface built OK")
