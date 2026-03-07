@@ -100,17 +100,12 @@ class StepExportWorker(QThread):
                 half_theta = theta_j / 2.0
                 offset_ideal = R / np.tan(half_theta)
                 max_offset = 0.95 * chord
-                R_eff = R if offset_ideal <= max_offset else (
-                    max_offset * np.tan(half_theta))
-                if R_eff < 1e-9:
+                if offset_ideal > max_offset:
+                    # Inscribed circle can't fit within chord at design R —
+                    # skip blunting to avoid clamped R_eff artifacts at tips
                     can_blunt = False
-
-            if can_blunt:
-                # Skip blunting in STEP when arc is sub-resolution
-                # (R_eff < 0.01% of chord → invisible in CAD)
-                arc_fraction = R_eff / chord if chord > 0 else 0
-                if arc_fraction < 1e-4:
-                    can_blunt = False
+                else:
+                    R_eff = R
 
             if can_blunt:
                 xc = x_le_j + R_eff / np.tan(half_theta)
