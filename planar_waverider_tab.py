@@ -229,7 +229,8 @@ class StepExportWorker(QThread):
         return cq.Face(face_builder.Face())
 
     # ------------------------------------------------------------------
-    #  Main export: 5-face right-half solid → mirror → STEP
+    #  Main export: right-half solid → mirror → union → STEP
+    #  (Same approach as cone-derived waverider)
     # ------------------------------------------------------------------
 
     def run(self):
@@ -239,9 +240,6 @@ class StepExportWorker(QThread):
             from waverider_generator.cad_export import (
                 _make_bspline_face, _sew_faces_to_solid,
             )
-            from OCP.gp import gp_Pnt, gp_Dir, gp_Ax2, gp_Trsf
-            from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-            from OCP.TopoDS import TopoDS
 
             wr = self.waverider
             scale = 1000.0  # m → mm
@@ -264,7 +262,7 @@ class StepExportWorker(QThread):
             print(f"[STEP] n_pts={n_pts} streamwise points")
 
             # ── Right-half spanwise stations (y ≥ 0) ────────────────
-            n_main = 15
+            n_main = 25  # denser than before for better edge matching
             y_core = np.linspace(0, half_w * 0.96, n_main)
             tip_fracs = np.array([0.005, 0.01, 0.02, 0.04, 0.08])
             y_tips = half_w * (1.0 - tip_fracs)
@@ -283,47 +281,83 @@ class StepExportWorker(QThread):
             upper_faces = _make_bspline_face(upper_streams)
             lower_faces = _make_bspline_face(lower_streams)
 
-            # ── Closure faces (ruled surfaces) ──────────────────────
+            # ── Closure faces (wire-based, same as cone waverider) ──
             self.progress.emit("Building closure faces...")
 
-            # 1) Base face — trailing edge (x = L), ruled upper-TE → lower-TE
-            base_face = self._make_ruled_face(
-                [s[-1] for s in upper_streams],
-                [s[-1] for s in lower_streams],
-                label="Base face")
+            te_upper = np.array([s[-1] for s in upper_streams])
+            te_lower = np.array([s[-1] for s in lower_streams])
 
-            # 2) Symmetry face — centerline (y = 0), upper-CL → lower-CL
-            sym_face = self._make_ruled_face(
-                upper_streams[0], lower_streams[0],
-                label="Symmetry face")
+            # Back face (trailing edge, x = L)
+            e_te_upper = cq.Edge.makeSpline(
+                [cq.Vector(*map(float, p)) for p in te_upper])
+            e_te_lower = cq.Edge.makeSpline(
+                [cq.Vector(*map(float, p)) for p in te_lower])
+            e_center_te = cq.Edge.makeLine(
+                cq.Vector(*map(float, te_upper[0])),
+                cq.Vector(*map(float, te_lower[0])))
+            back_edges = [e_te_upper, e_te_lower, e_center_te]
+            tip_te_dist = float(np.linalg.norm(
+                te_upper[-1] - te_lower[-1]))
+            if tip_te_dist > 1e-8:
+                e_tip_te = cq.Edge.makeLine(
+                    cq.Vector(*map(float, te_upper[-1])),
+                    cq.Vector(*map(float, te_lower[-1])))
+                back_edges.append(e_tip_te)
+            back_face = cq.Face.makeFromWires(
+                cq.Wire.assembleEdges(back_edges))
 
-            # 3) Wingtip face — last station, upper-tip → lower-tip
-            tip_face = self._make_ruled_face(
-                upper_streams[-1], lower_streams[-1],
-                label="Wingtip face")
+            # Symmetry face (y = 0 plane)
+            e_sym_upper = cq.Edge.makeSpline(
+                [cq.Vector(*map(float, p)) for p in upper_streams[0]])
+            e_sym_lower = cq.Edge.makeSpline(
+                [cq.Vector(*map(float, p)) for p in lower_streams[0]])
+            sym_edges = [e_center_te, e_sym_upper, e_sym_lower]
+            nose_dist = float(np.linalg.norm(
+                upper_streams[0][0] - lower_streams[0][0]))
+            if nose_dist > 1e-8:
+                e_nose = cq.Edge.makeLine(
+                    cq.Vector(*map(float, lower_streams[0][0])),
+                    cq.Vector(*map(float, upper_streams[0][0])))
+                sym_edges.append(e_nose)
+            sym_face = cq.Face.makeFromWires(
+                cq.Wire.assembleEdges(sym_edges))
+
+            # Wingtip face (if non-degenerate)
+            all_faces = upper_faces + lower_faces + [back_face, sym_face]
+            if tip_te_dist > 0.1:  # > 0.1 mm
+                e_tip_upper = cq.Edge.makeSpline(
+                    [cq.Vector(*map(float, p))
+                     for p in upper_streams[-1]])
+                e_tip_lower = cq.Edge.makeSpline(
+                    [cq.Vector(*map(float, p))
+                     for p in lower_streams[-1]])
+                tip_edges = [e_tip_upper, e_tip_lower]
+                if tip_te_dist > 1e-8:
+                    tip_edges.append(e_tip_te)
+                tip_nose_dist = float(np.linalg.norm(
+                    upper_streams[-1][0] - lower_streams[-1][0]))
+                if tip_nose_dist > 1e-8:
+                    e_tip_nose = cq.Edge.makeLine(
+                        cq.Vector(*map(float, lower_streams[-1][0])),
+                        cq.Vector(*map(float, upper_streams[-1][0])))
+                    tip_edges.append(e_tip_nose)
+                tip_face = cq.Face.makeFromWires(
+                    cq.Wire.assembleEdges(tip_edges))
+                all_faces.append(tip_face)
 
             # ── Sew right-half solid ────────────────────────────────
             self.progress.emit("Sewing right-half solid...")
-            all_faces = (upper_faces + lower_faces
-                         + [base_face, sym_face, tip_face])
             right_solid = _sew_faces_to_solid(all_faces, tolerance=1.0)
 
-            # ── Mirror across XZ plane (y = 0) for left half ───────
+            # ── Mirror + union (same as cone waverider) ─────────────
             self.progress.emit("Mirroring to full span...")
-            mirror_trsf = gp_Trsf()
-            mirror_trsf.SetMirror(
-                gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)))
-            builder = BRepBuilderAPI_Transform(
-                right_solid.wrapped, mirror_trsf, True)
-            left_solid = cq.Solid(TopoDS.Solid_s(builder.Shape()))
+            left_solid = right_solid.mirror(mirrorPlane='XZ')
+            result = cq.Workplane("XY").newObject(
+                [right_solid]).union(left_solid)
 
-            # ── Export as compound (two symmetric half-bodies) ──────
+            # ── Export STEP ─────────────────────────────────────────
             self.progress.emit("Writing STEP file...")
-            compound = cq.Compound.makeCompound(
-                [right_solid, left_solid])
-            exporters.export(
-                cq.Workplane("XY").newObject([compound]),
-                self.filename)
+            exporters.export(result, self.filename)
             self.finished.emit(self.filename)
 
         except Exception as e:
