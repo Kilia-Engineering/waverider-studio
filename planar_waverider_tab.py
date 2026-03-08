@@ -49,96 +49,73 @@ class StepExportWorker(QThread):
         self.waverider = waverider
         self.filename = filename
 
-    def _build_blunted_streams(self, wr, scale, y_positions, n_pts):
-        """Build upper and lower streamlines with T&B adding-material blunting.
+    @staticmethod
+    def _compute_r_eff(wr, y_positions):
+        """Pre-compute smooth R_eff array with cosine taper near wingtips.
 
-        Uses the Tincher & Burnett ADDING-MATERIAL method: an exterior
-        circle of radius R wraps around the outside of the sharp LE,
-        tangent to both upper (horizontal) and lower (compression) surfaces.
-        The nose extends slightly upstream of x_le, adding material.
-
-        Exterior circle geometry (for wedge half-angle θ/2):
-          xc    = x_le + R·tan(θ/2)     [tiny offset downstream]
-          zc    = z_le + R               [center ABOVE upper surface]
-          x_nose = xc - R ≈ x_le - R    [nose upstream of sharp LE]
-          Upper tangent at (xc, z_le)    [bottom of circle touches z_le]
-          Lower tangent at (xc - R·sinθ, zc - R·cosθ)
-
-        Both upper and lower surfaces follow the BOTTOM arc of the circle
-        (z = zc - sqrt(R² - dx²)) from the nose, then transition to the
-        original flat/sloped surfaces at their respective tangent points.
-
-        Uses a common normalized half-cosine parameterization across all
-        stations for consistent B-spline surface fitting.  R_eff is tapered
-        smoothly via a cosine ramp near the wingtips to avoid abrupt
-        spanwise jumps that cause B-spline interpolation oscillation.
-
-        Parameters
-        ----------
-        wr : PlanarWaverider
-        scale : float  (m -> mm)
-        y_positions : ndarray  -- spanwise y coordinates [m]
-        n_pts : int  -- total streamwise points per streamline
-
-        Returns
-        -------
-        upper_streams, lower_streams : list of ndarray (n_pts, 3)
+        Returns ndarray of length len(y_positions).
         """
         theta_base = np.radians(wr.wedge_angle_deg)
         R = wr.R
         L = wr.length
-        half_w = wr.width / 2.0
 
-        # Common normalized parameter with gentle LE clustering.
-        # Use power-law (exponent 1.5) instead of half-cosine to avoid
-        # excessive point density at the arc-to-flat junction (x=xc).
-        # Half-cosine puts too many points right at the G2 curvature
-        # break, causing B-spline interpolation to oscillate.
-        # Power-law exponent 1.5 still clusters at LE but more gently.
-        t_param = np.linspace(0.0, 1.0, n_pts) ** 1.5
-
-        # --- Pre-compute smooth R_eff for each station ---
-        # Instead of hard min(R, R_max) which creates a spanwise step,
-        # use a smooth cosine taper based on fraction-of-span.
-        # R_eff transitions from full R at the core to 0 at the wingtip.
         r_eff_arr = np.zeros(len(y_positions))
         for idx, y_j in enumerate(y_positions):
             x_le_j = float(wr._leading_edge_x(y_j))
-            T_star_j = float(wr._angle_perturbation(np.array([abs(y_j)]))[0])
+            T_star_j = float(wr._angle_perturbation(
+                np.array([abs(y_j)]))[0])
             theta_j = T_star_j * theta_base
             chord = L - x_le_j
-
             if R > 0 and theta_j > np.radians(0.5) and chord > 1e-6:
-                te_thickness = chord * np.tan(theta_j)
-                # Hard geometric limit
-                R_max = 0.5 * te_thickness if te_thickness > 1e-9 else 0.0
+                te_thick = chord * np.tan(theta_j)
+                R_max = 0.5 * te_thick if te_thick > 1e-9 else 0.0
                 r_eff_arr[idx] = min(R, R_max)
-            else:
-                r_eff_arr[idx] = 0.0
 
-        # Apply smooth cosine ramp: where R_eff starts dropping below R,
-        # blend it over several stations instead of a hard cutoff.
-        # Find the span fraction where R_eff first drops below 0.99*R
+        # Smooth cosine ramp where R_eff drops below 0.99*R
         if R > 0 and np.any(r_eff_arr > 1e-6):
-            # Normalize to [0, 1] relative to full R
-            r_ratio = r_eff_arr / R
-            # Smooth the ratio with a cosine ramp in the taper region
+            ratio = r_eff_arr / R
             for idx in range(len(r_eff_arr)):
-                if r_ratio[idx] < 0.99:
-                    # Cosine ramp: map ratio from [0, 1] → smoothed
-                    # This prevents hard jumps — the derivative is 0
-                    # at both ends of the ramp
+                if ratio[idx] < 0.99:
                     r_eff_arr[idx] = R * 0.5 * (
-                        1.0 - np.cos(np.pi * np.clip(r_ratio[idx], 0.0, 1.0)))
+                        1.0 - np.cos(
+                            np.pi * np.clip(ratio[idx], 0.0, 1.0)))
+        return r_eff_arr
+
+    def _build_body_streams(self, wr, y_positions, n_pts):
+        """Build BODY-only streams (xc → TE) — no arc, no curvature break.
+
+        The body streams start at the upper tangent point xc where the
+        blunting arc meets the flat/sloped surfaces.  Because these
+        surfaces are perfectly smooth (flat upper, linear-slope lower),
+        the B-spline interpolation produces clean results with no Gibbs
+        oscillation.
+
+        Also returns per-station nose arc data for building the LE face.
+
+        Returns
+        -------
+        upper_streams, lower_streams : list of ndarray (n_pts, 3)
+            In METERS (scale=1).
+        nose_data : list of dict
+            One per station.  Keys: xc, zc, R_eff, x_nose, x_lt, z_lt,
+            x_le, z_le, theta_j, y, can_blunt.
+        """
+        theta_base = np.radians(wr.wedge_angle_deg)
+        R = wr.R
+        L = wr.length
+
+        r_eff_arr = self._compute_r_eff(wr, y_positions)
+        t_param = np.linspace(0.0, 1.0, n_pts)   # uniform — body is smooth
 
         upper_streams = []
         lower_streams = []
+        nose_data = []
 
         for idx, y_j in enumerate(y_positions):
             x_le_j = float(wr._leading_edge_x(y_j))
             z_le_j = float(wr._leading_edge_z(x_le_j))
-
-            T_star_j = float(wr._angle_perturbation(np.array([abs(y_j)]))[0])
+            T_star_j = float(wr._angle_perturbation(
+                np.array([abs(y_j)]))[0])
             theta_j = T_star_j * theta_base
             chord = L - x_le_j
 
@@ -146,65 +123,181 @@ class StepExportWorker(QThread):
             can_blunt = (R_eff > 1e-6 and theta_j > np.radians(0.5)
                          and chord > 1e-6)
 
+            nd = dict(y=y_j, x_le=x_le_j, z_le=z_le_j,
+                      theta_j=theta_j, R_eff=R_eff, can_blunt=can_blunt,
+                      xc=x_le_j, zc=z_le_j, x_nose=x_le_j,
+                      x_lt=x_le_j, z_lt=z_le_j,
+                      z_lower_at_xc=z_le_j)
+
             if can_blunt:
                 half_theta = theta_j / 2.0
                 offset = R_eff * np.tan(half_theta)
+                xc = x_le_j + offset
+                zc = z_le_j + R_eff
+                x_nose = xc - R_eff
+                x_lt = xc - R_eff * np.sin(theta_j)
+                z_lt = zc - R_eff * np.cos(theta_j)
+                z_lower_xc = z_le_j - np.tan(theta_j) * (xc - x_le_j)
+                nd.update(xc=xc, zc=zc, x_nose=x_nose,
+                          x_lt=x_lt, z_lt=z_lt,
+                          z_lower_at_xc=z_lower_xc)
 
-                # --- T&B adding-material exterior circle ---
-                xc = x_le_j + offset              # center x (tiny offset)
-                zc = z_le_j + R_eff               # center z (ABOVE upper)
-                x_nose = xc - R_eff               # nose (≈ x_le - R)
-                x_lt = xc - R_eff * np.sin(theta_j)  # lower tangent x
-                z_lt = zc - R_eff * np.cos(theta_j)   # lower tangent z
-                R2 = R_eff * R_eff
-
-                # Map common parameter to this station's x range
-                local_chord = L - x_nose
-                x_local = x_nose + t_param * local_chord
-
-                # Compute z at each x analytically
-                z_upper = np.empty(n_pts)
-                z_lower = np.empty(n_pts)
-
-                for i, x in enumerate(x_local):
-                    dx = x - xc
-                    dx2 = dx * dx
-                    if dx2 <= R2 * (1.0 + 1e-10):
-                        # In the arc region: both use BOTTOM arc
-                        sq = np.sqrt(max(0.0, R2 - dx2))
-                        z_arc = zc - sq  # bottom of exterior circle
-
-                        # Upper: bottom arc until upper tangent (x=xc)
-                        if x < xc:
-                            z_upper[i] = z_arc
-                        else:
-                            z_upper[i] = z_le_j
-
-                        # Lower: bottom arc until lower tangent (x=x_lt),
-                        # then compression slope
-                        if x < x_lt:
-                            z_lower[i] = z_arc  # same as upper (zero thickness nose)
-                        else:
-                            z_lower[i] = z_le_j - np.tan(theta_j) * (x - x_le_j)
-                    else:
-                        # Past the circle — original surfaces
-                        z_upper[i] = z_le_j
-                        z_lower[i] = z_le_j - np.tan(theta_j) * (x - x_le_j)
-
+                # Body starts at upper tangent (xc, z_le)
+                body_chord = L - xc
+                x_local = xc + t_param * body_chord
+                z_upper = np.full(n_pts, z_le_j)
+                z_lower = z_le_j - np.tan(theta_j) * (x_local - x_le_j)
             else:
-                # No blunting — half-cosine from LE to TE
+                # Sharp station — body = full chord from LE to TE
                 x_local = (x_le_j + t_param * chord if chord > 1e-9
                            else np.full(n_pts, x_le_j))
                 z_upper = np.full(n_pts, z_le_j)
                 z_lower = z_le_j - np.tan(theta_j) * (x_local - x_le_j)
 
-            y_arr = np.full(n_pts, y_j * scale)
+            y_arr = np.full(n_pts, y_j)
             upper_streams.append(
-                np.column_stack([x_local * scale, y_arr, z_upper * scale]))
+                np.column_stack([x_local, y_arr, z_upper]))
             lower_streams.append(
-                np.column_stack([x_local * scale, y_arr, z_lower * scale]))
+                np.column_stack([x_local, y_arr, z_lower]))
+            nose_data.append(nd)
 
-        return upper_streams, lower_streams
+        return upper_streams, lower_streams, nose_data
+
+    @staticmethod
+    def _build_nose_face(nose_data, y_positions):
+        """Build the LE nose cap by lofting through arc+line sections.
+
+        At each blunted span station the LE cross-section is:
+          1. Circular arc from upper tangent (xc, z_le) through the nose
+             (x_nose, z_le + R) to the lower tangent (x_lt, z_lt).
+          2. Straight line from lower tangent (x_lt, z_lt) back to the
+             body lower surface start (xc, z_lower_at_xc).
+
+        This wire bridges from the upper body surface LE to the lower
+        body surface LE, covering the nose arc AND the small strip of
+        lower compression surface between x_lt and xc.
+
+        Uses cq.Edge.makeThreePointArc + BRepOffsetAPI_ThruSections,
+        following the same pattern as _build_le_face() in cad_export.py.
+
+        Returns
+        -------
+        list of cq.Face, or None
+            The lofted nose face(s), or None if no blunting.
+        """
+        import cadquery as cq
+        from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+        from OCP.TopExp import TopExp_Explorer
+        from OCP.TopAbs import TopAbs_FACE
+        from OCP.TopoDS import TopoDS
+
+        wires = []
+        for nd in nose_data:
+            if not nd['can_blunt']:
+                continue
+            # Skip stations with very tiny R_eff (< 0.1 mm)
+            # to avoid degenerate arcs in ThruSections
+            if nd['R_eff'] < 1e-4:
+                continue
+            y_j = nd['y']
+
+            # Arc endpoints
+            p_upper = cq.Vector(float(nd['xc']),
+                                float(y_j),
+                                float(nd['z_le']))
+            p_nose = cq.Vector(float(nd['x_nose']),
+                               float(y_j),
+                               float(nd['zc']))  # zc = z_le + R
+            p_lower = cq.Vector(float(nd['x_lt']),
+                                float(y_j),
+                                float(nd['z_lt']))
+            # Body lower start — where body lower surface begins at
+            # x=xc on the compression slope
+            p_body_lower = cq.Vector(float(nd['xc']),
+                                     float(y_j),
+                                     float(nd['z_lower_at_xc']))
+
+            # Check arc degeneracy
+            v1 = np.array([p_nose.x - p_upper.x,
+                           p_nose.y - p_upper.y,
+                           p_nose.z - p_upper.z])
+            v2 = np.array([p_lower.x - p_upper.x,
+                           p_lower.y - p_upper.y,
+                           p_lower.z - p_upper.z])
+            cross = np.linalg.norm(np.cross(v1, v2))
+
+            # Build wire: arc from p_upper to p_lower, then
+            #             line from p_lower to p_body_lower
+            edges = []
+            try:
+                if cross < 1e-10:
+                    # Degenerate arc — use straight line
+                    edges.append(cq.Edge.makeLine(p_upper, p_lower))
+                else:
+                    edges.append(cq.Edge.makeThreePointArc(
+                        p_upper, p_nose, p_lower))
+            except Exception as e:
+                print(f"[STEP nose] Arc failed at y={y_j:.4f}: {e}")
+                try:
+                    edges.append(cq.Edge.makeLine(p_upper, p_lower))
+                except Exception:
+                    continue
+
+            # Line from arc lower tangent to body lower start
+            line_len = float(np.sqrt(
+                (nd['xc'] - nd['x_lt'])**2 +
+                (nd['z_lower_at_xc'] - nd['z_lt'])**2))
+            if line_len > 1e-10:
+                try:
+                    edges.append(
+                        cq.Edge.makeLine(p_lower, p_body_lower))
+                except Exception as e:
+                    print(f"[STEP nose] Line failed at "
+                          f"y={y_j:.4f}: {e}")
+
+            if not edges:
+                continue
+
+            try:
+                wire = cq.Wire.assembleEdges(edges)
+                wires.append(wire)
+            except Exception as e:
+                print(f"[STEP nose] Wire assembly failed at "
+                      f"y={y_j:.4f}: {e}")
+
+        if len(wires) < 2:
+            print("[STEP nose] Not enough wires for loft "
+                  f"({len(wires)} available)")
+            return None
+
+        # Loft through arc+line wires (not solid, ruled)
+        builder = BRepOffsetAPI_ThruSections(False, True)
+        for wire in wires:
+            builder.AddWire(wire.wrapped)
+        try:
+            builder.Build()
+            if not builder.IsDone():
+                print("[STEP nose] ThruSections loft failed")
+                return None
+        except Exception as e:
+            print(f"[STEP nose] ThruSections error: {e}")
+            return None
+
+        # Extract face(s)
+        explorer = TopExp_Explorer(builder.Shape(), TopAbs_FACE)
+        faces = []
+        while explorer.More():
+            face = TopoDS.Face_s(explorer.Current())
+            faces.append(cq.Face(face))
+            explorer.Next()
+
+        if not faces:
+            print("[STEP nose] No faces extracted from loft")
+            return None
+
+        print(f"[STEP nose] Built {len(faces)} face(s) "
+              f"from {len(wires)} arc+line sections")
+        return faces
 
     # ------------------------------------------------------------------
     #  Helper: build a ruled B-spline face between two point curves
@@ -293,7 +386,9 @@ class StepExportWorker(QThread):
             # ── Right-half spanwise stations (y ≥ 0) ────────────────
             n_main = 25  # denser for better edge matching
             y_core = np.linspace(0, half_w * 0.96, n_main)
-            tip_fracs = np.array([0.005, 0.01, 0.02, 0.04, 0.08])
+            # Extend close to the wingtip to avoid visible chopping
+            tip_fracs = np.array([0.0001, 0.001, 0.005, 0.01, 0.02,
+                                  0.04, 0.08])
             y_tips = half_w * (1.0 - tip_fracs)
             y_all = np.unique(np.concatenate([y_core, y_tips]))
             # Remove floating-point near-duplicates (e.g. linspace
@@ -304,20 +399,31 @@ class StepExportWorker(QThread):
             y_positions = y_all[mask]
             n_stations = len(y_positions)
 
-            # ── Build blunted streamlines in METERS ─────────────────
-            # (Like the cone waverider: build in meters, scale after.
-            #  This keeps coordinates in the 0-40 range so that OCC's
-            #  default tolerances (1e-6) work correctly.)
+            # ── Build BODY streams + nose arc data in METERS ─────────
+            # Body streams start at the upper tangent point (xc) where
+            # the blunting arc meets the flat/sloped surfaces.  Because
+            # these are perfectly smooth (no curvature break), the
+            # B-spline interpolation produces clean results.
+            # The LE nose cap is built separately by lofting through
+            # circular arc cross-sections — no B-spline needed there.
             self.progress.emit(
                 f"Building right-half surfaces ({n_stations} stations, "
                 f"R={wr.R*1000:.1f} mm)...")
-            upper_streams, lower_streams = self._build_blunted_streams(
-                wr, 1.0, y_positions, n_pts)  # scale=1.0 → meters
+            upper_streams, lower_streams, nose_data = \
+                self._build_body_streams(wr, y_positions, n_pts)
 
-            # ── B-spline upper & lower surfaces (in meters) ─────────
-            self.progress.emit("Fitting B-spline surfaces...")
+            # ── B-spline BODY surfaces (smooth, no oscillation) ─────
+            self.progress.emit("Fitting B-spline body surfaces...")
             upper_faces = _make_bspline_face(upper_streams)
             lower_faces = _make_bspline_face(lower_streams)
+
+            # ── LE nose cap (lofted through arc+line sections) ─────
+            nose_faces = None
+            has_blunting = any(nd['can_blunt'] for nd in nose_data)
+            if has_blunting:
+                self.progress.emit("Building LE nose cap...")
+                nose_faces = self._build_nose_face(
+                    nose_data, y_positions)
 
             # ── Closure faces (wire-based, same as cone waverider) ──
             self.progress.emit("Building closure faces...")
@@ -344,15 +450,33 @@ class StepExportWorker(QThread):
             back_face = cq.Face.makeFromWires(
                 cq.Wire.assembleEdges(back_edges))
 
-            # Symmetry face (y = 0 plane)
+            # Symmetry face (y = 0 plane) — includes nose region
             e_sym_upper = cq.Edge.makeSpline(
                 [cq.Vector(*map(float, p)) for p in upper_streams[0]])
             e_sym_lower = cq.Edge.makeSpline(
                 [cq.Vector(*map(float, p)) for p in lower_streams[0]])
             sym_edges = [e_center_te, e_sym_upper, e_sym_lower]
+            nd0 = nose_data[0]  # centerline station
             nose_dist = float(np.linalg.norm(
                 upper_streams[0][0] - lower_streams[0][0]))
-            if nose_dist > 1e-8:
+            if (nd0['can_blunt'] and nd0['R_eff'] >= 1e-4
+                    and nose_dist > 1e-8):
+                # Nose region: arc from body upper start through nose
+                # to lower tangent, then line to body lower start.
+                # This makes the symmetry face include the nose area.
+                p_su = cq.Vector(float(nd0['xc']), 0.0,
+                                 float(nd0['z_le']))
+                p_sn = cq.Vector(float(nd0['x_nose']), 0.0,
+                                 float(nd0['zc']))
+                p_sl = cq.Vector(float(nd0['x_lt']), 0.0,
+                                 float(nd0['z_lt']))
+                p_sbl = cq.Vector(float(nd0['xc']), 0.0,
+                                  float(nd0['z_lower_at_xc']))
+                e_sym_arc = cq.Edge.makeThreePointArc(
+                    p_su, p_sn, p_sl)
+                e_sym_nose_line = cq.Edge.makeLine(p_sl, p_sbl)
+                sym_edges.extend([e_sym_arc, e_sym_nose_line])
+            elif nose_dist > 1e-8:
                 e_nose = cq.Edge.makeLine(
                     cq.Vector(*map(float, lower_streams[0][0])),
                     cq.Vector(*map(float, upper_streams[0][0])))
@@ -362,6 +486,8 @@ class StepExportWorker(QThread):
 
             # Wingtip face (if non-degenerate)
             all_faces = upper_faces + lower_faces + [back_face, sym_face]
+            if nose_faces is not None:
+                all_faces.extend(nose_faces)
             if tip_te_dist > 1e-4:  # > 0.1 mm in meters
                 e_tip_upper = cq.Edge.makeSpline(
                     [cq.Vector(*map(float, p))
