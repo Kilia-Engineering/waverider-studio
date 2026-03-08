@@ -241,23 +241,31 @@ class PlanarWaverider:
         nose_x = np.copy(x_le)
         nose_z = np.copy(z_le)
 
+        # Pre-compute R_eff with smooth cosine taper (same as STEP export)
+        r_eff_arr = np.zeros(ny)
+        for j in range(ny):
+            theta_j = T_star[j] * theta
+            chord = L - x_le[j]
+            if theta_j >= np.radians(0.5) and chord > 1e-8:
+                te_thickness = chord * np.tan(theta_j)
+                R_max = 0.5 * te_thickness if te_thickness > 1e-9 else 0.0
+                r_ratio = min(R, R_max) / R if R > 0 else 0.0
+                # Smooth cosine ramp for gradual taper
+                if r_ratio < 0.99:
+                    r_eff_arr[j] = R * 0.5 * (
+                        1.0 - np.cos(np.pi * np.clip(r_ratio, 0.0, 1.0)))
+                else:
+                    r_eff_arr[j] = R
+
         for j in range(ny):
             theta_j = T_star[j] * theta
             chord = L - x_le[j]
 
-            # Skip if angle too small or no chord
-            if theta_j < np.radians(0.5) or chord < 1e-8:
+            R_eff = r_eff_arr[j]
+            if R_eff < 1e-6 or theta_j < np.radians(0.5) or chord < 1e-8:
                 continue
 
             half_theta = theta_j / 2.0
-
-            # Taper R_eff near wingtips: limit nose bump to ≤50% of
-            # the local trailing-edge thickness for smooth transition.
-            te_thickness = chord * np.tan(theta_j)
-            R_max = 0.5 * te_thickness if te_thickness > 1e-9 else 0.0
-            R_eff = min(R, R_max)
-            if R_eff < 1e-6:
-                continue
 
             # --- T&B adding-material EXTERIOR circle ---
             # Offset = R·tan(θ/2)  [tiny for small θ, NOT R/tan(θ/2)]
@@ -330,8 +338,10 @@ class PlanarWaverider:
         # Step 2: Compute Chebyshev coefficients
         self._compute_chebyshev_coefficients()
 
-        # Step 3: Create spanwise stations (half-span: 0 to w/2)
-        y_half = np.linspace(0, w / 2.0, ny)
+        # Step 3: Create spanwise stations (half-span: 0 to ~w/2)
+        # Stop slightly before w/2 to avoid degenerate wingtip row
+        # (at y=w/2, x_le=L so chord=0 and all grid points collapse)
+        y_half = np.linspace(0, w / 2.0 * (1.0 - 0.5 / ny), ny)
 
         # Step 4: At each spanwise station, compute LE position
         x_le = self._leading_edge_x(y_half)           # (ny,)
@@ -373,7 +383,16 @@ class PlanarWaverider:
             lower_y[j, :] = y_half[j]
             lower_z[j, :] = z_lower_j
 
-        # Step 7: Mirror to full span (negative y side)
+        # Step 7: Apply LE rounding if R > 0 (before mirroring)
+        if self.R > 0:
+            nose_x, nose_z = self._blend_le_rounding(
+                upper_x, upper_z, lower_x, lower_z,
+                x_le, z_le, T_star, theta, nx, ny)
+        else:
+            nose_x = x_le
+            nose_z = z_le
+
+        # Step 8: Mirror to full span (negative y side)
         # Reverse y_half[1:] to avoid duplicating centerline
         upper_x_full = np.vstack([upper_x[::-1], upper_x[1:]])
         upper_y_full = np.vstack([-upper_y[::-1], upper_y[1:]])
@@ -390,8 +409,8 @@ class PlanarWaverider:
         self.lower_surface_y = lower_y_full
         self.lower_surface_z = lower_z_full
 
-        # Step 8: Leading edge curve (full span)
-        le_half = np.column_stack([x_le, y_half, z_le])
+        # Step 9: Leading edge curve (full span) — use blunted nose positions
+        le_half = np.column_stack([nose_x, y_half, nose_z])
         le_mirror = le_half[::-1].copy()
         le_mirror[:, 1] *= -1.0
         self.leading_edge = np.vstack([le_mirror, le_half[1:]])
@@ -473,6 +492,47 @@ class PlanarWaverider:
             l1 = base_lower_idx[j + 1]
             faces.append([u0, u1, l1])
             faces.append([u0, l1, l0])
+
+        # --- Leading edge face (connect first column: upper LE to lower LE) ---
+        n_upper_verts = ny_full * nx  # offset for lower surface
+        for j in range(ny_full - 1):
+            u0 = j * nx + 0                        # upper LE vertex
+            u1 = (j + 1) * nx + 0
+            l0 = n_upper_verts + j * nx + 0         # lower LE vertex
+            l1 = n_upper_verts + (j + 1) * nx + 0
+            # Normals point forward (upstream)
+            faces.append([u0, l0, l1])
+            faces.append([u0, l1, u1])
+
+        # --- Symmetry face (at y=0, j=0 row: connect upper to lower) ---
+        # j=0 is the -y wingtip after mirroring, centerline is at j = ny_full//2
+        # After mirroring, the centerline row in full arrays is at j = ny-1
+        # (where ny = half-span count). In the full array: j=0 is -y tip,
+        # j=(ny-1) is centerline, j=(2*ny-2) is +y tip.
+        # Actually the half-span ny gives ny_full = 2*ny - 1.
+        # Centerline row = ny - 1 (index into ny_full).
+        ny_half = (ny_full + 1) // 2  # original half-span count
+        j_center = ny_half - 1        # centerline row in full arrays
+
+        # Left wingtip face (j=0)
+        for i in range(nx - 1):
+            u0 = 0 * nx + i
+            u1 = 0 * nx + (i + 1)
+            l0 = n_upper_verts + 0 * nx + i
+            l1 = n_upper_verts + 0 * nx + (i + 1)
+            faces.append([u0, u1, l1])
+            faces.append([u0, l1, l0])
+
+        # Right wingtip face (j = ny_full - 1)
+        j_tip = ny_full - 1
+        for i in range(nx - 1):
+            u0 = j_tip * nx + i
+            u1 = j_tip * nx + (i + 1)
+            l0 = n_upper_verts + j_tip * nx + i
+            l1 = n_upper_verts + j_tip * nx + (i + 1)
+            # Normals point outboard
+            faces.append([u0, l0, l1])
+            faces.append([u0, l1, u1])
 
         return np.array(verts), np.array(faces)
 

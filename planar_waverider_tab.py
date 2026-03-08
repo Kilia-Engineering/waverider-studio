@@ -69,7 +69,9 @@ class StepExportWorker(QThread):
         original flat/sloped surfaces at their respective tangent points.
 
         Uses a common normalized half-cosine parameterization across all
-        stations for consistent B-spline surface fitting.
+        stations for consistent B-spline surface fitting.  R_eff is tapered
+        smoothly via a cosine ramp near the wingtips to avoid abrupt
+        spanwise jumps that cause B-spline interpolation oscillation.
 
         Parameters
         ----------
@@ -85,17 +87,54 @@ class StepExportWorker(QThread):
         theta_base = np.radians(wr.wedge_angle_deg)
         R = wr.R
         L = wr.length
+        half_w = wr.width / 2.0
 
-        # Common normalized parameter: half-cosine clustering at LE
-        # t=0 → LE (fine spacing), t=1 → TE (coarse spacing)
-        t_param = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi / 2.0, n_pts)))
-        # Rescale so t_param[-1] == 1.0 exactly
-        t_param = t_param / t_param[-1]
+        # Common normalized parameter with gentle LE clustering.
+        # Use power-law (exponent 1.5) instead of half-cosine to avoid
+        # excessive point density at the arc-to-flat junction (x=xc).
+        # Half-cosine puts too many points right at the G2 curvature
+        # break, causing B-spline interpolation to oscillate.
+        # Power-law exponent 1.5 still clusters at LE but more gently.
+        t_param = np.linspace(0.0, 1.0, n_pts) ** 1.5
+
+        # --- Pre-compute smooth R_eff for each station ---
+        # Instead of hard min(R, R_max) which creates a spanwise step,
+        # use a smooth cosine taper based on fraction-of-span.
+        # R_eff transitions from full R at the core to 0 at the wingtip.
+        r_eff_arr = np.zeros(len(y_positions))
+        for idx, y_j in enumerate(y_positions):
+            x_le_j = float(wr._leading_edge_x(y_j))
+            T_star_j = float(wr._angle_perturbation(np.array([abs(y_j)]))[0])
+            theta_j = T_star_j * theta_base
+            chord = L - x_le_j
+
+            if R > 0 and theta_j > np.radians(0.5) and chord > 1e-6:
+                te_thickness = chord * np.tan(theta_j)
+                # Hard geometric limit
+                R_max = 0.5 * te_thickness if te_thickness > 1e-9 else 0.0
+                r_eff_arr[idx] = min(R, R_max)
+            else:
+                r_eff_arr[idx] = 0.0
+
+        # Apply smooth cosine ramp: where R_eff starts dropping below R,
+        # blend it over several stations instead of a hard cutoff.
+        # Find the span fraction where R_eff first drops below 0.99*R
+        if R > 0 and np.any(r_eff_arr > 1e-6):
+            # Normalize to [0, 1] relative to full R
+            r_ratio = r_eff_arr / R
+            # Smooth the ratio with a cosine ramp in the taper region
+            for idx in range(len(r_eff_arr)):
+                if r_ratio[idx] < 0.99:
+                    # Cosine ramp: map ratio from [0, 1] → smoothed
+                    # This prevents hard jumps — the derivative is 0
+                    # at both ends of the ramp
+                    r_eff_arr[idx] = R * 0.5 * (
+                        1.0 - np.cos(np.pi * np.clip(r_ratio[idx], 0.0, 1.0)))
 
         upper_streams = []
         lower_streams = []
 
-        for y_j in y_positions:
+        for idx, y_j in enumerate(y_positions):
             x_le_j = float(wr._leading_edge_x(y_j))
             z_le_j = float(wr._leading_edge_z(x_le_j))
 
@@ -103,24 +142,14 @@ class StepExportWorker(QThread):
             theta_j = T_star_j * theta_base
             chord = L - x_le_j
 
-            can_blunt = (R > 0 and theta_j > np.radians(0.5) and chord > 1e-6)
-            R_eff = R
+            R_eff = r_eff_arr[idx]
+            can_blunt = (R_eff > 1e-6 and theta_j > np.radians(0.5)
+                         and chord > 1e-6)
 
             if can_blunt:
                 half_theta = theta_j / 2.0
-                # Taper R_eff near wingtips: limit nose bump to ≤50% of
-                # the local trailing-edge thickness so the blunted nose
-                # transitions smoothly to the sharp tip.
-                te_thickness = chord * np.tan(theta_j)
-                R_max = 0.5 * te_thickness if te_thickness > 1e-9 else 0.0
-                R_eff = min(R, R_max)
-                if R_eff < 1e-6:
-                    can_blunt = False
-                else:
-                    # Exterior circle offset is R·tan(θ/2)
-                    offset = R_eff * np.tan(half_theta)
+                offset = R_eff * np.tan(half_theta)
 
-            if can_blunt:
                 # --- T&B adding-material exterior circle ---
                 xc = x_le_j + offset              # center x (tiny offset)
                 zc = z_le_j + R_eff               # center z (ABOVE upper)
@@ -164,7 +193,8 @@ class StepExportWorker(QThread):
 
             else:
                 # No blunting — half-cosine from LE to TE
-                x_local = x_le_j + t_param * chord if chord > 1e-9 else np.full(n_pts, x_le_j)
+                x_local = (x_le_j + t_param * chord if chord > 1e-9
+                           else np.full(n_pts, x_le_j))
                 z_upper = np.full(n_pts, z_le_j)
                 z_lower = z_le_j - np.tan(theta_j) * (x_local - x_le_j)
 
