@@ -357,13 +357,10 @@ class StepExportWorker(QThread):
             self.progress.emit("Sewing right-half solid...")
             right_solid = _sew_faces_to_solid(all_faces)  # default tol=1e-3
 
-            # ── Scale to mm, then mirror → compound ────────────────
-            self.progress.emit("Scaling & mirroring to full span...")
+            # ── Scale to mm → export right half only ───────────────
+            self.progress.emit("Scaling to mm...")
             right_solid = right_solid.scale(1000.0)  # m → mm
-            left_solid = right_solid.mirror(mirrorPlane='XZ')
-            compound = cq.Compound.makeCompound(
-                [right_solid, left_solid])
-            result = cq.Workplane("XY").newObject([compound])
+            result = cq.Workplane("XY").newObject([right_solid])
 
             # ── Export STEP ─────────────────────────────────────────
             self.progress.emit("Writing STEP file...")
