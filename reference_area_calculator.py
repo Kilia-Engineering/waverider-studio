@@ -182,32 +182,9 @@ def calculate_reference_area_from_stl(stl_filename):
     method : str
         Description of calculation method
     """
-    try:
-        from pysagas.geometry.parsers import MeshIO
-        cells = MeshIO.load_from_file(stl_filename)
-    except:
-        # Fallback to manual STL parsing
-        return _calculate_area_from_stl_manual(stl_filename)
-    
-    # Each cell is a triangle with vertices
-    total_area = 0.0
-    
-    for cell in cells:
-        # Get vertices (typically cell.verts or similar)
-        # Project onto X-Z plane (ignore Y coordinate)
-        try:
-            v1 = np.array([cell.verts[0].x, cell.verts[0].z])
-            v2 = np.array([cell.verts[1].x, cell.verts[1].z])
-            v3 = np.array([cell.verts[2].x, cell.verts[2].z])
-            
-            # Area of triangle in 2D
-            area = 0.5 * abs(np.cross(v2 - v1, v3 - v1))
-            total_area += area
-        except:
-            # If structure is different, try alternative
-            pass
-    
-    return total_area, "Projection from STL mesh"
+    # Use fast binary STL parser directly — avoids the slow PySAGAS
+    # MeshIO.load_from_file() which "transcribes cells" one by one.
+    return _calculate_area_from_stl_manual(stl_filename)
 
 
 def _calculate_area_from_stl_manual(stl_filename):

@@ -98,7 +98,7 @@ def _make_bspline_face(streams):
 
     Uses GeomAPI_PointsToBSplineSurface for exact interpolation through
     the grid. This preserves the grid structure and handles dome/loft
-    profiles naturally without oscillation.
+    profiles naturally without the oscillation of interpPlate.
 
     Parameters
     ----------
@@ -135,116 +135,23 @@ def _make_bspline_face(streams):
     # Interpolate through all grid points
     approx = GeomAPI_PointsToBSplineSurface()
     approx.Interpolate(grid)
+    if not approx.IsDone():
+        raise RuntimeError(
+            f"B-spline interpolation failed on {n_u}x{n_v} grid. "
+            "Check point spacing and grid regularity.")
     bspline_surface = approx.Surface()
 
     # Create face from the B-spline surface
     face_builder = BRepBuilderAPI_MakeFace(bspline_surface, 1e-6)
     face_builder.Build()
+    if not face_builder.IsDone():
+        raise RuntimeError(
+            f"BRepBuilderAPI_MakeFace failed on {n_u}x{n_v} B-spline surface "
+            f"(error code={face_builder.Error()}).")
     face = cq.Face(face_builder.Face())
 
     print(f"[BSpline] Surface built OK")
     return [face]
-
-
-def build_full_waverider_solid(upper_surf, lower_surf):
-    """
-    Build a NURBS solid from the full waverider surface arrays (both halves).
-
-    Uses GeomAPI_PointsToBSplineSurface on the full grid to avoid the
-    fragile mirror + boolean union that corrupts the symmetry plane.
-
-    Parameters
-    ----------
-    upper_surf : ndarray (n_le, n_stream, 3)
-        Full upper surface (left wingtip → center → right wingtip).
-    lower_surf : ndarray (n_le, n_stream, 3)
-        Full lower surface.
-
-    Returns
-    -------
-    cq.Solid
-        Full waverider solid.
-    """
-    n_le = upper_surf.shape[0]
-    n_stream = upper_surf.shape[1]
-
-    # Skip degenerate rows at wingtips (LE ≈ TE → stream extent < threshold)
-    valid = []
-    for i in range(n_le):
-        extent = np.linalg.norm(upper_surf[i, -1, :] - upper_surf[i, 0, :])
-        if extent > 1e-8:
-            valid.append(i)
-    n_valid = len(valid)
-    print(f"[FullSolid] {n_le} rows, {n_valid} valid (skipped "
-          f"{n_le - n_valid} degenerate wingtip rows)")
-
-    # Build upper surface B-spline
-    upper_streams = [upper_surf[i, :, :] for i in valid]
-    lower_streams = [lower_surf[i, :, :] for i in valid]
-
-    upper_faces = _make_bspline_face(upper_streams)
-    lower_faces = _make_bspline_face(lower_streams)
-
-    # Back face: connects upper TE to lower TE across full span
-    te_upper = np.array([upper_surf[i, -1, :] for i in valid])
-    te_lower = np.array([lower_surf[i, -1, :] for i in valid])
-
-    e1 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_upper])
-    e2 = cq.Edge.makeSpline([cq.Vector(*tuple(x)) for x in te_lower])
-    back_edges = [e1, e2]
-
-    # Wingtip closures (left and right)
-    for idx in [0, -1]:
-        wt_u = tuple(float(c) for c in te_upper[idx])
-        wt_l = tuple(float(c) for c in te_lower[idx])
-        if np.linalg.norm(np.array(wt_u) - np.array(wt_l)) > 1e-8:
-            back_edges.append(cq.Edge.makeLine(
-                cq.Vector(*wt_u), cq.Vector(*wt_l)))
-
-    back = cq.Face.makeFromWires(cq.Wire.assembleEdges(back_edges))
-
-    # Wingtip faces (small triangular/quad caps at each wingtip)
-    wt_faces = []
-    for idx in [0, -1]:
-        wt_u_le = tuple(float(c) for c in upper_surf[valid[idx], 0, :])
-        wt_u_te = tuple(float(c) for c in upper_surf[valid[idx], -1, :])
-        wt_l_le = tuple(float(c) for c in lower_surf[valid[idx], 0, :])
-        wt_l_te = tuple(float(c) for c in lower_surf[valid[idx], -1, :])
-
-        # LE points should be shared (upper LE = lower LE)
-        le_dist = np.linalg.norm(np.array(wt_u_le) - np.array(wt_l_le))
-        te_dist = np.linalg.norm(np.array(wt_u_te) - np.array(wt_l_te))
-
-        if te_dist < 1e-8:
-            continue  # Wingtip converges, no cap needed
-
-        try:
-            edges = []
-            # Upper edge (LE → TE on upper surface)
-            edges.append(cq.Edge.makeLine(
-                cq.Vector(*wt_u_le), cq.Vector(*wt_u_te)))
-            # TE closure (upper TE → lower TE)
-            edges.append(cq.Edge.makeLine(
-                cq.Vector(*wt_u_te), cq.Vector(*wt_l_te)))
-            # Lower edge (lower TE → lower LE)
-            edges.append(cq.Edge.makeLine(
-                cq.Vector(*wt_l_te), cq.Vector(*wt_l_le)))
-            # LE closure if needed
-            if le_dist > 1e-8:
-                edges.append(cq.Edge.makeLine(
-                    cq.Vector(*wt_l_le), cq.Vector(*wt_u_le)))
-
-            wire = cq.Wire.assembleEdges(edges)
-            wt_faces.append(cq.Face.makeFromWires(wire))
-        except Exception as e:
-            print(f"[FullSolid] Wingtip face at idx={idx} failed: {e}")
-
-    all_faces = upper_faces + lower_faces + [back] + wt_faces
-    print(f"[FullSolid] Sewing {len(all_faces)} faces "
-          f"(upper={len(upper_faces)}, lower={len(lower_faces)}, "
-          f"back=1, wingtip={len(wt_faces)})")
-
-    return _sew_faces_to_solid(all_faces)
 
 
 def _sew_faces_to_solid(faces, tolerance=1e-3):
@@ -308,9 +215,8 @@ def build_waverider_solid(upper_streams, lower_streams, le_curve,
     """
     Build a 4-face NURBS solid from waverider stream data (right half).
 
-    Uses lofting (BRepOffsetAPI_ThruSections) through streamline wires for
-    upper/lower surfaces. This preserves grid structure and avoids the
-    oscillation that interpPlate exhibits on dome-modified surfaces.
+    Uses GeomAPI_PointsToBSplineSurface for upper/lower surfaces (structured
+    grid interpolation), plus back and symmetry faces, sewn into a solid.
 
     Parameters
     ----------

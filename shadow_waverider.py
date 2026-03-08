@@ -61,17 +61,19 @@ class ShadowWaverider:
         gamma: float = 1.4,
         length: float = 1.0,
         top_surface_control: float = 0.0,
-        upper_surface_spline: Optional[list] = None
+        upper_surface_spline: Optional[list] = None,
+        volume_loft_spline: Optional[list] = None,
+        volume_loft_growth: str = 'linear'
     ):
         # Validate inputs
         if mach <= 1.0:
             raise ValueError("Mach number must be greater than 1.0")
-        
+
         # Check shock angle is valid (must be greater than Mach angle)
         mach_angle = np.degrees(np.arcsin(1.0 / mach))
         if shock_angle <= mach_angle:
             raise ValueError(f"Shock angle ({shock_angle}°) must be greater than Mach angle ({mach_angle:.2f}°)")
-        
+
         self.mach = float(mach)
         self.shock_angle = float(shock_angle)
         self.shock_angle_rad = np.radians(shock_angle)
@@ -81,6 +83,10 @@ class ShadowWaverider:
 
         # Upper surface dome (spline control points)
         self.upper_surface_spline = upper_surface_spline  # list of (span_frac, height) or None
+
+        # Volume loft (spline control points for back-face profile)
+        self.volume_loft_spline = volume_loft_spline  # list of (span_frac, height_offset) or None
+        self.volume_loft_growth = volume_loft_growth   # 'linear' or 'smooth'
 
         # Process polynomial coefficients
         self.poly_coeffs = list(poly_coeffs)
@@ -637,6 +643,50 @@ class ShadowWaverider:
         return CubicSpline(span_fracs, heights,
                            bc_type=((1, 0.0), 'natural'))
 
+    def _build_volume_loft_spline(self):
+        """
+        Build a CubicSpline for the volume loft back-face profile.
+
+        Returns a callable f(span_frac) -> height_offset, where:
+            span_frac: 0.0 (centerline) to 1.0 (wingtip)
+            height_offset: vertical offset to add to upper surface
+
+        Boundary conditions (same as dome):
+            f(1.0) = 0     (no offset at wingtip — meets original surface)
+            f'(0.0) = 0    (zero slope at centerline — tangency/symmetry)
+        """
+        if not self.volume_loft_spline or len(self.volume_loft_spline) == 0:
+            return None
+
+        # Sort control points by span fraction
+        points = sorted(self.volume_loft_spline, key=lambda p: p[0])
+
+        # Filter out any point at span >= 1.0 and add fixed tip anchor
+        span_fracs = [p[0] for p in points if p[0] < 0.999]
+        heights = [p[1] for p in points if p[0] < 0.999]
+
+        # Deduplicate: keep last value for each unique span fraction
+        unique = {}
+        for s, h in zip(span_fracs, heights):
+            unique[round(s, 6)] = h
+        span_fracs = sorted(unique.keys())
+        heights = [unique[s] for s in span_fracs]
+
+        # Add fixed tip anchor (zero offset at wingtip)
+        span_fracs.append(1.0)
+        heights.append(0.0)
+
+        span_fracs = np.array(span_fracs)
+        heights = np.array(heights)
+
+        # Need at least 2 points for CubicSpline
+        if len(span_fracs) < 2:
+            return None
+
+        # CubicSpline: zero slope at centerline (tangency), natural at tip
+        return CubicSpline(span_fracs, heights,
+                           bc_type=((1, 0.0), 'natural'))
+
     def _generate_upper_surface(self):
         """
         Generate upper surface.
@@ -659,9 +709,30 @@ class ShadowWaverider:
         if self.upper_surface_spline and len(self.upper_surface_spline) > 0:
             spline_func = self._build_cross_section_spline()
 
+        # Build spline interpolator for volume loft (if enabled)
+        vol_loft_func = self._build_volume_loft_spline()
+
         # Compute span normalization from LE points
         x_positions = self.leading_edge[:, 0]  # internal X = span
         x_max = np.max(np.abs(x_positions))
+
+        # Pre-compute TE baseline Y (before dome/loft) for each LE station.
+        # Stored for overlay visualization so it can show offsets relative
+        # to the original surface, not the already-modified surface.
+        te_baseline_sf = []
+        te_baseline_y = []
+        for le_pt in self.leading_edge:
+            x_s, y_s, z_s = le_pt
+            sf = abs(x_s) / x_max if x_max > 1e-10 else 0.0
+            if A == 0.0:
+                y_te = y_s
+            else:
+                dz = self.z_end - z_s
+                y_te = y_s + abs(y_s) * (np.exp((A / 100.0) * dz) - 1.0)
+            te_baseline_sf.append(sf)
+            te_baseline_y.append(y_te)
+        self._te_baseline_sf = np.array(te_baseline_sf)
+        self._te_baseline_y = np.array(te_baseline_y)
 
         for i, le_point in enumerate(self.leading_edge):
             x_start, y_start, z_start = le_point
@@ -687,12 +758,23 @@ class ShadowWaverider:
                     offset = float(spline_func(sf))
                     y += max(offset, 0.0) * growth  # only add positive offsets
 
+                # Apply volume loft offset (additive, after dome)
+                if vol_loft_func is not None:
+                    sf = min(max(span_frac, 0.0), 1.0)
+                    vol_offset = float(vol_loft_func(sf))
+                    t = j / max(self.n_streamwise - 1, 1)
+                    if self.volume_loft_growth == 'smooth':
+                        vol_growth = 6*t**5 - 15*t**4 + 10*t**3  # smootherstep
+                    else:
+                        vol_growth = t  # linear
+                    y += max(vol_offset, 0.0) * vol_growth
+
                 streamline.append([x_start, y, z])
 
             upper_surface.append(streamline)
 
         # Clamp to shock cone boundary
-        if spline_func is not None:
+        if spline_func is not None or vol_loft_func is not None:
             clamped = 0
             for i in range(len(upper_surface)):
                 for j in range(len(upper_surface[i])):
@@ -705,8 +787,8 @@ class ShadowWaverider:
                             clamped += 1
             if clamped > 0:
                 warnings.warn(
-                    f"Upper surface dome: {clamped} points clamped to "
-                    f"stay within shock cone. Consider reducing dome height.")
+                    f"Upper surface: {clamped} points clamped to "
+                    f"stay within shock cone. Consider reducing dome/loft height.")
 
         self.upper_surface = np.array(upper_surface)
     
