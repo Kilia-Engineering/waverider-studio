@@ -108,11 +108,17 @@ class StepExportWorker(QThread):
 
             if can_blunt:
                 half_theta = theta_j / 2.0
-                # Exterior circle offset is R·tan(θ/2) — tiny for small θ
-                offset = R_eff * np.tan(half_theta)
-                # Only skip if chord is too small to host any blunting
-                if chord < R_eff * 0.5:
+                # Taper R_eff near wingtips: limit nose bump to ≤50% of
+                # the local trailing-edge thickness so the blunted nose
+                # transitions smoothly to the sharp tip.
+                te_thickness = chord * np.tan(theta_j)
+                R_max = 0.5 * te_thickness if te_thickness > 1e-9 else 0.0
+                R_eff = min(R, R_max)
+                if R_eff < 1e-6:
                     can_blunt = False
+                else:
+                    # Exterior circle offset is R·tan(θ/2)
+                    offset = R_eff * np.tan(half_theta)
 
             if can_blunt:
                 # --- T&B adding-material exterior circle ---
@@ -170,6 +176,62 @@ class StepExportWorker(QThread):
 
         return upper_streams, lower_streams
 
+    # ------------------------------------------------------------------
+    #  Helper: build a ruled B-spline face between two point curves
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_ruled_face(curve_a, curve_b, label="face"):
+        """Build a ruled B-spline face interpolated between two curves.
+
+        Parameters
+        ----------
+        curve_a, curve_b : array-like, shape (N, 3)
+            Two boundary curves with the same number of points.
+        label : str
+            Descriptive name for error messages.
+
+        Returns
+        -------
+        cq.Face
+        """
+        import cadquery as cq
+        from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+        from OCP.TColgp import TColgp_Array2OfPnt
+        from OCP.gp import gp_Pnt
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+
+        pts_a = np.asarray(curve_a)
+        pts_b = np.asarray(curve_b)
+        n = len(pts_a)
+
+        grid = TColgp_Array2OfPnt(1, n, 1, 2)
+        for i in range(n):
+            grid.SetValue(i + 1, 1,
+                          gp_Pnt(float(pts_a[i][0]),
+                                 float(pts_a[i][1]),
+                                 float(pts_a[i][2])))
+            grid.SetValue(i + 1, 2,
+                          gp_Pnt(float(pts_b[i][0]),
+                                 float(pts_b[i][1]),
+                                 float(pts_b[i][2])))
+
+        approx = GeomAPI_PointsToBSplineSurface()
+        approx.Interpolate(grid)
+        if not approx.IsDone():
+            raise RuntimeError(
+                f"{label}: B-spline interpolation failed ({n}×2 grid)")
+        face_builder = BRepBuilderAPI_MakeFace(approx.Surface(), 1e-3)
+        face_builder.Build()
+        if not face_builder.IsDone():
+            raise RuntimeError(
+                f"{label}: MakeFace failed (error={face_builder.Error()})")
+        return cq.Face(face_builder.Face())
+
+    # ------------------------------------------------------------------
+    #  Main export: 5-face right-half solid → mirror → STEP
+    # ------------------------------------------------------------------
+
     def run(self):
         try:
             import cadquery as cq
@@ -177,103 +239,91 @@ class StepExportWorker(QThread):
             from waverider_generator.cad_export import (
                 _make_bspline_face, _sew_faces_to_solid,
             )
+            from OCP.gp import gp_Pnt, gp_Dir, gp_Ax2, gp_Trsf
+            from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+            from OCP.TopoDS import TopoDS
 
             wr = self.waverider
-            scale = 1000.0  # m -> mm
+            scale = 1000.0  # m → mm
             L = wr.length
             w = wr.width
             half_w = w / 2.0
 
-            # --- Adaptive streamwise resolution based on R/chord ---
-            # Half-cosine first spacing ≈ chord * π²/(4*n²), so to resolve
-            # the blunting arc (width ≈ R_eff) we need n ≥ (π/2)*√(chord/R).
-            # Clamp to [50, 120] for tractable B-spline fitting.
-            n_pts = 50  # default (increased from 30 for better LE resolution)
+            # ── Adaptive streamwise resolution ──────────────────────
+            n_pts = 50
             if wr.R > 0:
                 theta_base = np.radians(wr.wedge_angle_deg)
                 if theta_base > np.radians(0.5):
-                    arc_width = wr.R  # inscribed circle radius ≈ arc width
-                    chord_center = L  # centerline chord ≈ L (x_le ≈ 0)
+                    arc_width = wr.R
+                    chord_center = L
                     if arc_width > 0 and arc_width / chord_center >= 1e-4:
                         n_needed = int(np.ceil(
-                            (np.pi / 2.0) * np.sqrt(chord_center / arc_width)))
+                            (np.pi / 2.0)
+                            * np.sqrt(chord_center / arc_width)))
                         n_pts = max(n_pts, min(n_needed, 120))
-            print(f"[STEP] Using n_pts={n_pts} streamwise points")
+            print(f"[STEP] n_pts={n_pts} streamwise points")
 
-            # --- Build custom y distribution with fine tip resolution ---
-            # Core: ~21 uniform stations across 96% of the span
-            # (odd count ensures y=0 is included for the centerline)
-            n_main = 21
-            y_uniform = np.linspace(-half_w * 0.96, half_w * 0.96, n_main)
-
-            # Extra fine stations near wingtips for smooth geometric taper.
-            # Fractional offsets from tip (relative to half-span):
+            # ── Right-half spanwise stations (y ≥ 0) ────────────────
+            n_main = 15
+            y_core = np.linspace(0, half_w * 0.96, n_main)
             tip_fracs = np.array([0.005, 0.01, 0.02, 0.04, 0.08])
-            tip_offsets = tip_fracs * half_w
-            y_left_tip = -half_w + tip_offsets
-            y_right_tip = half_w - tip_offsets[::-1]
+            y_tips = half_w * (1.0 - tip_fracs)
+            y_positions = np.unique(np.concatenate([y_core, y_tips]))
+            n_stations = len(y_positions)
 
-            y_positions = np.unique(np.concatenate([
-                y_left_tip, y_uniform, y_right_tip
-            ]))
-
-            # Build streamlines (works for both R>0 and R=0)
+            # ── Build blunted streamlines (right half) ──────────────
             self.progress.emit(
-                f"Building surfaces ({len(y_positions)} stations, "
+                f"Building right-half surfaces ({n_stations} stations, "
                 f"R={wr.R*1000:.1f} mm)...")
             upper_streams, lower_streams = self._build_blunted_streams(
                 wr, scale, y_positions, n_pts)
 
+            # ── B-spline upper & lower surfaces ─────────────────────
             self.progress.emit("Fitting B-spline surfaces...")
             upper_faces = _make_bspline_face(upper_streams)
             lower_faces = _make_bspline_face(lower_streams)
 
-            from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
-            from OCP.TColgp import TColgp_Array2OfPnt
-            from OCP.gp import gp_Pnt
-            from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+            # ── Closure faces (ruled surfaces) ──────────────────────
+            self.progress.emit("Building closure faces...")
 
-            # Base face (trailing edge, x = L)
-            self.progress.emit("Building base face...")
-            n_streams = len(upper_streams)
+            # 1) Base face — trailing edge (x = L), ruled upper-TE → lower-TE
+            base_face = self._make_ruled_face(
+                [s[-1] for s in upper_streams],
+                [s[-1] for s in lower_streams],
+                label="Base face")
 
-            # TE base face — ruled surface between upper TE and lower TE
-            base_upper = np.array([s[-1] for s in upper_streams])
-            base_lower = np.array([s[-1] for s in lower_streams])
-            n_base = n_streams
+            # 2) Symmetry face — centerline (y = 0), upper-CL → lower-CL
+            sym_face = self._make_ruled_face(
+                upper_streams[0], lower_streams[0],
+                label="Symmetry face")
 
-            base_grid = TColgp_Array2OfPnt(1, n_base, 1, 2)
-            for k in range(n_base):
-                base_grid.SetValue(k + 1, 1,
-                                   gp_Pnt(*base_upper[k].tolist()))
-                base_grid.SetValue(k + 1, 2,
-                                   gp_Pnt(*base_lower[k].tolist()))
-            approx = GeomAPI_PointsToBSplineSurface()
-            approx.Interpolate(base_grid)
-            if not approx.IsDone():
-                raise RuntimeError(
-                    f"Base face B-spline interpolation failed "
-                    f"on {n_base}x2 grid.")
-            face_builder = BRepBuilderAPI_MakeFace(approx.Surface(), 1e-3)
-            face_builder.Build()
-            if not face_builder.IsDone():
-                raise RuntimeError(
-                    f"Base face MakeFace failed "
-                    f"(error={face_builder.Error()}).")
-            base_face = cq.Face(face_builder.Face())
+            # 3) Wingtip face — last station, upper-tip → lower-tip
+            tip_face = self._make_ruled_face(
+                upper_streams[-1], lower_streams[-1],
+                label="Wingtip face")
 
-            # No explicit wingtip caps needed — the fine-resolution tip
-            # stations make upper/lower surfaces converge smoothly to a
-            # near-point, closing the geometry naturally.
+            # ── Sew right-half solid ────────────────────────────────
+            self.progress.emit("Sewing right-half solid...")
+            all_faces = (upper_faces + lower_faces
+                         + [base_face, sym_face, tip_face])
+            right_solid = _sew_faces_to_solid(all_faces, tolerance=1.0)
 
-            # Sew into solid
-            self.progress.emit("Sewing faces into solid...")
-            all_faces = upper_faces + lower_faces + [base_face]
-            solid = _sew_faces_to_solid(all_faces, tolerance=0.1 * scale)
+            # ── Mirror across XZ plane (y = 0) for left half ───────
+            self.progress.emit("Mirroring to full span...")
+            mirror_trsf = gp_Trsf()
+            mirror_trsf.SetMirror(
+                gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)))
+            builder = BRepBuilderAPI_Transform(
+                right_solid.wrapped, mirror_trsf, True)
+            left_solid = cq.Solid(TopoDS.Solid_s(builder.Shape()))
 
+            # ── Export as compound (two symmetric half-bodies) ──────
             self.progress.emit("Writing STEP file...")
-            compound = cq.Workplane("XY").newObject([solid])
-            exporters.export(compound, self.filename)
+            compound = cq.Compound.makeCompound(
+                [right_solid, left_solid])
+            exporters.export(
+                cq.Workplane("XY").newObject([compound]),
+                self.filename)
             self.finished.emit(self.filename)
 
         except Exception as e:
@@ -1052,11 +1102,11 @@ class PlanarWaveriderTab(QWidget):
     # ── Presets (Table 1 from the paper) ────────────────────────────
 
     def _load_preset_initial(self):
-        """Initial guess: Table 1 row 1."""
+        """Initial guess: Table 1 row 1 (actual paper values)."""
         self.mach_spin.setValue(6.85)
         self.alt_spin.setValue(25.0)
         self.alpha_spin.setValue(0.0)
-        self.length_spin.setValue(1.0)
+        self.length_spin.setValue(40.0)
         self.width_spin.setValue(12.0)
         self.n_spin.setValue(0.5)
         self.beta_spin.setValue(9.0)
@@ -1064,14 +1114,14 @@ class PlanarWaveriderTab(QWidget):
         self.p1_spin.setValue(1.0)
         self.p2_spin.setValue(1.0)
         self.p3_spin.setValue(1.0)
-        self.radius_spin.setValue(0.0025)  # R/L = 0.25%
+        self.radius_spin.setValue(0.1)  # R/L = 0.25%
 
     def _load_preset_opt_analytical(self):
-        """Analytical optimized: Table 1 row 2."""
+        """Analytical optimized: Table 1 row 2 (actual paper values)."""
         self.mach_spin.setValue(6.85)
         self.alt_spin.setValue(25.0)
         self.alpha_spin.setValue(0.0)
-        self.length_spin.setValue(1.0)
+        self.length_spin.setValue(40.0)
         self.width_spin.setValue(12.81)
         self.n_spin.setValue(0.90)
         self.beta_spin.setValue(5.42)
@@ -1079,14 +1129,14 @@ class PlanarWaveriderTab(QWidget):
         self.p1_spin.setValue(1.47)
         self.p2_spin.setValue(1.54)
         self.p3_spin.setValue(1.57)
-        self.radius_spin.setValue(0.0025)
+        self.radius_spin.setValue(0.1)
 
     def _load_preset_opt_cfd(self):
-        """CFD optimized: Table 1 row 3."""
+        """CFD optimized: Table 1 row 3 (actual paper values)."""
         self.mach_spin.setValue(6.85)
         self.alt_spin.setValue(25.0)
         self.alpha_spin.setValue(0.0)
-        self.length_spin.setValue(1.0)
+        self.length_spin.setValue(40.0)
         self.width_spin.setValue(19.06)
         self.n_spin.setValue(0.90)
         self.beta_spin.setValue(9.00)
@@ -1094,7 +1144,7 @@ class PlanarWaveriderTab(QWidget):
         self.p1_spin.setValue(0.98)
         self.p2_spin.setValue(1.02)
         self.p3_spin.setValue(0.97)
-        self.radius_spin.setValue(0.0025)
+        self.radius_spin.setValue(0.1)
 
     # ── Parameter serialisation (JSON save / load) ─────────────────
 

@@ -55,27 +55,30 @@ class PlanarWaverider:
     def _compute_wedge_angle(self, use_finite_mach=None):
         """Compute wedge angle θ from shock angle β.
 
-        When use_finite_mach is None (default), auto-selects:
-          - Eq. (22) finite-Mach when p1=p2=p3=1 (on-design, no perturbations)
-          - Eq. (4) M→∞ limit when any p_i ≠ 1 (off-design perturbations)
-        This matches the paper's convention (Section 3.2).
+        When use_finite_mach is None (default), uses Eq. (4) — the M→∞
+        limit of the θ-β-M relation.  This is the paper's standard formula
+        for the base wedge angle, used for both the initial design and the
+        full optimisation (Section 3.2).
+
+        Eq. (22) — the finite-Mach relation — is available as an explicit
+        override (use_finite_mach=True) for off-design perturbation
+        analysis, but is NOT the default.
         """
         beta = np.radians(self.beta_deg)
         g = self.gamma
         M = self.M_inf
 
         if use_finite_mach is None:
-            # Auto-select: Eq. 22 for on-design, Eq. 4 for off-design
-            use_finite_mach = (self.p1 == 1.0 and self.p2 == 1.0
-                               and self.p3 == 1.0)
+            # Default: Eq. 4 (M→∞ limit) per paper Section 3.2
+            use_finite_mach = False
 
         if use_finite_mach:
-            # Eq. (22): finite-Mach θ-β-M relation
+            # Eq. (22): finite-Mach θ-β-M relation (for off-design analysis)
             num = 2.0 * np.cos(beta) / np.sin(beta) * (M**2 * np.sin(beta)**2 - 1.0)
             den = M**2 * (g + np.cos(2.0 * beta)) + 2.0
             theta = np.arctan(num / den)
         else:
-            # Eq. (4): M→∞ limit (for off-design with perturbations)
+            # Eq. (4): M→∞ limit — standard formula for base wedge angle
             num = 2.0 * np.cos(beta) / np.sin(beta) * np.sin(beta)**2
             den = g + np.cos(2.0 * beta)
             theta = np.arctan(num / den)
@@ -247,10 +250,13 @@ class PlanarWaverider:
                 continue
 
             half_theta = theta_j / 2.0
-            R_eff = R
 
-            # Skip if chord too small to host blunting
-            if chord < R_eff * 0.5:
+            # Taper R_eff near wingtips: limit nose bump to ≤50% of
+            # the local trailing-edge thickness for smooth transition.
+            te_thickness = chord * np.tan(theta_j)
+            R_max = 0.5 * te_thickness if te_thickness > 1e-9 else 0.0
+            R_eff = min(R, R_max)
+            if R_eff < 1e-6:
                 continue
 
             # --- T&B adding-material EXTERIOR circle ---
