@@ -242,7 +242,6 @@ class StepExportWorker(QThread):
             )
 
             wr = self.waverider
-            scale = 1000.0  # m → mm
             L = wr.length
             w = wr.width
             half_w = w / 2.0
@@ -262,21 +261,30 @@ class StepExportWorker(QThread):
             print(f"[STEP] n_pts={n_pts} streamwise points")
 
             # ── Right-half spanwise stations (y ≥ 0) ────────────────
-            n_main = 25  # denser than before for better edge matching
+            n_main = 25  # denser for better edge matching
             y_core = np.linspace(0, half_w * 0.96, n_main)
             tip_fracs = np.array([0.005, 0.01, 0.02, 0.04, 0.08])
             y_tips = half_w * (1.0 - tip_fracs)
-            y_positions = np.unique(np.concatenate([y_core, y_tips]))
+            y_all = np.unique(np.concatenate([y_core, y_tips]))
+            # Remove floating-point near-duplicates (e.g. linspace
+            # 5.52 vs 6.0*0.92=5.52 differ by ~1e-15).
+            # makeSpline crashes on duplicate consecutive points.
+            mask = np.concatenate(
+                [[True], np.diff(y_all) > 1e-10])
+            y_positions = y_all[mask]
             n_stations = len(y_positions)
 
-            # ── Build blunted streamlines (right half) ──────────────
+            # ── Build blunted streamlines in METERS ─────────────────
+            # (Like the cone waverider: build in meters, scale after.
+            #  This keeps coordinates in the 0-40 range so that OCC's
+            #  default tolerances (1e-6) work correctly.)
             self.progress.emit(
                 f"Building right-half surfaces ({n_stations} stations, "
                 f"R={wr.R*1000:.1f} mm)...")
             upper_streams, lower_streams = self._build_blunted_streams(
-                wr, scale, y_positions, n_pts)
+                wr, 1.0, y_positions, n_pts)  # scale=1.0 → meters
 
-            # ── B-spline upper & lower surfaces ─────────────────────
+            # ── B-spline upper & lower surfaces (in meters) ─────────
             self.progress.emit("Fitting B-spline surfaces...")
             upper_faces = _make_bspline_face(upper_streams)
             lower_faces = _make_bspline_face(lower_streams)
@@ -324,7 +332,7 @@ class StepExportWorker(QThread):
 
             # Wingtip face (if non-degenerate)
             all_faces = upper_faces + lower_faces + [back_face, sym_face]
-            if tip_te_dist > 0.1:  # > 0.1 mm
+            if tip_te_dist > 1e-4:  # > 0.1 mm in meters
                 e_tip_upper = cq.Edge.makeSpline(
                     [cq.Vector(*map(float, p))
                      for p in upper_streams[-1]])
@@ -345,12 +353,13 @@ class StepExportWorker(QThread):
                     cq.Wire.assembleEdges(tip_edges))
                 all_faces.append(tip_face)
 
-            # ── Sew right-half solid ────────────────────────────────
+            # ── Sew right-half solid (in meters) ────────────────────
             self.progress.emit("Sewing right-half solid...")
-            right_solid = _sew_faces_to_solid(all_faces, tolerance=1.0)
+            right_solid = _sew_faces_to_solid(all_faces)  # default tol=1e-3
 
-            # ── Mirror + union (same as cone waverider) ─────────────
-            self.progress.emit("Mirroring to full span...")
+            # ── Scale to mm, then mirror + union ────────────────────
+            self.progress.emit("Scaling & mirroring to full span...")
+            right_solid = right_solid.scale(1000.0)  # m → mm
             left_solid = right_solid.mirror(mirrorPlane='XZ')
             result = cq.Workplane("XY").newObject(
                 [right_solid]).union(left_solid)
