@@ -24,6 +24,9 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 from planar_waverider import PlanarWaverider
 from planar_waverider_aero import PlanarWaveriderAero, atmosphere
+from planar_waverider_optimizer import (
+    PlanarWaveriderEvaluator, PlanarWaveriderOptimizer,
+)
 
 # Optional CAD export
 try:
@@ -562,6 +565,85 @@ class PlanarWaveriderWorker(QThread):
             self.error.emit(f"{e}\n{traceback.format_exc()}")
 
 
+class PlanarOptimizationWorker(QThread):
+    """Runs planar waverider optimization in a background thread."""
+
+    progress_update = pyqtSignal(int, int, float, float)  # iter, max, best_LD, best_eta
+    optimization_complete = pyqtSignal(dict)  # best result dict
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, fixed_params, bounds, opt_settings, parent=None):
+        """
+        Parameters
+        ----------
+        fixed_params : dict
+            length, R, M_inf, alpha_deg, altitude_km, gamma, T_wall, nx, ny
+        bounds : list of (lo, hi)
+            7 tuples for [width, n, beta_deg, epsilon, p1, p2, p3]
+        opt_settings : dict
+            popsize, maxiter, tol, eta_vol_min, seed
+        """
+        super().__init__(parent)
+        self.fixed_params = fixed_params
+        self.bounds = bounds
+        self.opt_settings = opt_settings
+        self._optimizer = None
+
+    def run(self):
+        try:
+            fp = self.fixed_params
+            evaluator = PlanarWaveriderEvaluator(
+                length=fp['length'],
+                R=fp['R'],
+                M_inf=fp['M_inf'],
+                alpha_deg=fp['alpha_deg'],
+                altitude_km=fp['altitude_km'],
+                gamma=fp.get('gamma', 1.4),
+                T_wall=fp.get('T_wall'),
+                nx=fp.get('nx', 60),
+                ny=fp.get('ny', 40),
+            )
+
+            s = self.opt_settings
+            self._optimizer = PlanarWaveriderOptimizer(
+                evaluator=evaluator,
+                bounds=self.bounds,
+                eta_vol_min=s.get('eta_vol_min', 0.0),
+                popsize=s.get('popsize', 15),
+                maxiter=s.get('maxiter', 100),
+                tol=s.get('tol', 1e-6),
+                callback=self._on_generation,
+                seed=s.get('seed'),
+            )
+
+            best_x, best_metrics, history = self._optimizer.optimize_ld()
+
+            if best_x is not None and best_metrics is not None:
+                result = dict(best_metrics)
+                result['best_x'] = best_x.tolist()
+                result['n_evals'] = evaluator.cache_stats()[0]
+                result['n_cache_hits'] = evaluator.cache_stats()[1]
+                result['history'] = history
+                self.optimization_complete.emit(result)
+            else:
+                self.error_occurred.emit(
+                    "Optimization found no feasible design.")
+
+        except Exception as e:
+            self.error_occurred.emit(f"{e}\n{traceback.format_exc()}")
+
+    def _on_generation(self, iteration, maxiter, best_x, best_LD,
+                       best_metrics, history):
+        """Callback from optimizer after each DE generation."""
+        eta = best_metrics.get('eta_vol', 0.0) if best_metrics else 0.0
+        self.progress_update.emit(iteration, maxiter, best_LD, eta)
+
+    def stop(self):
+        """Signal optimizer to stop after current generation."""
+        if self._optimizer is not None:
+            self._optimizer.stop()
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  3D Canvas
 # ──────────────────────────────────────────────────────────────────────
@@ -764,6 +846,8 @@ class PlanarWaveriderTab(QWidget):
         self.waverider = None
         self.aero_results = None
         self.worker = None
+        self.opt_worker = None
+        self._best_design = None  # best optimizer result
         self.init_ui()
 
     # ── UI Construction ─────────────────────────────────────────────
@@ -787,6 +871,7 @@ class PlanarWaveriderTab(QWidget):
         left_layout.addWidget(self._create_generate_group())
         left_layout.addWidget(self._create_results_group())
         left_layout.addWidget(self._create_export_group())
+        left_layout.addWidget(self._create_optimization_group())
         left_layout.addStretch()
 
         # Connect width to chebyshev preview (both widgets exist now)
@@ -1124,6 +1209,270 @@ class PlanarWaveriderTab(QWidget):
 
         group.setLayout(layout)
         return group
+
+    # ── Optimization Group ────────────────────────────────────────
+
+    def _create_optimization_group(self):
+        """Build the optimization controls group box."""
+        group = QGroupBox("Optimization (Jessen et al.)")
+        layout = QVBoxLayout()
+
+        # ── Bounds grid: 7 variables x (lo, hi) ──
+        bounds_grid = QGridLayout()
+        bounds_grid.setSpacing(3)
+
+        self._opt_bound_spins = {}
+        defaults = PlanarWaveriderOptimizer.DEFAULT_BOUNDS
+
+        row = 0
+        for name, label, lo_default, hi_default, dec, step in [
+            ('width', 'Width [m]', 0.1, 60.0, 2, 1.0),
+            ('n', 'n (power)', 0.1, 0.9, 2, 0.05),
+            ('beta_deg', 'Beta [deg]', 1.0, 20.0, 2, 0.5),
+            ('epsilon', 'Epsilon', -1.0, 1.0, 2, 0.1),
+            ('p1', 'p1', 0.5, 3.0, 2, 0.1),
+            ('p2', 'p2', 0.5, 3.0, 2, 0.1),
+            ('p3', 'p3', 0.5, 3.0, 2, 0.1),
+        ]:
+            bounds_grid.addWidget(QLabel(label), row, 0)
+
+            lo_spin = QDoubleSpinBox()
+            lo_spin.setDecimals(dec)
+            lo_spin.setRange(-100.0, 1000.0)
+            lo_spin.setSingleStep(step)
+            lo_spin.setValue(lo_default)
+            bounds_grid.addWidget(lo_spin, row, 1)
+
+            hi_spin = QDoubleSpinBox()
+            hi_spin.setDecimals(dec)
+            hi_spin.setRange(-100.0, 1000.0)
+            hi_spin.setSingleStep(step)
+            hi_spin.setValue(hi_default)
+            bounds_grid.addWidget(hi_spin, row, 2)
+
+            self._opt_bound_spins[name] = (lo_spin, hi_spin)
+            row += 1
+
+        # Column headers
+        bounds_header = QHBoxLayout()
+        bounds_header.addWidget(QLabel("Variable"))
+        bounds_header.addWidget(QLabel("Lower"))
+        bounds_header.addWidget(QLabel("Upper"))
+        layout.addLayout(bounds_header)
+        layout.addLayout(bounds_grid)
+
+        # ── Settings row ──
+        settings_grid = QGridLayout()
+        settings_grid.setSpacing(3)
+
+        settings_grid.addWidget(QLabel("Population:"), 0, 0)
+        self.opt_popsize_spin = QSpinBox()
+        self.opt_popsize_spin.setRange(5, 100)
+        self.opt_popsize_spin.setValue(15)
+        self.opt_popsize_spin.setToolTip("DE population size multiplier (total = pop x 7)")
+        settings_grid.addWidget(self.opt_popsize_spin, 0, 1)
+
+        settings_grid.addWidget(QLabel("Max iter:"), 0, 2)
+        self.opt_maxiter_spin = QSpinBox()
+        self.opt_maxiter_spin.setRange(5, 10000)
+        self.opt_maxiter_spin.setValue(100)
+        self.opt_maxiter_spin.setToolTip("Maximum DE generations")
+        settings_grid.addWidget(self.opt_maxiter_spin, 0, 3)
+
+        settings_grid.addWidget(QLabel("eta_vol min:"), 1, 0)
+        self.opt_eta_spin = QDoubleSpinBox()
+        self.opt_eta_spin.setDecimals(4)
+        self.opt_eta_spin.setRange(0.0, 1.0)
+        self.opt_eta_spin.setSingleStep(0.001)
+        self.opt_eta_spin.setValue(0.0)
+        self.opt_eta_spin.setToolTip("Minimum volumetric efficiency constraint (0 = off)")
+        settings_grid.addWidget(self.opt_eta_spin, 1, 1)
+
+        settings_grid.addWidget(QLabel("Seed:"), 1, 2)
+        self.opt_seed_spin = QSpinBox()
+        self.opt_seed_spin.setRange(0, 99999)
+        self.opt_seed_spin.setValue(42)
+        self.opt_seed_spin.setSpecialValueText("Random")
+        self.opt_seed_spin.setToolTip("Random seed (0 = random)")
+        settings_grid.addWidget(self.opt_seed_spin, 1, 3)
+
+        layout.addLayout(settings_grid)
+
+        # ── Buttons ──
+        btn_layout = QHBoxLayout()
+
+        self.opt_run_btn = QPushButton("Run Optimization")
+        self.opt_run_btn.setStyleSheet(
+            "QPushButton { background-color: #8B4513; color: white; "
+            "padding: 6px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #A0522D; }"
+        )
+        self.opt_run_btn.clicked.connect(self._run_optimization)
+        btn_layout.addWidget(self.opt_run_btn)
+
+        self.opt_stop_btn = QPushButton("Stop")
+        self.opt_stop_btn.setEnabled(False)
+        self.opt_stop_btn.clicked.connect(self._stop_optimization)
+        btn_layout.addWidget(self.opt_stop_btn)
+
+        self.opt_load_btn = QPushButton("Load Best")
+        self.opt_load_btn.setEnabled(False)
+        self.opt_load_btn.setToolTip("Load best design into geometry spinboxes")
+        self.opt_load_btn.clicked.connect(self._load_best_design)
+        btn_layout.addWidget(self.opt_load_btn)
+
+        layout.addLayout(btn_layout)
+
+        # ── Progress ──
+        self.opt_progress_bar = QProgressBar()
+        self.opt_progress_bar.setRange(0, 100)
+        self.opt_progress_bar.setValue(0)
+        layout.addWidget(self.opt_progress_bar)
+
+        self.opt_status_label = QLabel("")
+        self.opt_status_label.setWordWrap(True)
+        layout.addWidget(self.opt_status_label)
+
+        group.setLayout(layout)
+        return group
+
+    # ── Optimization handlers ────────────────────────────────────
+
+    def _run_optimization(self):
+        """Collect parameters and launch the optimization worker."""
+        if self.opt_worker is not None and self.opt_worker.isRunning():
+            QMessageBox.warning(self, "Busy", "Optimization already running.")
+            return
+
+        # Fixed parameters from current GUI values
+        T_wall = None
+        if self.twall_combo.currentIndex() == 1:
+            T_wall = self.twall_spin.value()
+
+        fixed_params = {
+            'length': self.length_spin.value(),
+            'R': self.radius_spin.value(),
+            'M_inf': self.mach_spin.value(),
+            'alpha_deg': self.alpha_spin.value(),
+            'altitude_km': self.alt_spin.value(),
+            'gamma': 1.4,
+            'T_wall': T_wall,
+            'nx': self.nx_spin.value(),
+            'ny': self.ny_spin.value(),
+        }
+
+        # Bounds from spinboxes
+        bounds = []
+        for name in PlanarWaveriderEvaluator.VAR_NAMES:
+            lo_spin, hi_spin = self._opt_bound_spins[name]
+            lo = lo_spin.value()
+            hi = hi_spin.value()
+            if lo >= hi:
+                QMessageBox.warning(
+                    self, "Invalid Bounds",
+                    f"Lower bound for '{name}' must be less than upper bound.")
+                return
+            bounds.append((lo, hi))
+
+        # Optimizer settings
+        seed_val = self.opt_seed_spin.value()
+        opt_settings = {
+            'popsize': self.opt_popsize_spin.value(),
+            'maxiter': self.opt_maxiter_spin.value(),
+            'tol': 1e-6,
+            'eta_vol_min': self.opt_eta_spin.value(),
+            'seed': seed_val if seed_val > 0 else None,
+        }
+
+        # Update UI state
+        self.opt_run_btn.setEnabled(False)
+        self.opt_stop_btn.setEnabled(True)
+        self.opt_load_btn.setEnabled(False)
+        self.opt_progress_bar.setValue(0)
+        self.opt_progress_bar.setRange(0, opt_settings['maxiter'])
+        self.opt_status_label.setText("Starting optimization...")
+
+        # Launch worker
+        self.opt_worker = PlanarOptimizationWorker(
+            fixed_params, bounds, opt_settings)
+        self.opt_worker.progress_update.connect(self._on_opt_progress)
+        self.opt_worker.optimization_complete.connect(self._on_opt_complete)
+        self.opt_worker.error_occurred.connect(self._on_opt_error)
+        self.opt_worker.start()
+
+    def _stop_optimization(self):
+        """Signal the optimization to stop."""
+        if self.opt_worker is not None:
+            self.opt_worker.stop()
+            self.opt_status_label.setText("Stopping after current generation...")
+
+    def _on_opt_progress(self, iteration, maxiter, best_LD, best_eta):
+        """Update progress bar and status label."""
+        self.opt_progress_bar.setValue(iteration)
+        self.opt_status_label.setText(
+            f"Gen {iteration}/{maxiter}  |  "
+            f"Best L/D: {best_LD:.4f}  |  "
+            f"eta_vol: {best_eta:.5f}")
+
+    def _on_opt_complete(self, result):
+        """Handle completed optimization."""
+        self.opt_run_btn.setEnabled(True)
+        self.opt_stop_btn.setEnabled(False)
+        self._best_design = result
+        self.opt_load_btn.setEnabled(True)
+
+        LD = result.get('L_over_D', 0)
+        eta = result.get('eta_vol', 0)
+        n_evals = result.get('n_evals', 0)
+        n_hits = result.get('n_cache_hits', 0)
+        best_x = result.get('best_x', [])
+
+        var_names = PlanarWaveriderEvaluator.VAR_NAMES
+        var_str = ', '.join(
+            f"{var_names[i]}={best_x[i]:.4f}" for i in range(len(best_x)))
+
+        self.opt_progress_bar.setValue(self.opt_progress_bar.maximum())
+        self.opt_status_label.setText(
+            f"Done! Best L/D: {LD:.4f} | eta_vol: {eta:.5f}\n"
+            f"Evals: {n_evals} (cache hits: {n_hits})\n"
+            f"{var_str}")
+
+        # Save history CSV alongside working directory
+        history = result.get('history', [])
+        if history:
+            import os
+            csv_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                'optimization_history.csv')
+            PlanarWaveriderOptimizer.save_history_csv(history, csv_path)
+
+    def _on_opt_error(self, msg):
+        """Handle optimization error."""
+        self.opt_run_btn.setEnabled(True)
+        self.opt_stop_btn.setEnabled(False)
+        self.opt_status_label.setText("Optimization failed!")
+        QMessageBox.critical(self, "Optimization Error", msg)
+
+    def _load_best_design(self):
+        """Load the best optimized design into the geometry spinboxes."""
+        if self._best_design is None:
+            return
+        best_x = self._best_design.get('best_x', [])
+        if len(best_x) < 7:
+            return
+
+        # Map best_x -> spinboxes
+        # x = [width, n, beta_deg, epsilon, p1, p2, p3]
+        self.width_spin.setValue(best_x[0])
+        self.n_spin.setValue(best_x[1])
+        self.beta_spin.setValue(best_x[2])
+        self.epsilon_spin.setValue(best_x[3])
+        self.p1_spin.setValue(best_x[4])
+        self.p2_spin.setValue(best_x[5])
+        self.p3_spin.setValue(best_x[6])
+
+        # Trigger geometry regeneration
+        self.generate_waverider()
 
     # ── Slot Handlers ───────────────────────────────────────────────
 
