@@ -410,7 +410,14 @@ class PlanarWaverider:
         self.lower_surface_z = lower_z_full
 
         # Step 9: Leading edge curve (full span) — use blunted nose positions
+        # Append the true wingtip at y=w/2 (where x_LE=L, chord=0)
+        # so the LE line visually reaches the tip
+        tip_x = self._leading_edge_x(w / 2.0)
+        tip_z = self._leading_edge_z(tip_x)
         le_half = np.column_stack([nose_x, y_half, nose_z])
+        tip_pt = np.array([[float(tip_x), w / 2.0, float(tip_z)]])
+        le_half = np.vstack([le_half, tip_pt])
+
         le_mirror = le_half[::-1].copy()
         le_mirror[:, 1] *= -1.0
         self.leading_edge = np.vstack([le_mirror, le_half[1:]])
